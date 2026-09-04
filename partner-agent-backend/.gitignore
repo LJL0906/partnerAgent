@@ -1,0 +1,31 @@
+# 编译输出和依赖
+/build/
+/dist/
+/target/
+/out/
+node_modules/
+vendor/
+
+# 环境变量和敏感数据
+.env
+.env.local
+.env.*.local
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+
+# 系统文件
+Thumbs.db
+ehthumbs.db
+Desktop.ini
