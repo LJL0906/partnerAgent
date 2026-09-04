@@ -17,8 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -63,8 +63,8 @@ jobs:
       MIGRATION_VERIFY_CONFIRM: I_ACKNOWLEDGE_EMPTY_MIGRATION_VERIFY_DATABASE
       REAL_POSTGRES_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/partner_agent_migration_verify
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
