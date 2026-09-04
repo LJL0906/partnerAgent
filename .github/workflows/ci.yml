@@ -88,3 +88,4 @@ jobs:
           test/real-postgres-egress.e2e-spec.ts
           test/real-postgres-input-analysis.e2e-spec.ts
           test/real-postgres-privacy.e2e-spec.ts
+          test/real-postgres-tool-outbox.e2e-spec.ts

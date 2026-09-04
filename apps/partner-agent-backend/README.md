@@ -1,54 +1,46 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# 紫灵AI 后端
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+本目录是紫灵AI的 NestJS 权威业务后端。它负责正式 `/api/v1` Command/Query、`/ws/v1` 流式与主动事件、持久 ChatTask 调度、隐私外发控制、工具审批，以及 PostgreSQL 数据与迁移。
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 架构边界
 
-## Description
+- PostgreSQL 是正式业务数据和任务状态的唯一真相源；`SESSION_STORE=memory` 仅用于测试和受控开发。
+- Agent 和未来 RAG 能力只能生成回复或候选，不得绕过 Local Core 与确认事务直接写入正式业务对象。
+- 模型请求必须经过隐私扫描、外发决定和审计；审计失败时禁止外发。
+- 外部副作用工具使用独立审批、执行回执和撤销流程。ChatTask 生命周期与工具控制事件分别通过 transactional outbox 可靠投递。
+- 旧 Agent WebSocket 默认禁用；产品客户端应只使用正式 `/api/v1` 与 `/ws/v1` 协议。
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+共享请求、响应和事件契约位于 `packages/contracts`。完整项目状态、技术决策和部署说明以仓库根 README、`docs/` 与 `infra/README.md` 为准。
 
-## Project setup
+## 安装与运行
+
+在仓库根目录安装依赖：
 
 ```bash
-$ npm install
+npm ci
 ```
 
-## Compile and run the project
+复制 `.env.example` 为本地 `.env`，至少配置有效的 `AUTH_JWT_SECRET` 和 `DATABASE_URL`。默认服务只监听 `127.0.0.1:3000`：
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm run migration:run --workspace @partner-agent/backend
+npm run start:dev --workspace @partner-agent/backend
 ```
 
-## Local device integration
+生产构建与启动：
 
-The server binds to `127.0.0.1:3000` by default. For an Expo app running on a
-physical device, opt in to LAN access in `.env` and point the app at the
-computer's LAN IP address:
+```bash
+npm run build --workspace @partner-agent/contracts
+npm run build --workspace @partner-agent/backend
+npm run migration:run:prod --workspace @partner-agent/backend
+npm run start:prod --workspace @partner-agent/backend
+```
+
+数据库迁移必须先于新版本应用启动。容器化运行请使用 `infra/` 中的迁移先行方案。
+
+## 本地设备接入
+
+物理设备上的 Expo App 需要显式开放局域网监听，并将前端地址指向开发机的局域网 IP：
 
 ```dotenv
 HOST=0.0.0.0
@@ -56,91 +48,46 @@ PORT=3000
 CORS_ALLOWED_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
 ```
 
-`PORT` must be an integer from 1 to 65535. Keep
-`CORS_ALLOWED_ORIGINS` as an explicit comma-separated allowlist: do not use `*`
-and do not allow arbitrary development ports. Add another exact origin only
-when the browser really uses it.
+`PORT` 必须是 1–65535 的整数。`CORS_ALLOWED_ORIGINS` 必须保持为精确来源白名单，不要使用 `*`。原生 Socket.IO 客户端可能不携带 `Origin`，但 REST 和 WS 都必须提供有效的 HS256 JWT。
 
-Expo native Socket.IO clients normally omit `Origin`; they may enter the
-handshake without that header, but still need the same valid HS256 JWT as REST.
-A browser request that supplies an origin outside the allowlist is rejected.
-
-Create a short-lived local development JWT from the existing
-`AUTH_JWT_SECRET` without exposing an anonymous token endpoint:
-
-```powershell
-npm run dev:jwt -- --subject local-device-user --expires-in 900
-```
-
-The command prints only the token, never the secret. Keep both values out of
-Git, URLs, logs, screenshots, and chat messages. Token issuance is a local
-development convenience and does not weaken production authentication.
-
-## Run tests
+可使用已有密钥生成短期本地开发令牌：
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm run dev:jwt --workspace @partner-agent/backend -- --subject local-device-user --expires-in 900
 ```
 
-## Deployment
+命令只输出令牌，不输出密钥。令牌与密钥都不得进入 Git、URL、日志、截图或聊天记录。
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## 检查与测试
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run build --workspace @partner-agent/backend
+npm run lint --workspace @partner-agent/backend
+npm run test --workspace @partner-agent/backend
+npm run test:e2e --workspace @partner-agent/backend -- --exclude "test/real-postgres*.e2e-spec.ts"
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+真实 PostgreSQL 测试只应连接专用测试库。CI 会在 PostgreSQL 16 临时服务上执行迁移 up → down → up，并按工作流中的显式文件列表串行运行真实数据库用例。不要把开发库或生产库 URL 用作 `MIGRATION_VERIFY_DATABASE_URL` 或 `REAL_POSTGRES_DATABASE_URL`。
 
-## Observability
+## 运维命令
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+列出与核对 `indeterminate` 外部工具操作：
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+```bash
+npm run tool:reconcile --workspace @partner-agent/backend -- list --owner-id USER_ID
+```
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+构建后列出耗尽重试的 ChatTask/工具控制 Outbox 事件：
 
-## Resources
+```bash
+npm run outbox:remediate --workspace @partner-agent/backend -- list
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+重试或丢弃毒事件需要命令输出提供的精确确认短语，并会在同一事务写入审计记录。执行前应先确认目标数据库、事件 ID、当前尝试次数和操作人标识。
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+## 健康检查
 
-## Support
+- `GET /health/live`：进程存活。
+- `GET /health/ready`：数据库和应用就绪；优雅停机开始后返回非就绪。
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+进程内已维护低基数 Prometheus registry/exporter，但当前没有公开 HTTP `/metrics` 端点。业务健康 Query 仍通过 `/api/v1` 提供，具体路由以共享契约和控制器实现为准。

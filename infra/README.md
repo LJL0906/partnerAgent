@@ -19,7 +19,7 @@
 在仓库根目录运行：
 
 ```bash
-docker compose -f infra/compose.yml up --build -d
+docker compose --project-name partner-agent-local -f infra/compose.yml up --build -d
 ```
 
 Compose 会先等待 PostgreSQL 健康，再运行一次性 migration job；只有 migration 成功退出后，backend 才会启动。检查探针：
@@ -34,7 +34,7 @@ curl http://127.0.0.1:3000/health/ready
 停止服务但保留数据库卷：
 
 ```bash
-docker compose -f infra/compose.yml down
+docker compose --project-name partner-agent-local -f infra/compose.yml down
 ```
 
 迁移镜像运行编译后的迁移入口，不依赖 TypeScript 开发工具。生产部署应使用外部密钥管理和受控镜像标签，不应使用仓库内默认值替代凭据。

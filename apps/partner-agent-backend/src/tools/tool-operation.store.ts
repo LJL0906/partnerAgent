@@ -1,5 +1,6 @@
 import type { ToolRiskLevel } from '@partner-agent/contracts';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
+import type { TypeOrmToolControlOutbox } from './tool-control-outbox.js';
 
 export type ConfirmationStatus =
   | 'pending'
@@ -10,6 +11,8 @@ export type ConfirmationStatus =
   | 'expired'
   | 'indeterminate'
   | 'undone';
+
+export type ToolApprovalDecision = 'confirm' | 'dismiss';
 
 export const TOOL_RECONCILIATION_OUTCOMES = [
   'verified_applied',
@@ -217,11 +220,15 @@ export function assertToolReconciliationInput(
 }
 
 export abstract class ToolOperationStore {
+  readonly controlOutbox?: TypeOrmToolControlOutbox;
   abstract saveConfirmation(record: ToolConfirmationRecord): Promise<void>;
   abstract findConfirmation(
     id: string,
   ): Promise<ToolConfirmationRecord | undefined>;
-  abstract claimConfirmation(id: string): Promise<boolean>;
+  abstract claimConfirmation(
+    id: string,
+    decision?: ToolApprovalDecision,
+  ): Promise<boolean>;
   abstract updateConfirmation(
     id: string,
     updates: Partial<ToolConfirmationRecord>,
@@ -256,4 +263,5 @@ export abstract class ToolOperationStore {
     id: string,
     updates: Partial<ToolExecutionReceipt>,
   ): Promise<void>;
+  abstract completeUndo(executionId: string): Promise<void>;
 }

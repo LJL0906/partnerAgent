@@ -1,6 +1,4 @@
-import { SENSITIVE_CATEGORIES } from '@partner-agent/contracts';
 import type {
-  PrivacyDecisionStatus,
   ServerPushEventV1,
   SubscriptionAckV1,
   SubscriptionChannel,
@@ -20,17 +18,24 @@ import {
   cancelTask,
   getChatSession,
   getTaskStatus,
-  submitTextInput,
   type RecoverableChatSession,
   type RecoverableTaskStatus,
 } from '@/api/chat-api';
-import {
-  isTerminalTaskStatus,
-  useChatStore,
-  type ChatTaskStatus,
-} from '@/store/chat-store';
+import { useChatStore } from '@/store/chat-store';
 
-const PENDING_TASK_ID = '__pending_task__';
+import { applyAgentEvent, applyRecoveredTask } from './chat-event-state';
+import {
+  channelId,
+  dispatchApplicationEvent,
+  desiredChannels,
+  initialChatChannels,
+  PENDING_CHAT_TASK_ID,
+  routeAgentEvent,
+} from './chat-event-routing';
+import {
+  sendChatMessage,
+  type PendingChatSubmission,
+} from './chat-message-submission';
 
 interface ReconciliationQueries {
   getTaskStatus: typeof getTaskStatus;
@@ -115,6 +120,7 @@ export function useChat() {
   const assistantMessageIdRef = useRef<string | undefined>(undefined);
   const currentTaskIdRef = useRef<string | undefined>(undefined);
   const previousTaskIdRef = useRef<string | undefined>(undefined);
+  const pendingSubmissionRef = useRef<PendingChatSubmission | undefined>(undefined);
   const streamConnectionRef = useRef<AgentStreamConnection | undefined>(undefined);
   const streamReadyRef = useRef<Promise<AgentStreamConnection> | undefined>(undefined);
   const reconciliationsRef = useRef(new Map<string, Promise<void>>());
@@ -142,7 +148,10 @@ export function useChat() {
           {
             assistantMessageIdRef,
             shouldApplyTask: (task) => {
-              if (!currentTaskIdRef.current || currentTaskIdRef.current === PENDING_TASK_ID) {
+              if (
+                !currentTaskIdRef.current ||
+                currentTaskIdRef.current === PENDING_CHAT_TASK_ID
+              ) {
                 currentTaskIdRef.current = task.task_id;
               }
               return task.task_id === currentTaskIdRef.current;
@@ -168,19 +177,23 @@ export function useChat() {
 
   const handleAgentEvent = useCallback(
     (event: ServerPushEventV1) => {
-      if (event.task_id && currentTaskIdRef.current === PENDING_TASK_ID) {
-        if (event.task_id === previousTaskIdRef.current) return;
-        currentTaskIdRef.current = event.task_id;
-      }
-      if (
-        event.task_id &&
-        currentTaskIdRef.current &&
-        event.task_id !== currentTaskIdRef.current
-      ) {
+      const state = useChatStore.getState();
+      const route = routeAgentEvent(event, {
+        sessionId: state.sessionId,
+        currentTaskId: currentTaskIdRef.current ?? state.activeTaskId,
+        previousTaskId: previousTaskIdRef.current,
+        activeOperationId: state.activeOperationId,
+        pendingOperationId: pendingSubmissionRef.current?.operationId,
+      });
+      if (route === 'application') {
+        dispatchApplicationEvent(event);
         return;
       }
+      if (route === 'ignore') return;
+      if (event.task_id && currentTaskIdRef.current === PENDING_CHAT_TASK_ID) {
+        currentTaskIdRef.current = event.task_id;
+      }
       if (event.event_type === 'recovery_required') {
-        const state = useChatStore.getState();
         const taskId = event.task_id ?? channelId(event.channel, 'task') ?? state.activeTaskId;
         const recoverySessionId =
           event.session_id ?? channelId(event.channel, 'session') ?? state.sessionId;
@@ -277,75 +290,16 @@ export function useChat() {
   }, [activeOperationId, activeTaskId, reportError, sessionId]);
 
   const sendMessage = useCallback(async (rawMessage: string) => {
-    const message = rawMessage.trim();
-    if (!message) return false;
-    const stateBefore = useChatStore.getState();
-    if (!stateBefore.sessionId || stateBefore.isStreaming) return false;
-
-    let connection: AgentStreamConnection;
-    try {
-      const opening = streamReadyRef.current;
-      if (!opening) throw new Error('实时连接尚未初始化，请稍后重试。');
-      connection = await opening;
-    } catch (error) {
-      reportError(error, '实时连接尚未就绪。');
-      return true;
-    }
-
-    const state = useChatStore.getState();
-    if (state.isStreaming) return false;
-    const optimisticMessageId = Crypto.randomUUID();
-    previousTaskIdRef.current = currentTaskIdRef.current;
-    currentTaskIdRef.current = PENDING_TASK_ID;
-    state.beginTask();
-    state.addMessage({ id: optimisticMessageId, role: 'user', content: message });
-    assistantMessageIdRef.current = undefined;
-
-    try {
-      const result = await submitTextInput({ text: message, sessionId: state.sessionId });
-      if (result.status === 'rejected') {
-        throw new Error(result.validation_errors?.[0]?.message ?? '消息提交被拒绝。');
-      }
-      const acceptedSessionId =
-        result.data?.session_id ??
-        result.resource_refs?.find((ref) => ref.kind === 'session')?.id ??
-        state.sessionId;
-      const taskId = result.data?.chat_task.task_id ?? result.task_refs?.[0]?.task_id;
-      if (!taskId) throw new Error('服务端未返回聊天任务标识。');
-      const stableMessageId =
-        result.data?.message_ref.id ??
-        result.resource_refs?.find((ref) => ref.kind === 'chat_message')?.id;
-      if (stableMessageId) state.bindOptimisticMessageId(optimisticMessageId, stableMessageId);
-      if (acceptedSessionId !== state.sessionId) state.setSessionId(acceptedSessionId);
-      currentTaskIdRef.current = taskId;
-      previousTaskIdRef.current = undefined;
-      state.setActiveOperationId(result.operation_id);
-      state.setActiveTaskId(taskId);
-
-      try {
-        await connection.setChannels(
-          desiredChannels(acceptedSessionId, taskId, result.operation_id),
-        );
-      } catch (error) {
-        if (!(error instanceof SubscriptionRejectedError)) {
-          reportError(error, '任务实时频道订阅失败。');
-        }
-        await reconcileFromRest(taskId, acceptedSessionId);
-      }
-      return true;
-    } catch (error) {
-      currentTaskIdRef.current = undefined;
-      previousTaskIdRef.current = undefined;
-      state.setStreaming(false);
-      state.setThinking(false);
-      state.setTaskStatus('failed');
-      state.addMessage({
-        id: Crypto.randomUUID(),
-        role: 'system',
-        content: error instanceof Error ? error.message : '消息提交失败，请稍后重试。',
-      });
-      return true;
-    }
+    return sendChatMessage(rawMessage, {
+      assistantMessageIdRef,
+      currentTaskIdRef,
+      pendingSubmissionRef,
+      previousTaskIdRef,
+      reconcileFromRest: (taskId, recoverySessionId) =>
+        reconcileFromRest(taskId, recoverySessionId),
+      reportError,
+      streamReadyRef,
+    });
   }, [reconcileFromRest, reportError]);
 
   const stopStreaming = useCallback(async () => {
@@ -379,180 +333,10 @@ export function useChat() {
   return { sendMessage, stopStreaming, isStreaming };
 }
 
-export function applyAgentEvent(
-  event: ServerPushEventV1,
-  assistantIdRef: MutableRefObject<string | undefined>,
-): void {
-  const state = useChatStore.getState();
-  switch (event.event_type) {
-    case 'history':
-      state.reconcileMessages(
-        event.data.messages.map((message, index) => ({
-          id: `history:${event.session_id ?? 'unknown'}:${message.timestamp}:${index}`,
-          role: message.role,
-          content: message.content,
-        })),
-      );
-      assistantIdRef.current = findLatestAssistantId();
-      return;
-    case 'text_delta': {
-      if (!state.setTaskStatus('running')) return;
-      let assistantId = assistantIdRef.current;
-      if (!assistantId) {
-        assistantId = Crypto.randomUUID();
-        assistantIdRef.current = assistantId;
-        state.addMessage({ id: assistantId, role: 'assistant', content: '' });
-      }
-      state.setStreaming(true);
-      state.setThinking(false);
-      state.appendAssistantContent(assistantId, event.data);
-      return;
-    }
-    case 'thinking_delta':
-      if (!state.setTaskStatus('running')) return;
-      state.setStreaming(true);
-      state.setThinking(true);
-      return;
-    case 'tool_execution_start':
-      if (!state.setTaskStatus('running')) return;
-      state.addMessage({
-        id: `tool:${event.data.tool_call_id}`,
-        role: 'tool',
-        content: `正在执行 ${event.data.tool}`,
-        tool: event.data.tool,
-        toolCallId: event.data.tool_call_id,
-      });
-      return;
-    case 'tool_execution_end':
-      if (isTerminalTaskStatus(state.taskStatus)) return;
-      state.completeTool(event.data.tool_call_id, event.data.success);
-      return;
-    case 'task_state':
-      applyTaskState(
-        event.data.state,
-        event.data.message,
-        assistantIdRef,
-        event.data.privacy_decision,
-      );
-      return;
-    case 'done':
-      applyTaskState('completed', undefined, assistantIdRef);
-      return;
-    case 'cancelled': {
-      const wasTerminal = isTerminalTaskStatus(state.taskStatus);
-      applyTaskState('cancelled', undefined, assistantIdRef);
-      if (!wasTerminal && useChatStore.getState().taskStatus === 'cancelled') {
-        state.addMessage({
-          id: `cancelled:${event.task_id ?? event.event_id}`,
-          role: 'system',
-          content: '已取消本次回复。',
-        });
-      }
-      return;
-    }
-    case 'error':
-      if (event.data.code === 'EGRESS_002') {
-        if (!state.setTaskStatus('waiting_privacy_decision')) return;
-        state.setStreaming(true);
-        state.setThinking(false);
-        return;
-      }
-      if (isTerminalTaskStatus(state.taskStatus)) return;
-      applyTaskState('failed', event.data.message, assistantIdRef);
-  }
-}
-
-function applyRecoveredTask(
-  task: RecoverableTaskStatus,
-  assistantIdRef: MutableRefObject<string | undefined>,
-): void {
-  applyTaskState(task.state, task.error, assistantIdRef, task.privacy_decision);
-}
-
-function applyTaskState(
-  taskState: RecoverableTaskStatus['state'],
-  error: string | undefined,
-  assistantIdRef: MutableRefObject<string | undefined>,
-  privacyDecision?: PrivacyDecisionStatus,
-): void {
-  const state = useChatStore.getState();
-  const taskStatus = toChatTaskStatus(taskState);
-  const previousStatus = state.taskStatus;
-  if (!state.setTaskStatus(taskStatus)) return;
-  if (taskStatus === 'waiting_privacy_decision') {
-    state.setPrivacyDecision(toPrivacyDecisionSummary(privacyDecision));
-  }
-  if (isTerminalTaskStatus(taskStatus)) {
-    finishStream(assistantIdRef, taskStatus);
-  } else {
-    state.setStreaming(true);
-    state.setThinking(taskStatus === 'queued' || taskStatus === 'running');
-  }
-  if (taskStatus === 'failed' && error && previousStatus !== 'failed') {
-    state.addMessage({
-      id: `task-error:${state.activeTaskId ?? error}`,
-      role: 'system',
-      content: error,
-    });
-  }
-}
-
-export function toPrivacyDecisionSummary(
-  privacyDecision: PrivacyDecisionStatus | undefined,
-): PrivacyDecisionStatus | undefined {
-  if (!privacyDecision) return undefined;
-  const allowedCategories = new Set<string>(SENSITIVE_CATEGORIES);
-  return {
-    egress_id: privacyDecision.egress_id,
-    categories: privacyDecision.categories.filter((category) => allowedCategories.has(category)),
-    provider: privacyDecision.provider,
-    model_id: privacyDecision.model_id,
-    expires_at: privacyDecision.expires_at,
-  };
-}
-
-function toChatTaskStatus(state: RecoverableTaskStatus['state']): ChatTaskStatus {
-  return state;
-}
-
-function finishStream(
-  assistantIdRef: MutableRefObject<string | undefined>,
-  taskStatus: Extract<ChatTaskStatus, 'completed' | 'cancelled' | 'failed'>,
-): void {
-  const state = useChatStore.getState();
-  state.setStreaming(false);
-  state.setThinking(false);
-  state.setTaskStatus(taskStatus);
-  state.setActiveTaskId(undefined);
-  state.setActiveOperationId(undefined);
-  assistantIdRef.current = undefined;
-}
-
 function findLatestAssistantId(): string | undefined {
   return [...useChatStore.getState().messages]
     .reverse()
     .find((message) => message.role === 'assistant')?.id;
 }
 
-export function initialChatChannels(): SubscriptionChannel[] {
-  return ['user:self'];
-}
-
-export function desiredChannels(
-  sessionId: string,
-  taskId?: string,
-  operationId?: string,
-): SubscriptionChannel[] {
-  const channels: SubscriptionChannel[] = ['user:self', `session:${sessionId}`];
-  if (taskId) channels.push(`task:${taskId}`);
-  if (operationId) channels.push(`operation:${operationId}`);
-  return channels;
-}
-
-function channelId(
-  channel: SubscriptionChannel,
-  kind: 'task' | 'session',
-): string | undefined {
-  const prefix = `${kind}:`;
-  return channel.startsWith(prefix) ? channel.slice(prefix.length) : undefined;
-}
+export { desiredChannels, initialChatChannels } from './chat-event-routing';

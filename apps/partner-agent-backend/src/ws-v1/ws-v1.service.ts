@@ -28,6 +28,7 @@ import {
   safelyRecord,
 } from '../observability/observability.types.js';
 import { RedactionService } from '../tools/redaction.service.js';
+import { ToolControlOutboxRelay } from '../tools/tool-control-outbox.relay.js';
 import { WsV1ChannelAuthorizer } from './ws-v1-channel-authorizer.js';
 import {
   WsV1EventStore,
@@ -51,10 +52,7 @@ interface PendingSubscription {
 export class WsV1Service implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WsV1Service.name);
   private readonly sockets = new Map<string, Socket>();
-  private readonly subscriptions = new Map<
-    string,
-    Set<SubscriptionChannel>
-  >();
+  private readonly subscriptions = new Map<string, Set<SubscriptionChannel>>();
   private readonly pendingSubscriptions = new Map<
     string,
     Map<SubscriptionChannel, PendingSubscription>
@@ -70,6 +68,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly outboxRelay?: ChatTaskOutboxRelay,
     @Optional()
     private readonly observability: ObservabilitySink = new NoopObservabilitySink(),
+    @Optional() private readonly toolOutboxRelay?: ToolControlOutboxRelay,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -83,15 +82,17 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         this.publishTaskEvent(event),
       );
       this.taskPublishQueue = publishing.catch(() => {
-          this.logger.warn('WS v1 task event persistence failed');
+        this.logger.warn('WS v1 task event persistence failed');
       });
       return event.eventKey ? publishing : this.taskPublishQueue;
     });
     this.outboxRelay?.start();
+    this.toolOutboxRelay?.start();
   }
 
   async onModuleDestroy(): Promise<void> {
     await this.outboxRelay?.stop();
+    await this.toolOutboxRelay?.stop();
     this.unsubscribeTaskEvents?.();
     await this.taskPublishQueue.catch(() => undefined);
     await this.eventStore.stop();
@@ -132,7 +133,9 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      if (!(await this.authorizer.canSubscribe({ userId, channel: rawChannel }))) {
+      if (
+        !(await this.authorizer.canSubscribe({ userId, channel: rawChannel }))
+      ) {
         rejected.push({
           channel: rawChannel,
           code: 'AUTH_002',
@@ -186,10 +189,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  activateSubscriptions(
-    socket: Socket,
-    channels: SubscriptionChannel[],
-  ): void {
+  activateSubscriptions(socket: Socket, channels: SubscriptionChannel[]): void {
     const subscriptions = this.subscriptions.get(socket.id);
     const pending = this.pendingSubscriptions.get(socket.id);
     if (!subscriptions || !pending) return;
@@ -323,10 +323,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private streamKey(
-    channel: SubscriptionChannel,
-    userId?: string,
-  ): string {
+  private streamKey(channel: SubscriptionChannel, userId?: string): string {
     return channel === 'user:self' ? `user:self:${userId ?? ''}` : channel;
   }
 
@@ -359,9 +356,9 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private mapTaskEvent(event: ChatTaskEvent):
-    | { eventType: ServerPushEventTypeV1; data: unknown }
-    | undefined {
+  private mapTaskEvent(
+    event: ChatTaskEvent,
+  ): { eventType: ServerPushEventTypeV1; data: unknown } | undefined {
     if (event.type === 'state_changed') {
       if (event.state === 'completed') return { eventType: 'done', data: {} };
       if (event.state === 'cancelled') {
@@ -419,7 +416,8 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
   }
 
   private toSnakeCase(value: unknown): unknown {
-    if (Array.isArray(value)) return value.map((entry) => this.toSnakeCase(entry));
+    if (Array.isArray(value))
+      return value.map((entry) => this.toSnakeCase(entry));
     if (!value || typeof value !== 'object') return value;
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [

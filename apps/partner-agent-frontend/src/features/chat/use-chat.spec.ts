@@ -1,13 +1,12 @@
 import type { ServerPushEventV1 } from '@partner-agent/contracts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  applyAgentEvent,
   desiredChannels,
   initialChatChannels,
   loadChatReconciliation,
   reconcileChatFromRest,
-  toPrivacyDecisionSummary,
 } from './use-chat';
+import { applyAgentEvent, toPrivacyDecisionSummary } from './chat-event-state';
 import { useChatStore } from '../../store/chat-store';
 
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'generated-message' }));

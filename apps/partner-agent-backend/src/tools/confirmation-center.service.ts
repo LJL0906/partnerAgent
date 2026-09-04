@@ -86,7 +86,7 @@ export class ExternalToolApprovalService {
     }
     if (record.status !== 'pending') throw new Error('确认请求已处理');
     this.assertNotExpired(record);
-    if (!(await this.store.claimConfirmation(record.id))) {
+    if (!(await this.store.claimConfirmation(record.id, 'confirm'))) {
       throw new Error('确认请求已处理');
     }
 
@@ -139,7 +139,7 @@ export class ExternalToolApprovalService {
     }
     if (record.status !== 'pending') throw new Error('确认请求已处理');
     this.assertNotExpired(record);
-    if (!(await this.store.claimConfirmation(record.id))) {
+    if (!(await this.store.claimConfirmation(record.id, 'dismiss'))) {
       throw new Error('确认请求已处理');
     }
     const result = this.dismissedResult();
@@ -257,10 +257,7 @@ export class ExternalToolApprovalService {
 
     try {
       await definition.undo(receipt.undoPayload);
-      await this.store.updateReceipt(receipt.id, { status: 'undone' });
-      await this.store.updateConfirmation(receipt.confirmationId, {
-        status: 'undone',
-      });
+      await this.store.completeUndo(receipt.id);
       await this.execution.audit(definition, '', context, 'undone', {
         confirmationId: receipt.confirmationId,
         executionId,

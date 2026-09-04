@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:24-alpine AS build
+ARG NPM_REGISTRY=https://registry.npmjs.org/
 WORKDIR /workspace
 
 COPY package.json package-lock.json ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY apps/partner-agent-backend/package.json apps/partner-agent-backend/package.json
-RUN npm ci --include-workspace-root \
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund --registry=${NPM_REGISTRY} --include-workspace-root \
     --workspace @partner-agent/contracts \
     --workspace @partner-agent/backend
 
@@ -15,13 +17,9 @@ COPY apps/partner-agent-backend apps/partner-agent-backend
 RUN npm run build --workspace @partner-agent/contracts \
     && npm run build --workspace @partner-agent/backend
 
-FROM node:24-alpine AS production-dependencies
-WORKDIR /workspace
-
-COPY package.json package-lock.json ./
-COPY packages/contracts/package.json packages/contracts/package.json
-COPY apps/partner-agent-backend/package.json apps/partner-agent-backend/package.json
-RUN npm ci --omit=dev --include-workspace-root \
+FROM build AS production-dependencies
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --no-audit --no-fund --registry=${NPM_REGISTRY} --include-workspace-root \
     --workspace @partner-agent/contracts \
     --workspace @partner-agent/backend
 
@@ -31,6 +29,7 @@ WORKDIR /workspace
 
 COPY --from=build /workspace/package.json /workspace/package-lock.json ./
 COPY --from=production-dependencies /workspace/node_modules node_modules
+COPY --from=production-dependencies /workspace/apps/partner-agent-backend/node_modules apps/partner-agent-backend/node_modules
 COPY --from=build /workspace/packages/contracts/package.json packages/contracts/package.json
 COPY --from=build /workspace/packages/contracts/dist packages/contracts/dist
 COPY --from=build /workspace/apps/partner-agent-backend/package.json apps/partner-agent-backend/package.json

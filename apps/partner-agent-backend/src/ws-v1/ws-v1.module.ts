@@ -5,6 +5,7 @@ import { DatabaseModule } from '../database/database.module.js';
 import { LocalCoreApiModule } from '../local-core-api/local-core-api.module.js';
 import { ChatTaskOutboxRelay } from '../local-core-api/chat-task-outbox.relay.js';
 import { RedactionService } from '../tools/redaction.service.js';
+import { ToolControlOutboxRelay } from '../tools/tool-control-outbox.relay.js';
 import {
   DefaultWsV1ChannelAuthorizer,
   WsV1ChannelAuthorizer,
@@ -21,6 +22,7 @@ import { WsV1ToolControlService } from './ws-v1-tool-control.service.js';
     WsV1ToolControlService,
     WsV1Gateway,
     ChatTaskOutboxRelay,
+    ToolControlOutboxRelay,
     {
       provide: WsV1ChannelAuthorizer,
       useClass: DefaultWsV1ChannelAuthorizer,

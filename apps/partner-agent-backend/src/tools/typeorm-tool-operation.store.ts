@@ -15,6 +15,7 @@ import {
   type ToolAuditRecord,
   type ToolConfirmationRecord,
   type ToolExecutionReceipt,
+  type ToolApprovalDecision,
   type PendingToolReconciliation,
   type ReconcileIndeterminateToolInput,
   type ToolReconciliationAuditRecord,
@@ -26,10 +27,19 @@ import {
   requireToolReconciliationSnapshot,
   toolReconciliationSnapshotFrom,
 } from './tool-reconciliation-snapshot.js';
+import { TypeOrmToolControlOutbox } from './tool-control-outbox.js';
+import {
+  claimConfirmationWithOutbox,
+  completeUndoWithOutbox,
+  updateConfirmationWithOutbox,
+} from './typeorm-tool-control-transitions.js';
 
 export class TypeOrmToolOperationStore extends ToolOperationStore {
+  override readonly controlOutbox: TypeOrmToolControlOutbox;
+
   constructor(private readonly dataSource: DataSource) {
     super();
+    this.controlOutbox = new TypeOrmToolControlOutbox(dataSource);
   }
 
   async saveConfirmation(record: ToolConfirmationRecord): Promise<void> {
@@ -54,11 +64,11 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
     return record ? this.confirmationFrom(record) : undefined;
   }
 
-  async claimConfirmation(id: string): Promise<boolean> {
-    const result = await this.dataSource
-      .getRepository(ToolConfirmationEntity)
-      .update({ id, status: 'pending' }, { status: 'executing' });
-    return result.affected === 1;
+  async claimConfirmation(
+    id: string,
+    decision: ToolApprovalDecision = 'confirm',
+  ): Promise<boolean> {
+    return claimConfirmationWithOutbox(this.dataSource, id, decision);
   }
 
   async updateConfirmation(
@@ -84,9 +94,7 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
     delete (entityUpdates as { result?: unknown }).result;
     delete (entityUpdates as { reconciliationSnapshot?: unknown })
       .reconciliationSnapshot;
-    await this.dataSource
-      .getRepository(ToolConfirmationEntity)
-      .update({ id }, entityUpdates);
+    await updateConfirmationWithOutbox(this.dataSource, id, entityUpdates);
   }
 
   async listRecoverableConfirmations(
@@ -444,5 +452,9 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
     await this.dataSource
       .getRepository(ToolExecutionReceiptEntity)
       .update({ id }, entityUpdates);
+  }
+
+  async completeUndo(executionId: string): Promise<void> {
+    await completeUndoWithOutbox(this.dataSource, executionId);
   }
 }

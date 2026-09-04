@@ -254,6 +254,17 @@ export class MemoryToolOperationStore extends ToolOperationStore {
     Object.assign(receipt, structuredClone(updates));
   }
 
+  async completeUndo(executionId: string): Promise<void> {
+    const receipt = this.receipts.get(executionId);
+    if (!receipt || receipt.status !== 'undoing') {
+      throw new Error('执行记录不存在或状态已变化');
+    }
+    const confirmation = this.confirmations.get(receipt.confirmationId);
+    if (!confirmation) throw new Error('确认请求不存在');
+    receipt.status = 'undone';
+    confirmation.status = 'undone';
+  }
+
   private safeLimit(limit: number): number {
     return Math.max(1, Math.min(Math.trunc(limit) || 1, 100));
   }

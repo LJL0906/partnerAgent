@@ -1,5 +1,7 @@
 # Pi Agent 目录说明
 
+> **已归档：** 本文只记录 2026 年 9 月 4 日的 Pi 本地参考目录快照。`pi/` 是可选且被 Git 忽略的外部源码，不是产品交付物；目录内容和绝对路径均不作为当前事实。当前项目结构见 [`项目架构说明`](../01-项目/项目架构说明.md)。
+>
 > 本文档说明 Pi Agent 源码和分析文档的目录位置
 > 
 > 最后更新：2026年9月4日
@@ -7,7 +9,7 @@
 ## 一、目录结构
 
 ```
-d:\project\ljl\project\partnerAgent\
+partnerAgent\
 ├── pi/                                    # Pi Agent 源码（从 GitHub 克隆）
 │   ├── packages/                          # 核心包目录
 │   │   ├── ai/                           # @earendil-works/pi-ai
@@ -240,7 +242,7 @@ npm update @earendil-works/pi-ai @earendil-works/pi-agent-core
 
 ---
 
-## 七、下一步
+## 七、当时的下一步（已归档）
 
 1. ✅ 已完成：克隆 Pi Agent 源码
 2. ✅ 已完成：创建分析文档

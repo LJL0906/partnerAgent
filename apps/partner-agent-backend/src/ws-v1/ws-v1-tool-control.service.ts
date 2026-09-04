@@ -20,6 +20,7 @@ import {
   type ExternalToolDecisionResult,
   type ExternalToolPendingContext,
 } from '../tools/confirmation-center.service.js';
+import { ToolOperationStore } from '../tools/tool-operation.store.js';
 import { WsV1Service } from './ws-v1.service.js';
 
 @Injectable()
@@ -29,6 +30,7 @@ export class WsV1ToolControlService {
     private readonly tasks: ChatTaskStore,
     private readonly scheduler: ChatTaskScheduler,
     private readonly events: WsV1Service,
+    private readonly toolStore: ToolOperationStore,
   ) {}
 
   async confirm(
@@ -73,21 +75,23 @@ export class WsV1ToolControlService {
                 input.context,
                 (metadata) => {
                   started = { ...pending, ...metadata };
-                  startedPublishing = this.publishConfirmed(
-                    started,
-                    input.context.sessionId,
-                    input.confirmationId,
-                  ).then(() =>
-                    this.publish(
-                      started!,
+                  if (!this.usesDurableToolEvents()) {
+                    startedPublishing = this.publishConfirmed(
+                      started,
                       input.context.sessionId,
-                      'tool_execution_start',
-                      {
-                        tool: metadata.tool,
-                        tool_call_id: metadata.toolCallId,
-                      },
-                    ),
-                  );
+                      input.confirmationId,
+                    ).then(() =>
+                      this.publish(
+                        started!,
+                        input.context.sessionId,
+                        'tool_execution_start',
+                        {
+                          tool: metadata.tool,
+                          tool_call_id: metadata.toolCallId,
+                        },
+                      ),
+                    );
+                  }
                 },
               )
             : await this.approval.recover(input.confirmationId, input.context);
@@ -101,7 +105,7 @@ export class WsV1ToolControlService {
           Boolean(started),
         );
       } catch (error) {
-        if (started) {
+        if (started && !this.usesDurableToolEvents()) {
           await startedPublishing;
           await this.publish(
             started,
@@ -179,11 +183,18 @@ export class WsV1ToolControlService {
     return this.control(request?.request_id, 'undo', async () => {
       const input = this.undoInput(socket, request);
       const undone = await this.approval.undo(input.executionId, input.context);
-      await this.publish(undone, input.context.sessionId, 'tool_undo_completed', {
-        execution_id: input.executionId,
-        tool: undone.tool,
-        success: true,
-      });
+      if (!this.usesDurableToolEvents()) {
+        await this.publish(
+          undone,
+          input.context.sessionId,
+          'tool_undo_completed',
+          {
+            execution_id: input.executionId,
+            tool: undone.tool,
+            success: true,
+          },
+        );
+      }
     });
   }
 
@@ -295,34 +306,38 @@ export class WsV1ToolControlService {
     decision: ExternalToolDecisionResult,
     confirmationAlreadyPublished: boolean,
   ): Promise<void> {
-    if (decision.decision === 'confirmed') {
-      if (!confirmationAlreadyPublished) {
-        await this.publishConfirmed(decision, sessionId, confirmationId);
-      }
-      const executionId = decision.outcome.executionId;
-      const undoExpiresAt = decision.outcome.externalUndoExpiresAt;
-      await this.publish(decision, sessionId, 'tool_execution_end', {
-        tool: decision.tool,
-        tool_call_id: decision.toolCallId,
-        success: true,
-        ...(executionId ? { execution_id: executionId } : {}),
-        ...(executionId ? { undo_available: true } : {}),
-        ...(undoExpiresAt ? { undo_expires_at: undoExpiresAt.getTime() } : {}),
-      });
-      if (executionId && undoExpiresAt) {
-        await this.publish(decision, sessionId, 'tool_undo_available', {
-          execution_id: executionId,
+    if (!this.usesDurableToolEvents()) {
+      if (decision.decision === 'confirmed') {
+        if (!confirmationAlreadyPublished) {
+          await this.publishConfirmed(decision, sessionId, confirmationId);
+        }
+        const executionId = decision.outcome.executionId;
+        const undoExpiresAt = decision.outcome.externalUndoExpiresAt;
+        await this.publish(decision, sessionId, 'tool_execution_end', {
           tool: decision.tool,
-          expires_at: undoExpiresAt.getTime(),
+          tool_call_id: decision.toolCallId,
+          success: true,
+          ...(executionId ? { execution_id: executionId } : {}),
+          ...(executionId ? { undo_available: true } : {}),
+          ...(undoExpiresAt
+            ? { undo_expires_at: undoExpiresAt.getTime() }
+            : {}),
+        });
+        if (executionId && undoExpiresAt) {
+          await this.publish(decision, sessionId, 'tool_undo_available', {
+            execution_id: executionId,
+            tool: decision.tool,
+            expires_at: undoExpiresAt.getTime(),
+          });
+        }
+      } else {
+        await this.publish(decision, sessionId, 'tool_confirmation_dismissed', {
+          confirmation_id: confirmationId,
+          tool: decision.tool,
+          tool_call_id: decision.toolCallId,
+          reason: 'user_dismissed',
         });
       }
-    } else {
-      await this.publish(decision, sessionId, 'tool_confirmation_dismissed', {
-        confirmation_id: confirmationId,
-        tool: decision.tool,
-        tool_call_id: decision.toolCallId,
-        reason: 'user_dismissed',
-      });
     }
     this.scheduler.resumeClaimedToolDecision(task, claim, {
       toolCallId: decision.toolCallId,
@@ -330,6 +345,10 @@ export class WsV1ToolControlService {
       result: decision.outcome.result,
       isError: decision.decision === 'dismissed',
     });
+  }
+
+  private usesDurableToolEvents(): boolean {
+    return Boolean(this.toolStore.controlOutbox);
   }
 
   private async publishConfirmed(

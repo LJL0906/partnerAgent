@@ -7,6 +7,7 @@ import type {
   StoredChatTask,
 } from '../local-core-api/chat-task.store.js';
 import type { ExternalToolApprovalService } from '../tools/confirmation-center.service.js';
+import { MemoryToolOperationStore } from '../tools/memory-tool-operation.store.js';
 import type { WsV1Service } from './ws-v1.service.js';
 import { WsV1ToolControlService } from './ws-v1-tool-control.service.js';
 
@@ -111,6 +112,7 @@ function harness() {
     tasks as unknown as ChatTaskStore,
     scheduler as unknown as ChatTaskScheduler,
     events as unknown as WsV1Service,
+    new MemoryToolOperationStore(),
   );
   return {
     approval,
@@ -404,7 +406,13 @@ describe('WsV1ToolControlService', () => {
     );
   });
 
-  it.each(['executing', 'failed', 'expired', 'indeterminate', 'undone'] as const)(
+  it.each([
+    'executing',
+    'failed',
+    'expired',
+    'indeterminate',
+    'undone',
+  ] as const)(
     'rejects %s without claiming or failing the current task',
     async (status) => {
       const fixture = harness();

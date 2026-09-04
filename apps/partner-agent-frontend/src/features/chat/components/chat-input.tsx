@@ -19,8 +19,11 @@ export function ChatInput({ isStreaming, onSend, onCancel }: ChatInputProps) {
   const [isFocused, setIsFocused] = useState(false);
 
   async function handleSend() {
-    const submitted = await onSend(value);
-    if (submitted) setValue('');
+    const submittedValue = value;
+    const submitted = await onSend(submittedValue);
+    if (submitted) {
+      setValue((currentValue) => (currentValue === submittedValue ? '' : currentValue));
+    }
   }
 
   return (

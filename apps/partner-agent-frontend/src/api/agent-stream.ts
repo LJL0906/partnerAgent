@@ -5,7 +5,7 @@ import type {
   SubscriptionChannel,
   UnsubscribeRequestV1,
 } from '@partner-agent/contracts';
-import { WS_CONTROL_EVENTS, WS_EVENTS } from '@partner-agent/contracts';
+import { WS_CONTROL_EVENTS, WS_SERVER_EVENTS } from '@partner-agent/contracts';
 import * as Crypto from 'expo-crypto';
 import { io, type Socket } from 'socket.io-client';
 
@@ -339,7 +339,7 @@ export async function subscribeAgentStream(
   socket.on('connect', handleConnect);
   socket.on('disconnect', handleDisconnect);
   socket.on('connect_error', handleConnectError);
-  socket.on(WS_EVENTS.AGENT_EVENT, handleEvent);
+  socket.on(WS_SERVER_EVENTS.AGENT_EVENT, handleEvent);
   socket.on(WS_CONTROL_EVENTS.SUBSCRIPTION_ACK, handleSubscriptionAck);
   socket.connect();
 

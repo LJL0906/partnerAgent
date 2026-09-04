@@ -14,6 +14,8 @@ import { getJson, postJson, type RequestOptions } from './http-client';
 export interface SubmitTextInputParams {
   text: string;
   sessionId: string;
+  inputId?: string;
+  operationId?: string;
   requestAnalysis?: boolean;
   analysisTypes?: SubmitTextInputPayload['analysis_types'];
   signal?: AbortSignal;
@@ -26,8 +28,8 @@ export interface CancelTaskPayload {
 export async function submitTextInput(
   params: SubmitTextInputParams,
 ): Promise<CommandResult<SubmitTextInputResult>> {
-  const inputId = createOperationId();
-  const operationId = createOperationId();
+  const inputId = params.inputId ?? createOperationId();
+  const operationId = params.operationId ?? createOperationId();
   const payload: SubmitTextInputPayload = {
     text: params.text,
     session_id: params.sessionId,
