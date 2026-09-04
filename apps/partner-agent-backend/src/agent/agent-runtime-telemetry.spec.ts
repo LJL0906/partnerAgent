@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRuntimePolicy } from './agent-runtime-policy.js';
-import { AgentRunTrace } from './agent-runtime-telemetry.js';
+import {
+  AgentRunTrace,
+  AgentRuntimeTelemetry,
+} from './agent-runtime-telemetry.js';
+import { InMemoryObservabilitySink } from '../observability/observability.types.js';
 
 const POLICY: AgentRuntimePolicy = {
   runTimeoutMs: 1_000,
@@ -22,6 +26,7 @@ describe('AgentRunTrace', () => {
     const longLabel = `unsafe\n${'x'.repeat(200)}`;
     const trace = new AgentRunTrace(
       {
+        ownerId: 'owner-a',
         sessionId: longLabel,
         taskId: 'task\u0000id',
         operationId: 'operation\tid',
@@ -81,7 +86,7 @@ describe('AgentRunTrace', () => {
 
   it('never lets a telemetry writer failure alter runtime behavior', () => {
     const trace = new AgentRunTrace(
-      { sessionId: 'session-a', source: 'test' },
+      { ownerId: 'owner-a', sessionId: 'session-a', source: 'test' },
       () => {
         throw new Error('telemetry unavailable');
       },
@@ -94,9 +99,61 @@ describe('AgentRunTrace', () => {
     expect(() => trace.finish('completed')).not.toThrow();
   });
 
+  it('emits typed run, turn, tool, waiting, cancellation and budget metadata', () => {
+    const sink = new InMemoryObservabilitySink();
+    const telemetry = new AgentRuntimeTelemetry(sink);
+    const trace = telemetry.start(
+      { ownerId: 'owner-a', sessionId: 'session-a', source: 'test' },
+      POLICY,
+    );
+    trace.budget.startModelRequest();
+    trace.toolStarted('call-a', 'tool-a');
+    trace.budget.beforeToolCall();
+    trace.toolFinished('call-a', 'tool-a', true);
+    trace.finish('waiting_tool_approval');
+
+    const cancelled = telemetry.start(
+      { ownerId: 'owner-a', sessionId: 'session-b', source: 'test' },
+      POLICY,
+    );
+    cancelled.finish('cancelled');
+
+    const budgeted = telemetry.start(
+      { ownerId: 'owner-a', sessionId: 'session-c', source: 'test' },
+      { ...POLICY, maxToolCalls: 1 },
+    );
+    budgeted.budget.beforeToolCall();
+    budgeted.budget.beforeToolCall();
+    budgeted.finish('failed', budgeted.budget.termination());
+
+    expect(sink.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'agent_run_started' }),
+        expect.objectContaining({ kind: 'agent_turn_started', turn: 1 }),
+        expect.objectContaining({
+          kind: 'agent_tool_finished',
+          status: 'succeeded',
+        }),
+        expect.objectContaining({
+          kind: 'agent_run_finished',
+          reason: 'waiting_tool_approval',
+        }),
+        expect.objectContaining({
+          kind: 'agent_run_finished',
+          reason: 'cancelled',
+        }),
+        expect.objectContaining({
+          kind: 'agent_run_finished',
+          reason: 'failed',
+          errorCode: 'AGENT_BUDGET_003',
+        }),
+      ]),
+    );
+  });
+
   it('fails fast when a trace is used before its budget is attached', () => {
     const trace = new AgentRunTrace(
-      { sessionId: 'session-a', source: 'test' },
+      { ownerId: 'owner-a', sessionId: 'session-a', source: 'test' },
       () => undefined,
     );
     expect(() => trace.budget).toThrow('尚未初始化');

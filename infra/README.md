@@ -12,7 +12,7 @@
 - `CORS_ALLOWED_ORIGINS`：逗号分隔的明确来源白名单，不允许 `*`；
 - 所选模型对应的 `DEEPSEEK_API_KEY`、`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`。
 
-可选变量包括 `BACKEND_PORT`、`DEFAULT_PROVIDER`、`DEFAULT_MODEL` 和 `ENABLE_LEGACY_AGENT_WS`。可以通过 shell 环境或本地未跟踪的 `.env` 提供这些值；不要提交真实凭据。
+可选变量包括 `BACKEND_PORT`、`DEFAULT_PROVIDER`、`DEFAULT_MODEL`，以及 `WS_EVENT_RETENTION_COUNT`、`WS_EVENT_RETENTION_AGE_MS`、`WS_EVENT_RETENTION_BATCH_SIZE`、`WS_EVENT_RETENTION_INTERVAL_MS` 四项事件保留配置。可以通过 shell 环境或本地未跟踪的 `.env` 提供这些值；不要提交真实凭据。生产 Compose 固定关闭旧 Agent WebSocket；生产配置若尝试启用也会在启动校验阶段被拒绝。
 
 ## 启动与检查
 

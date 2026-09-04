@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module.js';
 import { AgentModule } from '../agent/agent.module.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { LocalCoreApiModule } from '../local-core-api/local-core-api.module.js';
+import { ChatTaskOutboxRelay } from '../local-core-api/chat-task-outbox.relay.js';
 import { RedactionService } from '../tools/redaction.service.js';
 import {
   DefaultWsV1ChannelAuthorizer,
@@ -19,6 +20,7 @@ import { WsV1ToolControlService } from './ws-v1-tool-control.service.js';
     WsV1Service,
     WsV1ToolControlService,
     WsV1Gateway,
+    ChatTaskOutboxRelay,
     {
       provide: WsV1ChannelAuthorizer,
       useClass: DefaultWsV1ChannelAuthorizer,

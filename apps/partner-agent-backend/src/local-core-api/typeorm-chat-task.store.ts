@@ -20,10 +20,13 @@ import {
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import { TypeOrmChatTaskRuntime } from './typeorm-chat-task-runtime.js';
 import { toStoredChatTask } from './typeorm-chat-task-mapper.js';
-
+import {
+  ChatTaskLifecycleOutboxWriter,
+  TypeOrmChatTaskLifecycleOutbox,
+} from './chat-task-lifecycle-outbox.js';
 export class TypeOrmChatTaskStore extends ChatTaskStore {
   private readonly runtime: TypeOrmChatTaskRuntime;
-
+  override readonly lifecycleOutbox: TypeOrmChatTaskLifecycleOutbox;
   constructor(
     private readonly dataSource: DataSource,
     private readonly maxSessionsPerUser = 100,
@@ -32,8 +35,8 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
     this.runtime = new TypeOrmChatTaskRuntime(dataSource, (manager, task) =>
       this.loadStored(manager, task),
     );
+    this.lifecycleOutbox = new TypeOrmChatTaskLifecycleOutbox(dataSource);
   }
-
   async rejectInputAnalysis(command: RejectInputAnalysisCommand) {
     return this.dataSource.transaction(async (manager) => {
       await this.lock(manager, command.ownerId, command.operationId);
@@ -74,7 +77,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       return result;
     });
   }
-
   async submitText(command: SubmitTextCommand) {
     return this.dataSource.transaction(async (manager) => {
       await this.lock(
@@ -97,7 +99,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
             'SubmitTextInput',
           ),
         };
-
       const existingRecord = await manager
         .getRepository(OriginalRecordEntity)
         .findOne({
@@ -120,7 +121,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         await this.saveOperation(manager, command, result);
         return { result };
       }
-
       await manager
         .getRepository(UserEntity)
         .upsert(
@@ -214,6 +214,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       const result = this.commandResult(command.operationId, task, 'accepted');
       await this.saveOperation(manager, command, result);
       await manager.getRepository(ChatTaskEntity).insert(task);
+      await ChatTaskLifecycleOutboxWriter.append(manager, task);
       await manager
         .getRepository(ChatSessionEntity)
         .update(
@@ -223,7 +224,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       return { result, task: toStoredChatTask(task, command.text) };
     });
   }
-
   async cancelTask(ownerId: string, envelope: CommandEnvelopeBody) {
     return this.dataSource.transaction(async (manager) => {
       const operationId = String(envelope.operation_id);
@@ -248,6 +248,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         task.completedAt = new Date();
         task.updatedAt = task.completedAt;
         await manager.getRepository(ChatTaskEntity).save(task);
+        await ChatTaskLifecycleOutboxWriter.append(manager, task);
       }
       const result = {
         operation_id: operationId,
@@ -267,7 +268,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       return { result, task: await this.loadStored(manager, task) };
     });
   }
-
   async getTask(ownerId: string, taskId: string) {
     const task = await this.dataSource
       .getRepository(ChatTaskEntity)
@@ -313,6 +313,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
   async claimNextRunnable(leaseOwner: string, leaseDurationMs: number) {
     return this.runtime.claimNextRunnable(leaseOwner, leaseDurationMs);
   }
+  async countRunnable(limit?: number) { return this.runtime.countRunnable(limit); }
   async renewLease(
     taskId: string,
     ownerId: string,
@@ -347,8 +348,13 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       leaseDurationMs,
     );
   }
-  async markWaiting(taskId: string, ownerId: string, leaseOwner?: string) {
-    return this.runtime.markWaiting(taskId, ownerId, leaseOwner);
+  async markWaiting(
+    taskId: string,
+    ownerId: string,
+    leaseOwner?: string,
+    lifecycleData?: Record<string, unknown>,
+  ) {
+    return this.runtime.markWaiting(taskId, ownerId, leaseOwner, lifecycleData);
   }
   async markWaitingToolApproval(
     taskId: string,
@@ -356,12 +362,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
     confirmationId: string,
     leaseOwner?: string,
   ) {
-    return this.runtime.markWaitingToolApproval(
-      taskId,
-      ownerId,
-      confirmationId,
-      leaseOwner,
-    );
+    return this.runtime.markWaitingToolApproval(taskId, ownerId, confirmationId, leaseOwner);
   }
   async failWaitingToolApproval(
     taskId: string,
@@ -409,7 +410,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         created_at: m.createdAt.toISOString(),
       }));
   }
-
   private async loadStored(
     manager: EntityManager,
     task: ChatTaskEntity,

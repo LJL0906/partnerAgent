@@ -39,6 +39,7 @@ export interface ClassifiedModelProviderFailure {
 }
 
 export interface ModelGatewayObservationMetadata {
+  runId: string;
   requestId: string;
   ownerId: string;
   sessionId: string;

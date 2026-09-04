@@ -1,4 +1,4 @@
-const { WS_CONTROL_EVENTS, WS_EVENTS } = require("../dist");
+const { WS_CONTROL_EVENTS, WS_EVENTS, WS_SERVER_EVENTS } = require("../dist");
 
 describe("WS_EVENTS", () => {
   it("exposes the shared WebSocket event names", () => {
@@ -11,6 +11,12 @@ describe("WS_EVENTS", () => {
       UNDO_TOOL_EXECUTION: "undo_tool_execution",
       AGENT_EVENT: "agent_event",
     });
+  });
+});
+
+describe("WS_SERVER_EVENTS", () => {
+  it("exposes the formal v1 server push event independently", () => {
+    expect(WS_SERVER_EVENTS).toEqual({ AGENT_EVENT: "agent_event" });
   });
 });
 

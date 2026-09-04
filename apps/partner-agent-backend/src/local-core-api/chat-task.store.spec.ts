@@ -71,6 +71,9 @@ describe('ChatTaskStore', () => {
       role: 'user',
       content: base.text,
     });
+    await expect(store.countRunnable()).resolves.toBe(1);
+    await store.claimNextRunnable('worker-a', 30_000);
+    await expect(store.countRunnable()).resolves.toBe(0);
   });
 
   it('replays command and input idempotently without duplicate messages', async () => {

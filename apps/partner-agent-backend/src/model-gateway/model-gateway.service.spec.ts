@@ -93,6 +93,7 @@ describe('ModelGatewayService', () => {
       streamSimple,
     };
     const stream = service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000001',
       ownerId: 'owner',
       sessionId: 'session',
       taskId: 'task',
@@ -140,6 +141,7 @@ describe('ModelGatewayService', () => {
     ).models = { streamSimple };
 
     const stream = await service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000002',
       ownerId: 'owner',
       sessionId: 'session',
       taskId: 'task',
@@ -179,6 +181,7 @@ describe('ModelGatewayService', () => {
       expect.objectContaining({ messages: expect.anything() }),
     );
     expect(observations.at(-1)).toMatchObject({
+      runId: '00000000-0000-4000-8000-000000000002',
       inputTokens: 3,
       outputTokens: 5,
       totalTokens: 8,
@@ -210,6 +213,7 @@ describe('ModelGatewayService', () => {
 
     await expect(
       service.createStreamFunction({
+        runId: '00000000-0000-4000-8000-000000000003',
         ownerId: 'owner',
         sessionId: 'session',
         source: 'test',
@@ -254,6 +258,7 @@ describe('ModelGatewayService', () => {
       service as unknown as { models: { streamSimple: typeof streamSimple } }
     ).models = { streamSimple };
     const stream = await service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000004',
       ownerId: 'owner',
       sessionId: 'session',
       source: 'test',

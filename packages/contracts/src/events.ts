@@ -19,6 +19,11 @@ export const WS_EVENTS = {
   AGENT_EVENT: "agent_event",
 } as const;
 
+/** 正式 v1 服务端推送事件名，与旧请求事件集合解耦。 */
+export const WS_SERVER_EVENTS = {
+  AGENT_EVENT: "agent_event",
+} as const;
+
 /** v1 WebSocket 只承载订阅控制与服务端推送，业务 Command 走 REST。 */
 export const WS_CONTROL_EVENTS = {
   SUBSCRIBE: "subscribe",

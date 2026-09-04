@@ -81,6 +81,13 @@ export class ChatTaskRunner {
               task.taskId,
               task.ownerId,
               leaseOwner,
+              {
+                egress_id: decision.id,
+                categories: [...decision.categories],
+                provider: decision.provider,
+                model_id: decision.modelId,
+                expires_at: decision.expiresAt.toISOString(),
+              },
             ))
           ) {
             return;
@@ -188,6 +195,7 @@ export class ChatTaskRunner {
       | 'cancelled',
     data?: unknown,
   ) {
+    if (this.store.lifecycleOutbox) return;
     this.events.publish({
       ...this.base(task),
       state,

@@ -3,10 +3,11 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import {
   SENSITIVE_CATEGORIES,
-  WS_EVENTS,
+  WS_SERVER_EVENTS,
   type PrivacyDecisionStatus,
   type ServerPushEventTypeV1,
   type ServerPushEventV1,
@@ -20,6 +21,12 @@ import {
   ChatTaskEventBus,
   type ChatTaskEvent,
 } from '../local-core-api/chat-task-event.bus.js';
+import { ChatTaskOutboxRelay } from '../local-core-api/chat-task-outbox.relay.js';
+import {
+  NoopObservabilitySink,
+  ObservabilitySink,
+  safelyRecord,
+} from '../observability/observability.types.js';
 import { RedactionService } from '../tools/redaction.service.js';
 import { WsV1ChannelAuthorizer } from './ws-v1-channel-authorizer.js';
 import {
@@ -37,6 +44,7 @@ interface PendingSubscription {
   streamKey: string;
   buffered: Map<string, WsV1StoredEvent>;
   returnedEventIds: Set<string>;
+  replayPosition: number;
 }
 
 @Injectable()
@@ -59,20 +67,31 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     private readonly eventStore: WsV1EventStore,
     private readonly redaction: RedactionService,
     private readonly taskEvents: ChatTaskEventBus,
+    @Optional() private readonly outboxRelay?: ChatTaskOutboxRelay,
+    @Optional()
+    private readonly observability: ObservabilitySink = new NoopObservabilitySink(),
   ) {}
 
   async onModuleInit(): Promise<void> {
-    await this.eventStore.start((record) => this.deliver(record));
+    this.eventStore.setObservability(this.observability);
+    await this.eventStore.start(
+      (record) => this.deliver(record),
+      () => this.activeStreams(),
+    );
     this.unsubscribeTaskEvents = this.taskEvents.subscribe((event) => {
-      this.taskPublishQueue = this.taskPublishQueue
-        .then(() => this.publishTaskEvent(event))
-        .catch(() => {
+      const publishing = this.taskPublishQueue.then(() =>
+        this.publishTaskEvent(event),
+      );
+      this.taskPublishQueue = publishing.catch(() => {
           this.logger.warn('WS v1 task event persistence failed');
-        });
+      });
+      return event.eventKey ? publishing : this.taskPublishQueue;
     });
+    this.outboxRelay?.start();
   }
 
   async onModuleDestroy(): Promise<void> {
+    await this.outboxRelay?.stop();
     this.unsubscribeTaskEvents?.();
     await this.taskPublishQueue.catch(() => undefined);
     await this.eventStore.stop();
@@ -127,6 +146,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         streamKey: this.streamKey(rawChannel, userId),
         buffered: new Map(),
         returnedEventIds: new Set(),
+        replayPosition: 0,
       };
       pending.set(rawChannel, pendingChannel);
       accepted.push(rawChannel);
@@ -135,6 +155,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         request.after?.[rawChannel],
         pendingChannel.streamKey,
       );
+      pendingChannel.replayPosition = replayResult.latestPosition;
       if (replayResult.replayable) {
         const channelReplay = this.mergeReplay(
           replayResult.events,
@@ -144,6 +165,10 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
           pendingChannel.returnedEventIds.add(event.event_id);
         }
         replay.push(...channelReplay);
+        safelyRecord(this.observability, {
+          kind: 'ws_replay',
+          count: channelReplay.length,
+        });
       } else {
         replay.push(
           await this.eventStore.createRecoveryRequired(
@@ -151,6 +176,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
             pendingChannel.streamKey,
           ),
         );
+        safelyRecord(this.observability, { kind: 'ws_recovery_required' });
       }
     }
 
@@ -176,9 +202,19 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         (left, right) => left.event.sequence - right.event.sequence,
       )) {
         if (!pendingChannel.returnedEventIds.has(record.event.event_id)) {
-          socket.emit(WS_EVENTS.AGENT_EVENT, record.event);
+          socket.emit(WS_SERVER_EVENTS.AGENT_EVENT, record.event);
         }
       }
+      const bufferedPosition = Math.max(
+        0,
+        ...[...pendingChannel.buffered.values()].map(
+          (record) => record.event.sequence,
+        ),
+      );
+      this.eventStore.acknowledgeDelivery(
+        pendingChannel.streamKey,
+        Math.max(pendingChannel.replayPosition, bufferedPosition),
+      );
     }
   }
 
@@ -215,11 +251,12 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
       { ...input, data: this.sanitizePushData(input.data) },
       this.streamKey(input.channel, input.recipient_user_id),
     );
-    this.deliver(record);
+    await this.eventStore.dispatchStored(record);
     return record.event;
   }
 
-  private deliver(record: WsV1StoredEvent): void {
+  private deliver(record: WsV1StoredEvent): boolean {
+    let delivered = false;
     for (const [socketId, channels] of this.subscriptions) {
       const socket = this.sockets.get(socketId);
       if (!socket) continue;
@@ -231,7 +268,8 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         channels.has(record.event.channel) &&
         record.streamKey === expectedStreamKey
       ) {
-        socket.emit(WS_EVENTS.AGENT_EVENT, record.event);
+        socket.emit(WS_SERVER_EVENTS.AGENT_EVENT, record.event);
+        delivered = true;
         continue;
       }
       const pending = this.pendingSubscriptions
@@ -241,6 +279,19 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         pending.buffered.set(record.event.event_id, record);
       }
     }
+    return delivered;
+  }
+
+  private activeStreams() {
+    const streams = new Map<string, SubscriptionChannel>();
+    for (const [socketId, channels] of this.subscriptions) {
+      const socket = this.sockets.get(socketId);
+      if (!socket) continue;
+      for (const channel of channels) {
+        streams.set(this.streamKey(channel, socket.data.userId), channel);
+      }
+    }
+    return [...streams].map(([streamKey, channel]) => ({ streamKey, channel }));
   }
 
   private mergeReplay(
@@ -298,7 +349,13 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
       `operation:${event.operationId}`,
       `session:${event.sessionId}`,
     ] as const) {
-      await this.publish({ channel, ...common });
+      await this.publish({
+        channel,
+        ...common,
+        ...(event.eventKey
+          ? { idempotency_key: `${event.eventKey}:${channel}` }
+          : {}),
+      });
     }
   }
 

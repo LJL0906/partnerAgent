@@ -5,6 +5,7 @@ import type {
   ServerPushEventV1,
   SubscriptionChannel,
 } from '@partner-agent/contracts';
+import type { ObservabilitySink } from '../observability/observability.types.js';
 
 export interface WsV1PublishInput {
   channel: SubscriptionChannel;
@@ -15,11 +16,13 @@ export interface WsV1PublishInput {
   task_id?: string;
   /** Internal routing key for user:self; never copied into the wire event. */
   recipient_user_id?: string;
+  /** Internal stable relay key; never copied into the wire event. */
+  idempotency_key?: string;
 }
 
 export type WsV1ReplayResult =
-  | { replayable: true; events: ServerPushEventV1[] }
-  | { replayable: false; events: [] };
+  | { replayable: true; events: ServerPushEventV1[]; latestPosition: number }
+  | { replayable: false; events: []; latestPosition: number };
 
 export interface WsV1StoredEvent {
   streamKey: string;
@@ -28,13 +31,24 @@ export interface WsV1StoredEvent {
 
 export type WsV1StoredEventListener = (
   record: WsV1StoredEvent,
-) => void | Promise<void>;
+) => boolean | Promise<boolean>;
+
+export interface WsV1ActiveStream {
+  streamKey: string;
+  channel: SubscriptionChannel;
+}
+
+export type WsV1ActiveStreamProvider = () => WsV1ActiveStream[];
 
 const DEFAULT_CHANNEL_RETENTION = 100;
 
 @Injectable()
 export abstract class WsV1EventStore {
-  abstract start(listener: WsV1StoredEventListener): Promise<void>;
+  setObservability(_sink: ObservabilitySink): void {}
+  abstract start(
+    listener: WsV1StoredEventListener,
+    activeStreams?: WsV1ActiveStreamProvider,
+  ): Promise<void>;
   abstract stop(): Promise<void>;
   abstract append(
     input: WsV1PublishInput,
@@ -49,6 +63,8 @@ export abstract class WsV1EventStore {
     channel: SubscriptionChannel,
     streamKey?: string,
   ): Promise<ServerPushEventV1>;
+  abstract dispatchStored(record: WsV1StoredEvent): Promise<void>;
+  abstract acknowledgeDelivery(streamKey: string, position: number): void;
 }
 
 @Injectable()
@@ -56,7 +72,16 @@ export class MemoryWsV1EventStore extends WsV1EventStore {
   private readonly records = new Map<string, ServerPushEventV1[]>();
   private readonly nextSequence = new Map<string, number>();
 
-  async start(_listener: WsV1StoredEventListener): Promise<void> {}
+  private listener?: WsV1StoredEventListener;
+  private readonly deliveredPositions = new Map<string, number>();
+
+  constructor(private readonly retentionCount = DEFAULT_CHANNEL_RETENTION) {
+    super();
+  }
+
+  async start(listener: WsV1StoredEventListener): Promise<void> {
+    this.listener = listener;
+  }
 
   async stop(): Promise<void> {}
 
@@ -81,10 +106,10 @@ export class MemoryWsV1EventStore extends WsV1EventStore {
 
     const channelRecords = this.records.get(streamKey) ?? [];
     channelRecords.push(event);
-    if (channelRecords.length > DEFAULT_CHANNEL_RETENTION) {
+    if (channelRecords.length > this.retentionCount) {
       channelRecords.splice(
         0,
-        channelRecords.length - DEFAULT_CHANNEL_RETENTION,
+        channelRecords.length - this.retentionCount,
       );
     }
     this.records.set(streamKey, channelRecords);
@@ -96,15 +121,19 @@ export class MemoryWsV1EventStore extends WsV1EventStore {
     after?: string,
     streamKey: string = channel,
   ): Promise<WsV1ReplayResult> {
-    if (after === undefined) return { replayable: true, events: [] };
+    const latestPosition = this.nextSequence.get(streamKey) ?? 0;
+    if (after === undefined)
+      return { replayable: true, events: [], latestPosition };
     const channelRecords = this.records.get(streamKey) ?? [];
     const position = channelRecords.findIndex(
       (event) => event.event_id === after,
     );
-    if (position < 0) return { replayable: false, events: [] };
+    if (position < 0)
+      return { replayable: false, events: [], latestPosition };
     return {
       replayable: true,
       events: channelRecords.slice(position + 1),
+      latestPosition,
     };
   }
 
@@ -121,5 +150,18 @@ export class MemoryWsV1EventStore extends WsV1EventStore {
       timestamp: Date.now(),
       data: { reason: 'event_expired' },
     };
+  }
+
+  async dispatchStored(record: WsV1StoredEvent): Promise<void> {
+    if (record.event.sequence <= (this.deliveredPositions.get(record.streamKey) ?? 0))
+      return;
+    if (await this.listener?.(record)) {
+      this.acknowledgeDelivery(record.streamKey, record.event.sequence);
+    }
+  }
+
+  acknowledgeDelivery(streamKey: string, position: number): void {
+    const current = this.deliveredPositions.get(streamKey) ?? 0;
+    if (position > current) this.deliveredPositions.set(streamKey, position);
   }
 }

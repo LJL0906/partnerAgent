@@ -68,6 +68,9 @@ export function validateRuntimeConfig(
     false,
     invalid,
   );
+  if (production && output.ENABLE_LEGACY_AGENT_WS === 'true') {
+    invalid.add('ENABLE_LEGACY_AGENT_WS');
+  }
   integer('MAX_SESSIONS_PER_USER', 100, 1, 100_000);
 
   const sessionStore = enumValue(
@@ -81,6 +84,25 @@ export function validateRuntimeConfig(
   if (production && sessionStore !== 'postgres') invalid.add('SESSION_STORE');
   validateDatabaseUrl(environment.DATABASE_URL, sessionStore, invalid);
   integer('DATABASE_POOL_SIZE', 10, 1, 100);
+
+  integer('WS_EVENT_RETENTION_COUNT', 100, 10, 10_000);
+  const wsRetentionAgeMs = integer(
+    'WS_EVENT_RETENTION_AGE_MS',
+    86_400_000,
+    60_000,
+    2_592_000_000,
+  );
+  integer('WS_EVENT_RETENTION_BATCH_SIZE', 500, 1, 5_000);
+  const wsRetentionIntervalMs = integer(
+    'WS_EVENT_RETENTION_INTERVAL_MS',
+    60_000,
+    1_000,
+    86_400_000,
+  );
+  if (wsRetentionIntervalMs > wsRetentionAgeMs) {
+    invalid.add('WS_EVENT_RETENTION_AGE_MS');
+    invalid.add('WS_EVENT_RETENTION_INTERVAL_MS');
+  }
 
   const chatTaskLeaseMs = integer(
     'CHAT_TASK_LEASE_MS',

@@ -1,5 +1,6 @@
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import type { ChatTaskState } from '../database/entities/chat-task.entity.js';
+import type { TypeOrmChatTaskLifecycleOutbox } from './chat-task-lifecycle-outbox.js';
 
 export interface SubmitTextCommand {
   ownerId: string;
@@ -71,6 +72,7 @@ export interface SessionMessageView {
 export class ChatTaskConflictError extends Error {}
 
 export abstract class ChatTaskStore {
+  readonly lifecycleOutbox?: TypeOrmChatTaskLifecycleOutbox;
   abstract rejectInputAnalysis(
     command: RejectInputAnalysisCommand,
   ): Promise<Record<string, unknown>>;
@@ -100,6 +102,7 @@ export abstract class ChatTaskStore {
   ): Promise<StoredChatTask | undefined>;
   abstract markRunning(taskId: string, ownerId: string): Promise<boolean>;
   abstract recoverExpiredLeases(now?: Date): Promise<number>;
+  abstract countRunnable(limit?: number): Promise<number>;
   abstract claimNextRunnable(
     leaseOwner: string,
     leaseDurationMs: number,
@@ -126,6 +129,7 @@ export abstract class ChatTaskStore {
     taskId: string,
     ownerId: string,
     leaseOwner?: string,
+    lifecycleData?: Record<string, unknown>,
   ): Promise<boolean>;
   abstract markWaitingToolApproval(
     taskId: string,

@@ -76,14 +76,18 @@ git -C pi pull
 - 已接入无副作用的 `get_current_time` 工具；
 - `/api/v1` 已登记 36 个 Command 和 37 个 Query，健康检查、会话/任务查询、`SubmitTextInput`、`CancelTask`、`SubmitPrivacyDecision` 和 `SubmitConfirmationBatch` 已接通，其余 handler 显式返回 501；
 - Local Core Entity/Migration 已加固，复用并扩展现有会话/消息表，候选 24 小时期限和高风险单候选由数据库约束；
-- `/ws/v1` 已基于 PostgreSQL 权威数据授权 session/task/operation 频道，并支持顺序推送、已有水位的断线重放和 REST 恢复提示；LISTEN 断线窗口仍需客户端重连重放，旧 Agent WS 默认关闭、仅可显式启用兼容；
+- `/ws/v1` 已基于 PostgreSQL 权威数据授权 session/task/operation 频道，并支持顺序推送、已有水位的断线重放、LISTEN 重连主动 catch-up 和保留窗缺口的 REST 恢复提示；旧 Agent WS 已移出默认模块图，只允许开发环境显式启用兼容；
+- ChatTask 全生命周期状态与 outbox 行在同一事务提交，relay 以稳定幂等键、lease/fence 和有限重试投递三类 WS stream；工具确认/拒绝/撤销仍保留状态事务后单独 publish 的已知双写边界；
+- WS 事件按可配置 count/age 上限后台分批清理，stream position 永不因清理归零；
+- 已提供低基数 Prometheus registry/exporter 与 owner-scoped Agent Run/Turn/Tool 元数据 trace，不保存模型正文、工具参数/结果或原始异常；
+- `indeterminate` 外部工具操作可通过本机 CLI 执行固定结论的原子核对和脱敏审计，不重放工具、不恢复失败任务；
 - Expo / React Native 前端只使用正式 v1 REST/WS 协议，支持订阅 ACK、事件去重、水位和 REST 恢复；
 - Model Gateway 已建立递归结构扫描、递归脱敏与复扫、脱敏/等待/阻断策略、单次决定持久化及重启恢复闭环；无明文 PostgreSQL 审计已成为 Provider 调用前的可等待门槛，审计失败时以 `EGRESS_001` 阻止外发；
 - `SubmitTextInput` 已显式校验 `request_analysis` / `analysis_types`；分析能力上线前，合法显式分析请求同步返回可幂等重放的 `NOT_IMPLEMENTED_001`，不创建消息、原始记录或 ChatTask；
 - P1-01 已将 `action` 纳入权威 `ANALYSIS_TYPES`，冻结 Action DTO、`AnalysisTaskRef` 与 WS `candidate` 安全资源引用；`local-core.ts` 已拆分为 463 行，并新增 `local-core-analysis.ts`、`local-core-model.ts`、`local-core-queries.ts`；
 - 已新增 `analysis_runs`、`structured_analyses` 实体与第 8 条 migration，具备 owner、OriginalRecord、ChatTask 复合所有权约束、状态约束和必要索引；
 - `SubmitConfirmationBatch` 已按逐项决策、批次/候选/目标版本接通 PostgreSQL 原子事务；正式事实、目标、行动和长期记忆的其余 handler 仍需逐项接通，且只能经该事务生效；
-- PostgreSQL 16 专用空库已完成现有 10 条 migration 全量 up → down → up；真实库聊天、重启恢复、任务 worker、外发、隐私和分析专项 7 个文件、17/17 通过。
+- PostgreSQL 16 专用空库已完成现有 14 条 migration 全量 up → down → up；后端全量 e2e 14 个文件、129/129 通过，其中真实 PostgreSQL 专项 7 个文件、17/17 通过。
 
 ## 后续启动顺序
 
@@ -91,8 +95,8 @@ git -C pi pull
 
 恢复开发后，建议按以下顺序推进：
 
-1. 技术侧补齐 WS 监听断线后的服务端主动 catch-up，并评审 task 状态与 event 的 transactional outbox；
-2. 实际构建容器镜像，执行受控真实 Provider 冒烟和多实例/故障注入压测；
+1. 实际构建容器镜像，执行受控真实 Provider 冒烟和多实例/故障注入压测；
+2. 为工具确认/拒绝/撤销补齐独立 transactional outbox，并为毒 outbox 事件提供受保护的运维处置入口；
 3. 用户恢复业务开发后再执行 P1-02「Action 候选生产链」，打通首个 Action 业务纵切；
 4. 业务闭环稳定后再扩展 Goal/Memory、上下文摘要和 Python AI/RAG。
 

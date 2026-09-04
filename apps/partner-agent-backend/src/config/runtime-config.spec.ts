@@ -18,6 +18,10 @@ describe('validateRuntimeConfig', () => {
       PORT: '3000',
       SESSION_STORE: 'memory',
       DATABASE_POOL_SIZE: '10',
+      WS_EVENT_RETENTION_COUNT: '100',
+      WS_EVENT_RETENTION_AGE_MS: '86400000',
+      WS_EVENT_RETENTION_BATCH_SIZE: '500',
+      WS_EVENT_RETENTION_INTERVAL_MS: '60000',
       CHAT_TASK_LEASE_MS: '30000',
       CHAT_TASK_POLL_MS: '1000',
       DEFAULT_PROVIDER: 'deepseek',
@@ -61,6 +65,9 @@ describe('validateRuntimeConfig', () => {
     [{ AGENT_RUN_MAX_MODEL_TURNS: '65' }, 'AGENT_RUN_MAX_MODEL_TURNS'],
     [{ EXTERNAL_TOOL_APPROVAL_TTL_MS: '-1' }, 'EXTERNAL_TOOL_APPROVAL_TTL_MS'],
     [{ PRIVACY_DECISION_TTL_MS: 'not-a-number' }, 'PRIVACY_DECISION_TTL_MS'],
+    [{ WS_EVENT_RETENTION_COUNT: '9' }, 'WS_EVENT_RETENTION_COUNT'],
+    [{ WS_EVENT_RETENTION_AGE_MS: '2592000001' }, 'WS_EVENT_RETENTION_AGE_MS'],
+    [{ WS_EVENT_RETENTION_BATCH_SIZE: '5001' }, 'WS_EVENT_RETENTION_BATCH_SIZE'],
   ])('rejects invalid numeric config %j', (override, key) => {
     expect(() =>
       validateRuntimeConfig({
@@ -82,10 +89,27 @@ describe('validateRuntimeConfig', () => {
         PRIVACY_DECISION_SCAN_INTERVAL_MS: '1001',
         AGENT_RUN_MAX_OUTPUT_TOKENS: '100',
         AGENT_RUN_MAX_REQUEST_TOKENS: '101',
+        WS_EVENT_RETENTION_AGE_MS: '60000',
+        WS_EVENT_RETENTION_INTERVAL_MS: '60001',
       }),
     ).toThrow(
-      'AGENT_RUN_MAX_OUTPUT_TOKENS,AGENT_RUN_MAX_REQUEST_TOKENS,CHAT_TASK_LEASE_MS,CHAT_TASK_POLL_MS,PRIVACY_DECISION_SCAN_INTERVAL_MS,PRIVACY_DECISION_TTL_MS',
+      'AGENT_RUN_MAX_OUTPUT_TOKENS,AGENT_RUN_MAX_REQUEST_TOKENS,CHAT_TASK_LEASE_MS,CHAT_TASK_POLL_MS,PRIVACY_DECISION_SCAN_INTERVAL_MS,PRIVACY_DECISION_TTL_MS,WS_EVENT_RETENTION_AGE_MS,WS_EVENT_RETENTION_INTERVAL_MS',
     );
+  });
+
+  it('rejects the legacy Agent WS in production', () => {
+    expect(() =>
+      validateRuntimeConfig({
+        NODE_ENV: 'production',
+        AUTH_JWT_SECRET: secret,
+        SESSION_STORE: 'postgres',
+        DATABASE_URL: 'postgresql://app:secret@db.internal:5432/app',
+        CORS_ALLOWED_ORIGINS: 'https://app.example.com',
+        DEFAULT_PROVIDER: 'deepseek',
+        DEEPSEEK_API_KEY: 'provider-secret',
+        ENABLE_LEGACY_AGENT_WS: 'true',
+      }),
+    ).toThrow('ENABLE_LEGACY_AGENT_WS');
   });
 
   it.each([

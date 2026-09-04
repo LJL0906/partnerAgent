@@ -1,6 +1,7 @@
 import { Column, Entity, Index, PrimaryColumn, Unique } from 'typeorm';
 import type { ToolRiskLevel } from '@partner-agent/contracts';
 import type { ConfirmationStatus } from '../../tools/tool-operation.store.js';
+import type { ToolReconciliationSnapshot } from '../../tools/tool-operation.store.js';
 
 @Entity({ name: 'tool_confirmation_requests' })
 @Unique('tool_confirmation_requests_owner_id_id_key', ['ownerId', 'id'])
@@ -38,6 +39,14 @@ export class ToolConfirmationEntity {
   resultSummary: string | null;
   @Column({ name: 'result_json', type: 'jsonb', nullable: true })
   resultJson: object | null;
+  @Column({
+    name: 'reconciliation_snapshot_json',
+    type: 'jsonb',
+    nullable: true,
+  })
+  reconciliationSnapshotJson: ToolReconciliationSnapshot | null;
+  @Column({ type: 'integer', default: 1 })
+  version: number;
   @Column({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
   @Column({ name: 'expires_at', type: 'timestamptz' })

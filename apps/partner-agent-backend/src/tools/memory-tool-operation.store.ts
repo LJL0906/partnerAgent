@@ -1,17 +1,33 @@
+import { randomUUID } from 'node:crypto';
 import {
   ToolOperationStore,
+  ToolReconciliationError,
+  assertToolReconciliationInput,
   type ExpiredToolConfirmationRecord,
   type ReconciledToolConfirmationRecord,
   type RecoverableToolConfirmationRecord,
   type ToolAuditRecord,
   type ToolConfirmationRecord,
   type ToolExecutionReceipt,
+  type PendingToolReconciliation,
+  type ReconcileIndeterminateToolInput,
+  type ToolReconciliationAuditRecord,
+  type ToolReconciliationResult,
 } from './tool-operation.store.js';
+import {
+  createToolReconciliationSnapshot,
+  pendingToolReconciliationFrom,
+  requireToolReconciliationSnapshot,
+} from './tool-reconciliation-snapshot.js';
 
 export class MemoryToolOperationStore extends ToolOperationStore {
   private readonly confirmations = new Map<string, ToolConfirmationRecord>();
   private readonly audits: ToolAuditRecord[] = [];
   private readonly receipts = new Map<string, ToolExecutionReceipt>();
+  private readonly reconciliationAudits = new Map<
+    string,
+    ToolReconciliationAuditRecord
+  >();
   private readonly listedRecoveries = new Set<string>();
   private readonly listedReconciliations = new Set<string>();
 
@@ -101,11 +117,99 @@ export class MemoryToolOperationStore extends ToolOperationStore {
         (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
       )
       .slice(0, this.safeLimit(limit));
+    const transitions = records
+      .filter((record) => record.status === 'executing')
+      .map((record) => ({
+        record,
+        snapshot: createToolReconciliationSnapshot(record, now),
+        audit: {
+          id: randomUUID(),
+          ownerId: record.ownerId,
+          sessionId: record.sessionId,
+          toolCallId: record.toolCallId,
+          toolName: record.toolName,
+          riskLevel: record.riskLevel,
+          action: 'indeterminate',
+          confirmationId: record.id,
+          requestSummary: record.requestSummary,
+          resultSummary: record.resultSummary,
+          createdAt: now,
+        } satisfies ToolAuditRecord,
+      }));
+    for (const { record, snapshot, audit } of transitions) {
+      this.audits.push(audit);
+      record.status = 'indeterminate';
+      record.reconciliationSnapshot = snapshot;
+    }
     return records.map((record) => {
-      if (record.status === 'executing') record.status = 'indeterminate';
       this.listedReconciliations.add(record.id);
       return structuredClone(record) as ReconciledToolConfirmationRecord;
     });
+  }
+
+  async listIndeterminateConfirmations(
+    ownerId: string,
+    limit: number,
+  ): Promise<PendingToolReconciliation[]> {
+    return [...this.confirmations.values()]
+      .filter(
+        (record) =>
+          record.ownerId === ownerId &&
+          record.status === 'indeterminate' &&
+          !this.reconciliationAudits.has(record.id),
+      )
+      .sort(
+        (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+      )
+      .slice(0, this.safeLimit(limit))
+      .map((record) => pendingToolReconciliationFrom(record));
+  }
+
+  async reconcileIndeterminateConfirmation(
+    input: ReconcileIndeterminateToolInput,
+  ): Promise<ToolReconciliationResult> {
+    assertToolReconciliationInput(input);
+    const record = this.confirmations.get(input.confirmationId);
+    if (!record || record.ownerId !== input.ownerId) {
+      throw new ToolReconciliationError('核对记录不存在');
+    }
+    const existing = this.reconciliationAudits.get(record.id);
+    if (existing) {
+      if (
+        existing.expectedVersion === input.expectedVersion &&
+        existing.expectedStatus === input.expectedStatus &&
+        existing.outcome === input.outcome &&
+        existing.operatorLabel === input.operatorLabel.trim() &&
+        existing.confirmationPhrase === input.confirmationPhrase
+      ) {
+        return { audit: structuredClone(existing), replayed: true };
+      }
+      throw new ToolReconciliationError('核对记录已由其他结论处理');
+    }
+    if (record.status !== input.expectedStatus) {
+      throw new ToolReconciliationError('核对记录状态已变化');
+    }
+    const currentVersion = record.version ?? 1;
+    if (currentVersion !== input.expectedVersion) {
+      throw new ToolReconciliationError('核对记录版本已变化');
+    }
+    const snapshot = requireToolReconciliationSnapshot(record);
+    const audit: ToolReconciliationAuditRecord = {
+      id: randomUUID(),
+      confirmationId: record.id,
+      ownerId: record.ownerId,
+      expectedVersion: input.expectedVersion,
+      confirmationVersionAfter: input.expectedVersion + 1,
+      expectedStatus: input.expectedStatus,
+      outcome: input.outcome,
+      operatorLabel: input.operatorLabel.trim(),
+      confirmationPhrase: input.confirmationPhrase,
+      snapshot,
+      createdAt: new Date(),
+    };
+    this.reconciliationAudits.set(record.id, structuredClone(audit));
+    record.version = audit.confirmationVersionAfter;
+    return { audit: structuredClone(audit), replayed: false };
   }
 
   async saveAudit(record: ToolAuditRecord): Promise<void> {

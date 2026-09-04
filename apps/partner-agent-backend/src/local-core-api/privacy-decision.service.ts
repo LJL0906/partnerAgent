@@ -180,6 +180,7 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
   }
 
   private publishTerminal(task: StoredChatTask): void {
+    if (this.tasks.lifecycleOutbox) return;
     this.events.publish({
       ownerId: task.ownerId,
       taskId: task.taskId,

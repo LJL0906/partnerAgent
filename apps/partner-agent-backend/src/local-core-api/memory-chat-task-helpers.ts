@@ -71,6 +71,22 @@ export function hasBlockingChatTask(
   );
 }
 
+export function countRunnableChatTasks(
+  tasks: ReadonlyMap<string, StoredChatTask>,
+  limit: number,
+): number {
+  let count = 0;
+  for (const task of tasks.values()) {
+    if (
+      task.state === 'queued' &&
+      !hasBlockingChatTask(tasks.values(), task.sessionId) &&
+      ++count >= limit
+    )
+      break;
+  }
+  return count;
+}
+
 export function toolConfirmationIdFromLeaseOwner(leaseOwner?: string) {
   if (!leaseOwner?.startsWith('tool-decision:')) return undefined;
   return leaseOwner.slice(leaseOwner.lastIndexOf(':') + 1);

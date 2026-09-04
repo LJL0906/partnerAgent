@@ -23,7 +23,11 @@ describe('MemoryWsV1EventStore', () => {
         first.event.event_id,
         'user:self:owner-a',
       ),
-    ).resolves.toEqual({ replayable: true, events: [second.event] });
+    ).resolves.toEqual({
+      replayable: true,
+      events: [second.event],
+      latestPosition: 2,
+    });
     expect(first.event.sequence).toBe(1);
     expect(second.event.sequence).toBe(2);
     expect(other.event.sequence).toBe(1);
@@ -46,7 +50,7 @@ describe('MemoryWsV1EventStore', () => {
 
     await expect(
       store.replayAfter('session:s1', expired.event.event_id),
-    ).resolves.toEqual({ replayable: false, events: [] });
+    ).resolves.toEqual({ replayable: false, events: [], latestPosition: 101 });
     await expect(
       store.createRecoveryRequired('session:s1'),
     ).resolves.toMatchObject({

@@ -12,6 +12,7 @@ import {
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import {
   copyStoredChatTask,
+  countRunnableChatTasks,
   failWaitingPrivacyTask,
   hasBlockingChatTask,
   hasRunningChatTask,
@@ -280,6 +281,9 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     task.updatedAt = now;
     return copyStoredChatTask(task);
   }
+  async countRunnable(limit = 10_000) {
+    return countRunnableChatTasks(this.tasks, limit);
+  }
   async renewLease(
     taskId: string,
     ownerId: string,
@@ -363,7 +367,6 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     task.updatedAt = now;
     return copyStoredChatTask(task);
   }
-
   async markWaiting(taskId: string, ownerId: string, leaseOwner?: string) {
     return this.markWaitingState(
       taskId,

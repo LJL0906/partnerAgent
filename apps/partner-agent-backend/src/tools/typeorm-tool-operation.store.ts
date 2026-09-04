@@ -1,17 +1,31 @@
+import { randomUUID } from 'node:crypto';
 import { In, IsNull, LessThanOrEqual, Not, type DataSource } from 'typeorm';
 import { ToolAuditEntity } from '../database/entities/tool-audit.entity.js';
 import { ChatTaskEntity } from '../database/entities/chat-task.entity.js';
 import { ToolConfirmationEntity } from '../database/entities/tool-confirmation.entity.js';
 import { ToolExecutionReceiptEntity } from '../database/entities/tool-execution-receipt.entity.js';
+import { ToolReconciliationAuditEntity } from '../database/entities/tool-reconciliation-audit.entity.js';
 import {
   ToolOperationStore,
+  ToolReconciliationError,
+  assertToolReconciliationInput,
   type ExpiredToolConfirmationRecord,
   type ReconciledToolConfirmationRecord,
   type RecoverableToolConfirmationRecord,
   type ToolAuditRecord,
   type ToolConfirmationRecord,
   type ToolExecutionReceipt,
+  type PendingToolReconciliation,
+  type ReconcileIndeterminateToolInput,
+  type ToolReconciliationAuditRecord,
+  type ToolReconciliationResult,
 } from './tool-operation.store.js';
+import {
+  createToolReconciliationSnapshot,
+  pendingToolReconciliationFrom,
+  requireToolReconciliationSnapshot,
+  toolReconciliationSnapshotFrom,
+} from './tool-reconciliation-snapshot.js';
 
 export class TypeOrmToolOperationStore extends ToolOperationStore {
   constructor(private readonly dataSource: DataSource) {
@@ -26,6 +40,8 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
       argumentsJson: JSON.stringify(record.arguments),
       resultSummary: record.resultSummary ?? null,
       resultJson: record.result ? { ...record.result } : undefined,
+      reconciliationSnapshotJson: record.reconciliationSnapshot,
+      version: record.version ?? 1,
     });
   }
 
@@ -58,6 +74,7 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
           ? undefined
           : (updates.operationId ?? null),
       resultJson: updates.result ? { ...updates.result } : undefined,
+      reconciliationSnapshotJson: updates.reconciliationSnapshot,
       argumentsJson:
         updates.arguments === undefined
           ? undefined
@@ -65,6 +82,8 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
     };
     delete (entityUpdates as { arguments?: unknown }).arguments;
     delete (entityUpdates as { result?: unknown }).result;
+    delete (entityUpdates as { reconciliationSnapshot?: unknown })
+      .reconciliationSnapshot;
     await this.dataSource
       .getRepository(ToolConfirmationEntity)
       .update({ id }, entityUpdates);
@@ -161,10 +180,38 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
         .filter((record) => record.status === 'executing')
         .map((record) => record.id);
       if (executingIds.length > 0) {
-        await repository.update(
-          { id: In(executingIds), status: 'executing' },
-          { status: 'indeterminate' },
-        );
+        const auditRepository = manager.getRepository(ToolAuditEntity);
+        for (const record of records.filter(
+          (candidate) => candidate.status === 'executing',
+        )) {
+          const confirmation = this.confirmationFrom(record);
+          const snapshot = createToolReconciliationSnapshot(confirmation, now);
+          await auditRepository.insert({
+            id: randomUUID(),
+            ownerId: record.ownerId,
+            sessionId: record.sessionId,
+            toolCallId: record.toolCallId,
+            toolName: record.toolName,
+            riskLevel: record.riskLevel,
+            action: 'indeterminate',
+            confirmationId: record.id,
+            executionId: null,
+            requestSummary: record.requestSummary,
+            resultSummary: record.resultSummary,
+            createdAt: now,
+          });
+          const updated = await repository.update(
+            { id: record.id, status: 'executing' },
+            {
+              status: 'indeterminate',
+              reconciliationSnapshotJson: snapshot,
+            },
+          );
+          if (updated.affected !== 1) {
+            throw new ToolReconciliationError('核对记录状态已变化');
+          }
+          record.reconciliationSnapshotJson = snapshot;
+        }
       }
       return records.map(
         (record) =>
@@ -174,6 +221,98 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
               record.status === 'executing' ? 'indeterminate' : record.status,
           }) as ReconciledToolConfirmationRecord,
       );
+    });
+  }
+
+  async listIndeterminateConfirmations(
+    ownerId: string,
+    limit: number,
+  ): Promise<PendingToolReconciliation[]> {
+    const records = await this.dataSource
+      .getRepository(ToolConfirmationEntity)
+      .createQueryBuilder('confirmation')
+      .leftJoin(
+        ToolReconciliationAuditEntity,
+        'reconciliation',
+        'reconciliation.confirmationId = confirmation.id AND reconciliation.ownerId = confirmation.ownerId',
+      )
+      .where('confirmation.ownerId = :ownerId', { ownerId })
+      .andWhere('confirmation.status = :status', { status: 'indeterminate' })
+      .andWhere('reconciliation.id IS NULL')
+      .orderBy('confirmation.createdAt', 'ASC')
+      .take(this.safeLimit(limit))
+      .getMany();
+    return records.map((record) =>
+      pendingToolReconciliationFrom(this.confirmationFrom(record)),
+    );
+  }
+
+  async reconcileIndeterminateConfirmation(
+    input: ReconcileIndeterminateToolInput,
+  ): Promise<ToolReconciliationResult> {
+    assertToolReconciliationInput(input);
+    return this.dataSource.transaction(async (manager) => {
+      const confirmationRepository = manager.getRepository(
+        ToolConfirmationEntity,
+      );
+      const auditRepository = manager.getRepository(
+        ToolReconciliationAuditEntity,
+      );
+      const entity = await confirmationRepository
+        .createQueryBuilder('confirmation')
+        .setLock('pessimistic_write')
+        .where('confirmation.id = :confirmationId', {
+          confirmationId: input.confirmationId,
+        })
+        .andWhere('confirmation.ownerId = :ownerId', {
+          ownerId: input.ownerId,
+        })
+        .getOne();
+      if (!entity) throw new ToolReconciliationError('核对记录不存在');
+
+      const existing = await auditRepository.findOneBy({
+        confirmationId: entity.id,
+      });
+      if (existing) return this.replayedReconciliation(existing, input);
+      if (entity.status !== input.expectedStatus) {
+        throw new ToolReconciliationError('核对记录状态已变化');
+      }
+      if (entity.version !== input.expectedVersion) {
+        throw new ToolReconciliationError('核对记录版本已变化');
+      }
+      const snapshot = requireToolReconciliationSnapshot(
+        this.confirmationFrom(entity),
+      );
+      const audit: ToolReconciliationAuditRecord = {
+        id: randomUUID(),
+        confirmationId: entity.id,
+        ownerId: entity.ownerId,
+        expectedVersion: input.expectedVersion,
+        confirmationVersionAfter: input.expectedVersion + 1,
+        expectedStatus: input.expectedStatus,
+        outcome: input.outcome,
+        operatorLabel: input.operatorLabel.trim(),
+        confirmationPhrase: input.confirmationPhrase,
+        snapshot,
+        createdAt: new Date(),
+      };
+      await auditRepository.insert({
+        ...audit,
+        snapshotJson: audit.snapshot,
+      });
+      const updated = await confirmationRepository.update(
+        {
+          id: entity.id,
+          ownerId: entity.ownerId,
+          status: 'indeterminate',
+          version: input.expectedVersion,
+        },
+        { version: audit.confirmationVersionAfter },
+      );
+      if (updated.affected !== 1) {
+        throw new ToolReconciliationError('核对记录版本或状态已变化');
+      }
+      return { audit, replayed: false };
     });
   }
 
@@ -255,11 +394,39 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
       arguments: JSON.parse(record.argumentsJson),
       resultSummary: record.resultSummary ?? undefined,
       result: this.resultFrom(record.resultJson),
+      reconciliationSnapshot: toolReconciliationSnapshotFrom(
+        record.reconciliationSnapshotJson,
+      ),
+      version: record.version,
     };
   }
 
   private safeLimit(limit: number): number {
     return Math.max(1, Math.min(Math.trunc(limit) || 1, 100));
+  }
+
+  private replayedReconciliation(
+    entity: ToolReconciliationAuditEntity,
+    input: ReconcileIndeterminateToolInput,
+  ): ToolReconciliationResult {
+    if (
+      entity.expectedVersion !== input.expectedVersion ||
+      entity.expectedStatus !== input.expectedStatus ||
+      entity.outcome !== input.outcome ||
+      entity.operatorLabel !== input.operatorLabel.trim() ||
+      entity.confirmationPhrase !== input.confirmationPhrase
+    ) {
+      throw new ToolReconciliationError('核对记录已由其他结论处理');
+    }
+    const snapshot = toolReconciliationSnapshotFrom(entity.snapshotJson);
+    if (!snapshot) throw new ToolReconciliationError('核对安全快照缺失');
+    return {
+      audit: {
+        ...entity,
+        snapshot,
+      },
+      replayed: true,
+    };
   }
 
   async updateReceipt(

@@ -6,7 +6,7 @@ import type {
   ToolUndoControlRequestV1,
   UnsubscribeRequestV1,
 } from '@partner-agent/contracts';
-import { WS_CONTROL_EVENTS, WS_EVENTS } from '@partner-agent/contracts';
+import { WS_CONTROL_EVENTS, WS_SERVER_EVENTS } from '@partner-agent/contracts';
 import {
   ConnectedSocket,
   MessageBody,
@@ -55,7 +55,7 @@ export class WsV1Gateway implements OnGatewayConnection, OnGatewayDisconnect {
     const result = await this.service.subscribe(client, request);
     client.emit(WS_CONTROL_EVENTS.SUBSCRIPTION_ACK, result.ack);
     for (const event of result.replay) {
-      client.emit(WS_EVENTS.AGENT_EVENT, event);
+      client.emit(WS_SERVER_EVENTS.AGENT_EVENT, event);
     }
     this.service.activateSubscriptions(client, result.ack.accepted);
   }

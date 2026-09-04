@@ -26,16 +26,17 @@ import {
   type AgentRunTrace,
 } from './agent-runtime-telemetry.js';
 import { mapPiAgentEvent, type BackendAgentEvent } from './pi-agent-events.js';
+import {
+  createBudgetedAgentStream,
+  startAgentRunTrace,
+  type PiChatContext,
+} from './agent-runtime-stream.js';
 
 export type { PiToolDecision } from './pi-agent-context.js';
 
 export type { BackendAgentEvent } from './pi-agent-events.js';
 
-export interface PiChatContext {
-  taskId?: string;
-  operationId?: string;
-  source?: string;
-}
+export type { PiChatContext } from './agent-runtime-stream.js';
 
 @Injectable()
 export class PiAgentService implements OnModuleInit {
@@ -90,7 +91,14 @@ export class PiAgentService implements OnModuleInit {
     if (session.agent?.state.isStreaming) {
       throw new Error(`会话 ${sessionId} 已有请求正在处理中`);
     }
-    const trace = this.startRunTrace(sessionId, context, 'chat');
+    const trace = startAgentRunTrace(
+      this.runtimeTelemetry,
+      this.runtimePolicy,
+      userId,
+      sessionId,
+      context,
+      'chat',
+    );
     const agent = this.createAgent(
       sessionId,
       contextMessages,
@@ -128,7 +136,14 @@ export class PiAgentService implements OnModuleInit {
     if (session.agent?.state.isStreaming) {
       throw new Error(`会话 ${sessionId} 已有请求正在处理中`);
     }
-    const trace = this.startRunTrace(sessionId, context, 'tool_decision');
+    const trace = startAgentRunTrace(
+      this.runtimeTelemetry,
+      this.runtimePolicy,
+      userId,
+      sessionId,
+      context,
+      'tool_decision',
+    );
     const agent = this.createAgent(
       sessionId,
       contextMessages,
@@ -186,7 +201,14 @@ export class PiAgentService implements OnModuleInit {
     if (session.agent?.state.isStreaming) {
       throw new Error(`会话 ${sessionId} 已有请求正在处理中`);
     }
-    const trace = this.startRunTrace(sessionId, context, 'resume');
+    const trace = startAgentRunTrace(
+      this.runtimeTelemetry,
+      this.runtimePolicy,
+      userId,
+      sessionId,
+      context,
+      'resume',
+    );
     const agent = this.createAgent(
       sessionId,
       contextMessages,
@@ -421,7 +443,13 @@ export class PiAgentService implements OnModuleInit {
           operationId: context.operationId,
         }),
       },
-      streamFn: this.approvedStream(ownerId, sessionId, context, trace),
+      streamFn: createBudgetedAgentStream(
+        this.modelGateway,
+        ownerId,
+        sessionId,
+        context,
+        trace,
+      ),
       beforeToolCall: async (toolContext, signal) =>
         (await trace.budget.hooks().beforeToolCall(toolContext, signal)) ??
         guardApprovalToolBatch(toolContext, (toolName) =>
@@ -442,56 +470,11 @@ export class PiAgentService implements OnModuleInit {
     return this.modelGateway.resolveModel(provider, modelId);
   }
 
-  private approvedStream(
-    ownerId: string,
-    sessionId: string,
-    context: PiChatContext,
-    trace: AgentRunTrace,
-  ) {
-    const stream = this.modelGateway.createStreamFunction({
-      ownerId,
-      sessionId,
-      taskId: context.taskId,
-      operationId: context.operationId,
-      source: context.source ?? 'pi_agent',
-    });
-    return (
-      model: Model<any>,
-      agentContext: Parameters<typeof stream>[1],
-      options?: Parameters<typeof stream>[2],
-    ) => {
-      const requestBudget = trace.budget.startModelRequest(model.maxTokens);
-      return stream(model, agentContext, {
-        ...options,
-        maxTokens: Math.min(
-          options?.maxTokens ?? Number.POSITIVE_INFINITY,
-          requestBudget.maxTokens,
-        ),
-      });
-    };
-  }
-
   private contextForDirectChat(
     session: Awaited<ReturnType<SessionManager['getOrCreate']>>,
     acceptedPrompt: string | undefined,
     model: Model<any>,
   ): AgentMessage[] {
     return buildDirectChatContext(session, acceptedPrompt, model);
-  }
-
-  private startRunTrace(
-    sessionId: string,
-    context: PiChatContext,
-    fallbackSource: string,
-  ): AgentRunTrace {
-    return this.runtimeTelemetry.start(
-      {
-        sessionId,
-        taskId: context.taskId,
-        operationId: context.operationId,
-        source: context.source ?? fallbackSource,
-      },
-      this.runtimePolicy,
-    );
   }
 }

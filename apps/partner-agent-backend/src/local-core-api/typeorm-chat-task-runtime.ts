@@ -2,6 +2,8 @@ import { DataSource, IsNull, type EntityManager } from 'typeorm';
 import { ChatTaskEntity } from '../database/entities/chat-task.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import type { StoredChatTask } from './chat-task.store.js';
+import { ChatTaskLifecycleOutboxWriter } from './chat-task-lifecycle-outbox.js';
+import { TypeOrmChatTaskRecovery } from './typeorm-chat-task-recovery.js';
 
 type LoadStoredTask = (
   manager: EntityManager,
@@ -60,6 +62,7 @@ export class TypeOrmChatTaskRuntime {
       if (blockers > 0) return false;
       this.startLease(task, 'legacy-direct-claim', 30_000);
       await manager.getRepository(ChatTaskEntity).save(task);
+      await ChatTaskLifecycleOutboxWriter.append(manager, task);
       return true;
     });
   }
@@ -100,8 +103,26 @@ export class TypeOrmChatTaskRuntime {
       if (running > 0) return undefined;
       this.startLease(candidate, leaseOwner, leaseDurationMs);
       await manager.getRepository(ChatTaskEntity).save(candidate);
+      await ChatTaskLifecycleOutboxWriter.append(manager, candidate);
       return this.loadStored(manager, candidate);
     });
+  }
+
+  async countRunnable(limit = 10_000): Promise<number> {
+    const rows = (await this.dataSource.query(
+      `select count(*)::text as count from (
+         select 1 from chat_tasks task
+         where task.state = 'queued' and not exists (
+           select 1 from chat_tasks active
+           where active.session_id = task.session_id
+             and active.state in (
+               'running','waiting_privacy_decision','waiting_tool_approval'
+             )
+         ) limit $1
+       ) runnable`,
+      [limit],
+    )) as Array<{ count: string }>;
+    return Number(rows[0]?.count ?? 0);
   }
 
   async renewLease(
@@ -127,17 +148,22 @@ export class TypeOrmChatTaskRuntime {
       : 'queued';
     const waitingToolConfirmationId =
       this.toolConfirmationIdFromLeaseOwner(leaseOwner);
-    const result = await this.dataSource.getRepository(ChatTaskEntity).update(
-      { state: 'running', leaseOwner },
-      {
-        state: releasedState,
-        waitingToolConfirmationId: waitingToolConfirmationId ?? null,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        updatedAt: new Date(),
-      },
-    );
-    return result.affected ?? 0;
+    return this.dataSource.transaction(async (manager) => {
+      const tasks = await manager.getRepository(ChatTaskEntity).find({
+        where: { state: 'running', leaseOwner },
+        lock: { mode: 'pessimistic_write' },
+      });
+      for (const task of tasks) {
+        task.state = releasedState;
+        task.waitingToolConfirmationId = waitingToolConfirmationId ?? null;
+        task.leaseOwner = null;
+        task.leaseExpiresAt = null;
+        task.updatedAt = new Date();
+        await manager.getRepository(ChatTaskEntity).save(task);
+        await ChatTaskLifecycleOutboxWriter.append(manager, task);
+      }
+      return tasks.length;
+    });
   }
 
   async claimPrivacyResume(taskId: string, ownerId: string) {
@@ -169,17 +195,24 @@ export class TypeOrmChatTaskRuntime {
       if (running > 0) return undefined;
       this.startLease(task, leaseOwner, leaseDurationMs);
       await manager.getRepository(ChatTaskEntity).save(task);
+      await ChatTaskLifecycleOutboxWriter.append(manager, task);
       return this.loadStored(manager, task);
     });
   }
 
-  async markWaiting(taskId: string, ownerId: string, leaseOwner?: string) {
+  async markWaiting(
+    taskId: string,
+    ownerId: string,
+    leaseOwner?: string,
+    lifecycleData?: Record<string, unknown>,
+  ) {
     return this.updateWaitingState(
       taskId,
       ownerId,
       'waiting_privacy_decision',
       undefined,
       leaseOwner,
+      lifecycleData,
     );
   }
 
@@ -243,6 +276,10 @@ export class TypeOrmChatTaskRuntime {
       task.completedAt = new Date();
       task.updatedAt = task.completedAt;
       await manager.getRepository(ChatTaskEntity).save(task);
+      await ChatTaskLifecycleOutboxWriter.append(manager, task, {
+        code,
+        message,
+      });
       return this.loadStored(manager, task);
     });
   }
@@ -318,6 +355,11 @@ export class TypeOrmChatTaskRuntime {
       task.completedAt = new Date();
       task.updatedAt = task.completedAt;
       await manager.getRepository(ChatTaskEntity).save(task);
+      await ChatTaskLifecycleOutboxWriter.append(
+        manager,
+        task,
+        state === 'failed' ? { code: errorCode, message: errorMessage } : {},
+      );
       return this.loadStored(manager, task);
     });
   }
@@ -342,7 +384,14 @@ export class TypeOrmChatTaskRuntime {
         )
         .returning('*')
         .execute();
-      return result.raw[0] as ChatTaskEntity | undefined;
+      const raw = result.raw[0] as { id?: string } | undefined;
+      if (raw?.id) {
+        const task = await manager
+          .getRepository(ChatTaskEntity)
+          .findOneByOrFail({ id: raw.id, ownerId });
+        await ChatTaskLifecycleOutboxWriter.append(manager, task);
+      }
+      return raw as ChatTaskEntity | undefined;
     });
     if (!claimed) return undefined;
     const task = await this.dataSource
@@ -357,104 +406,35 @@ export class TypeOrmChatTaskRuntime {
     state: 'waiting_privacy_decision' | 'waiting_tool_approval',
     confirmationId: string | undefined,
     leaseOwner?: string,
+    lifecycleData?: Record<string, unknown>,
   ) {
-    const query = this.dataSource
-      .createQueryBuilder()
-      .update(ChatTaskEntity)
-      .set({
-        state,
-        waitingToolConfirmationId: confirmationId ?? null,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        updatedAt: new Date(),
-      })
-      .where('id = :taskId and owner_id = :ownerId and state = :runningState', {
-        taskId,
-        ownerId,
-        runningState: 'running',
+    return this.dataSource.transaction(async (manager) => {
+      const task = await manager.getRepository(ChatTaskEntity).findOne({
+        where: { id: taskId, ownerId, state: 'running' },
+        lock: { mode: 'pessimistic_write' },
       });
-    if (leaseOwner !== undefined) {
-      query.andWhere('lease_owner = :leaseOwner', { leaseOwner });
-    }
-    const result = await query.execute();
-    return Boolean(result.affected);
+      if (!task || (leaseOwner !== undefined && task.leaseOwner !== leaseOwner))
+        return false;
+      task.state = state;
+      task.waitingToolConfirmationId = confirmationId ?? null;
+      task.leaseOwner = null;
+      task.leaseExpiresAt = null;
+      task.updatedAt = new Date();
+      await manager.getRepository(ChatTaskEntity).save(task);
+      await ChatTaskLifecycleOutboxWriter.append(
+        manager,
+        task,
+        lifecycleData,
+      );
+      return true;
+    });
   }
 
   private async recoverExpiredLeasesWithManager(
     manager: EntityManager,
     now = new Date(),
   ) {
-    const toolDecision = await manager
-      .createQueryBuilder()
-      .update(ChatTaskEntity)
-      .set({
-        state: 'waiting_tool_approval',
-        waitingToolConfirmationId: () =>
-          "regexp_replace(lease_owner, '^tool-decision:[^:]+:[^:]+:', '')::uuid",
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        updatedAt: now,
-      })
-      .where('state = :running', { running: 'running' })
-      .andWhere("lease_owner like 'tool-decision:%'")
-      .andWhere('(lease_expires_at is null or lease_expires_at <= :now)', {
-        now,
-      })
-      .execute();
-
-    const pendingTool = await manager
-      .createQueryBuilder()
-      .update(ChatTaskEntity)
-      .set({
-        state: 'waiting_tool_approval',
-        waitingToolConfirmationId: () => `(
-          select confirmation.id
-          from tool_confirmation_requests confirmation
-          where confirmation.owner_id = chat_tasks.owner_id
-            and confirmation.task_id = chat_tasks.id
-            and confirmation.status = 'pending'
-          order by confirmation.created_at desc, confirmation.id desc
-          limit 1
-        )`,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        updatedAt: now,
-      })
-      .where('state = :running', { running: 'running' })
-      .andWhere('(lease_expires_at is null or lease_expires_at <= :now)', {
-        now,
-      })
-      .andWhere(
-        `exists (
-        select 1
-        from tool_confirmation_requests confirmation
-        where confirmation.owner_id = chat_tasks.owner_id
-          and confirmation.task_id = chat_tasks.id
-          and confirmation.status = 'pending'
-      )`,
-      )
-      .execute();
-
-    const queued = await manager
-      .createQueryBuilder()
-      .update(ChatTaskEntity)
-      .set({
-        state: 'queued',
-        waitingToolConfirmationId: null,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        updatedAt: now,
-      })
-      .where('state = :running', { running: 'running' })
-      .andWhere('(lease_expires_at is null or lease_expires_at <= :now)', {
-        now,
-      })
-      .execute();
-    return (
-      (toolDecision.affected ?? 0) +
-      (pendingTool.affected ?? 0) +
-      (queued.affected ?? 0)
-    );
+    return TypeOrmChatTaskRecovery.recover(manager, now);
   }
 
   private startLease(

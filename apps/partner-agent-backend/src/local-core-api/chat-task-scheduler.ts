@@ -29,6 +29,15 @@ export {
   type ToolDecisionClaim,
 } from './chat-task-scheduler.contract.js';
 import { safeChatTaskErrorMessage } from './chat-task-errors.js';
+import {
+  NoopObservabilitySink,
+  ObservabilitySink,
+} from '../observability/observability.types.js';
+import {
+  ChatTaskSchedulerObservability,
+  chatTaskStream,
+  positiveInteger,
+} from './chat-task-scheduler-observability.js';
 
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_POLL_MS = 1_000;
@@ -59,6 +68,7 @@ export class PiChatTaskScheduler
   private readonly pollMs: number;
   private readonly concurrency: number;
   private readonly runner: ChatTaskRunner;
+  private readonly metrics: ChatTaskSchedulerObservability;
   private pollTimer?: ReturnType<typeof setInterval>;
   private activeCount = 0;
   private pumping = false;
@@ -74,20 +84,23 @@ export class PiChatTaskScheduler
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly toolApprovals?: ExternalToolApprovalService,
     @Optional() private readonly notifier?: ChatTaskNotifier,
+    @Optional()
+    private readonly observability: ObservabilitySink = new NoopObservabilitySink(),
   ) {
     super();
-    this.leaseMs = this.positiveInteger(
+    this.leaseMs = positiveInteger(
       config?.get<string>('CHAT_TASK_LEASE_MS'),
       DEFAULT_LEASE_MS,
     );
-    this.pollMs = this.positiveInteger(
+    this.pollMs = positiveInteger(
       config?.get<string>('CHAT_TASK_POLL_MS'),
       DEFAULT_POLL_MS,
     );
-    this.concurrency = this.positiveInteger(
+    this.concurrency = positiveInteger(
       config?.get<string>('CHAT_TASK_WORKER_CONCURRENCY'),
       DEFAULT_CONCURRENCY,
     );
+    this.metrics = new ChatTaskSchedulerObservability(observability);
     this.runner = new ChatTaskRunner(
       agent,
       store,
@@ -102,7 +115,7 @@ export class PiChatTaskScheduler
 
   async onModuleInit(): Promise<void> {
     await this.notifier?.start(() => void this.pump());
-    await this.store.recoverExpiredLeases();
+    await this.metrics.recoverExpired(this.store);
     await this.maintainToolApprovals();
     await this.pump();
     this.pollTimer = setInterval(() => void this.tick(), this.pollMs);
@@ -381,15 +394,16 @@ export class PiChatTaskScheduler
     if (this.pumping || this.stopping) return;
     this.pumping = true;
     try {
-      await this.store.recoverExpiredLeases();
+      await this.metrics.recoverExpired(this.store);
       while (!this.stopping && this.activeCount < this.concurrency) {
         const leaseOwner = `worker:${this.workerId}:${randomUUID()}`;
-        const task = await this.store.claimNextRunnable(
+        const task = await this.metrics.claim(
+          this.store,
           leaseOwner,
           this.leaseMs,
         );
         if (!task) break;
-        this.startClaimed(task, this.chat(task), leaseOwner);
+        this.startClaimed(task, chatTaskStream(this.agent, task), leaseOwner);
       }
     } catch (error) {
       this.logger.error(
@@ -459,14 +473,6 @@ export class PiChatTaskScheduler
       this.maintainingTools = false;
     }
   }
-  private chat(task: AcceptedChatTask): AsyncGenerator<ChatTaskAgentEvent> {
-    return this.agent.resumeTask(task.sessionId, task.text, task.ownerId, {
-      taskId: task.taskId,
-      operationId: task.operationId,
-      source: 'submit_text_input',
-    });
-  }
-
   private startClaimed(
     task: AcceptedChatTask,
     stream: AsyncGenerator<ChatTaskAgentEvent>,
@@ -483,17 +489,12 @@ export class PiChatTaskScheduler
   }
 
   private renew(task: AcceptedChatTask, leaseOwner: string) {
-    return this.store.renewLease(
+    return this.metrics.renew(
+      this.store,
       task.taskId,
       task.ownerId,
       leaseOwner,
       this.leaseMs,
     );
-  }
-
-  private positiveInteger(value: string | undefined, fallback: number) {
-    const parsed = Number(value ?? fallback);
-    if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
-    return parsed;
   }
 }

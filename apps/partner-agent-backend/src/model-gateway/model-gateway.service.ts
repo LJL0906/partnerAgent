@@ -78,7 +78,9 @@ export class ModelGatewayService implements OnModuleInit {
   }
 
   /** 工具续轮、重试和模型切换均重新组装和审批实际载荷。 */
-  createStreamFunction(metadata: Omit<EgressRequestMetadata, 'provider'>) {
+  createStreamFunction(
+    metadata: Omit<EgressRequestMetadata, 'provider'> & { runId: string },
+  ) {
     const models = this.requireModels();
     const provider = new ModelProviderAdapter((request) =>
       models.streamSimple(request.model, request.context, request.options),
@@ -90,6 +92,7 @@ export class ModelGatewayService implements OnModuleInit {
     ) => {
       const startedAt = Date.now();
       const observation: ModelGatewayObservationMetadata = {
+        runId: metadata.runId,
         requestId: randomUUID(),
         ownerId: metadata.ownerId,
         sessionId: metadata.sessionId,

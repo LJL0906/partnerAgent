@@ -7,6 +7,7 @@ import { SessionMessageEntity } from '../src/database/entities/session-message.e
 import { ToolAuditEntity } from '../src/database/entities/tool-audit.entity.js';
 import { ToolConfirmationEntity } from '../src/database/entities/tool-confirmation.entity.js';
 import { ToolExecutionReceiptEntity } from '../src/database/entities/tool-execution-receipt.entity.js';
+import { ChatTaskLifecycleOutboxEntity } from '../src/database/entities/chat-task-outbox.entity.js';
 import { TypeOrmChatTaskStore } from '../src/local-core-api/typeorm-chat-task.store.js';
 import {
   CHAT_TASK_NOTIFICATION_CHANNEL,
@@ -30,6 +31,7 @@ describeReal('PostgreSQL ChatTask worker recovery', () => {
         ToolConfirmationEntity,
         ToolAuditEntity,
         ToolExecutionReceiptEntity,
+        ChatTaskLifecycleOutboxEntity,
         ...CORE_ENTITIES,
       ],
     });

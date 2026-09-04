@@ -2,13 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource, IsNull, type EntityManager } from 'typeorm';
+import { SessionStore, type StoredSession } from './session-store.js';
 import { ChatSessionEntity } from './entities/chat-session.entity.js';
 import { SessionMessageEntity } from './entities/session-message.entity.js';
-import { SessionStore, type StoredSession } from './session-store.js';
-import { ToolConfirmationEntity } from './entities/tool-confirmation.entity.js';
-import { ToolAuditEntity } from './entities/tool-audit.entity.js';
-import { ToolExecutionReceiptEntity } from './entities/tool-execution-receipt.entity.js';
-import { CORE_ENTITIES } from './core-entities.js';
+import { DATABASE_ENTITIES } from './database-definition.js';
 
 const SEQUENCE_WATERMARK_CONTEXT_FORMAT = 'pi-agent-v2-sequence-watermark';
 
@@ -34,14 +31,7 @@ export class TypeOrmSessionStore
     this.dataSource = new DataSource({
       type: 'postgres',
       url,
-      entities: [
-        ChatSessionEntity,
-        SessionMessageEntity,
-        ToolConfirmationEntity,
-        ToolAuditEntity,
-        ToolExecutionReceiptEntity,
-        ...CORE_ENTITIES,
-      ],
+      entities: [...DATABASE_ENTITIES],
       migrations: ['dist/database/migrations/*.js'],
       synchronize: false,
       migrationsRun: false,

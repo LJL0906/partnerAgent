@@ -3,14 +3,16 @@ import {
   DATABASE_MIGRATIONS,
   createDatabaseDataSource,
 } from './database-definition.js';
-import { CreateWsV1Events1788507000000 } from './migrations/1788507000000-create-ws-v1-events.js';
+import { AddToolReconciliation1788512000000 } from './migrations/1788512000000-add-tool-reconciliation.js';
 
 describe('database definition', () => {
   it('registers the latest reversible migration exactly once', () => {
-    expect(DATABASE_MIGRATIONS.at(-1)).toBe(CreateWsV1Events1788507000000);
+    expect(DATABASE_MIGRATIONS.at(-1)).toBe(
+      AddToolReconciliation1788512000000,
+    );
     expect(
       DATABASE_MIGRATIONS.filter(
-        (migration) => migration === CreateWsV1Events1788507000000,
+        (migration) => migration === AddToolReconciliation1788512000000,
       ),
     ).toHaveLength(1);
   });

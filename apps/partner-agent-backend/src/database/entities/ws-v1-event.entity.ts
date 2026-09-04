@@ -11,6 +11,8 @@ export class WsV1EventEntity {
   streamPosition: string;
   @Column({ name: 'publisher_instance_id', type: 'uuid' })
   publisherInstanceId: string;
+  @Column({ name: 'idempotency_key', type: 'text', nullable: true })
+  idempotencyKey: string | null;
   @Column({ name: 'wire_payload', type: 'jsonb' })
   wirePayload: ServerPushEventV1;
   @Column({ name: 'created_at', type: 'timestamptz' }) createdAt: Date;

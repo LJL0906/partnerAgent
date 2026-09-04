@@ -18,6 +18,7 @@ class ControlledEventStore extends WsV1EventStore {
   replay = Promise.resolve<WsV1ReplayResult>({
     replayable: true,
     events: [],
+    latestPosition: 0,
   });
   readonly replayAfterCall = vi.fn();
 
@@ -42,6 +43,12 @@ class ControlledEventStore extends WsV1EventStore {
   async createRecoveryRequired(): Promise<ServerPushEventV1> {
     throw new Error('not used');
   }
+
+  async dispatchStored(record: WsV1StoredEvent): Promise<void> {
+    await this.listener?.(record);
+  }
+
+  acknowledgeDelivery(): void {}
 }
 
 function event(id: string, sequence: number): WsV1StoredEvent {
@@ -88,7 +95,11 @@ describe('WsV1Service subscription handoff', () => {
     await vi.waitFor(() => expect(store.replayAfterCall).toHaveBeenCalled());
     const duringReplay = event('00000000-0000-4000-8000-000000000001', 2);
     await store.listener?.(duringReplay);
-    resolveReplay({ replayable: true, events: [duringReplay.event] });
+    resolveReplay({
+      replayable: true,
+      events: [duringReplay.event],
+      latestPosition: 2,
+    });
 
     const result = await subscribing;
     expect(result.replay).toEqual([duringReplay.event]);

@@ -223,20 +223,6 @@ export class ExternalToolApprovalService {
     limit = 100,
   ): Promise<ReconciledExternalToolApproval[]> {
     const records = await this.store.reconcileStaleConfirmations(now, limit);
-    await Promise.allSettled(
-      records
-        .filter((record) => record.status === 'indeterminate')
-        .map(async (record) => {
-          const definition = this.registry.get(record.toolName);
-          await this.execution.audit(
-            definition,
-            record.toolCallId,
-            { ownerId: record.ownerId, sessionId: record.sessionId },
-            'indeterminate',
-            { confirmationId: record.id },
-          );
-        }),
-    );
     return records.map((record) => ({
       ...this.controlResult(record),
       confirmationId: record.id,

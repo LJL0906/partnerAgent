@@ -66,6 +66,7 @@ function mockGateway(legacy: {
   getModel?: (provider: string, modelId: string) => typeof fakeModel;
   getModels: (provider?: string) => (typeof fakeModel)[];
   streamSimple?: (...args: any[]) => AssistantMessageEventStream;
+  onStreamMetadata?: (metadata: { runId: string }) => void;
 }) {
   return {
     listModels: (provider: string) => legacy.getModels(provider),
@@ -73,7 +74,10 @@ function mockGateway(legacy: {
       modelId && legacy.getModel
         ? legacy.getModel(provider, modelId)
         : legacy.getModels(provider)[0],
-    createStreamFunction: () => legacy.streamSimple!,
+    createStreamFunction: (metadata: { runId: string }) => {
+      legacy.onStreamMetadata?.(metadata);
+      return legacy.streamSimple!;
+    },
   };
 }
 
@@ -87,6 +91,7 @@ describe('PiAgentService', () => {
     const requestMaxTokens: number[] = [];
     const runMetadata: AgentRunMetadata[] = [];
     const runIds: string[] = [];
+    const modelRunIds: string[] = [];
     const telemetry = {
       start(metadata: AgentRunMetadata, policy: AgentRuntimePolicy) {
         runMetadata.push({ ...metadata });
@@ -104,6 +109,7 @@ describe('PiAgentService', () => {
       }),
       mockGateway({
         getModels: () => [fakeModel],
+        onStreamMetadata: ({ runId }) => modelRunIds.push(runId),
         streamSimple: (_model, _context, options) => {
           requestMaxTokens.push(options?.maxTokens ?? -1);
           const stream = new AssistantMessageEventStream();
@@ -143,12 +149,14 @@ describe('PiAgentService', () => {
     expect(requestMaxTokens).toEqual([33, 33]);
     expect(runMetadata).toEqual([
       {
+        ownerId: 'user-a',
         sessionId: 'session-a',
         taskId: 'task-a',
         operationId: 'operation-a',
         source: 'source-a',
       },
       {
+        ownerId: 'user-a',
         sessionId: 'session-b',
         taskId: 'task-b',
         operationId: 'operation-b',
@@ -156,6 +164,7 @@ describe('PiAgentService', () => {
       },
     ]);
     expect(new Set(runIds).size).toBe(2);
+    expect(modelRunIds).toEqual(runIds);
   });
 
   it('uses the configured model and maps Agent text deltas into backend events', async () => {

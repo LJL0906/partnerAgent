@@ -10,9 +10,11 @@ export interface ChatTaskEvent {
   type: 'state_changed' | 'agent_event';
   eventType?: string;
   data?: unknown;
+  /** Stable key present only for persisted lifecycle outbox delivery. */
+  eventKey?: string;
 }
 
-type Listener = (event: ChatTaskEvent) => void;
+type Listener = (event: ChatTaskEvent) => void | Promise<void>;
 
 @Injectable()
 export class ChatTaskEventBus {
@@ -31,5 +33,10 @@ export class ChatTaskEventBus {
         // 推送观察者失败不能反向改变已持久化的任务状态。
       }
     }
+  }
+
+  async publishDurable(event: ChatTaskEvent): Promise<void> {
+    if (this.listeners.size === 0) throw new Error('OUTBOX_NO_SUBSCRIBER');
+    await Promise.all([...this.listeners].map((listener) => listener(event)));
   }
 }

@@ -111,14 +111,33 @@ import { TypeOrmWsV1EventStore } from '../ws-v1/typeorm-ws-v1-event.store.js';
         sessionStore: SessionStore,
         configService: ConfigService,
       ): WsV1EventStore => {
+        const retentionCount = Number(
+          configService.get<string>('WS_EVENT_RETENTION_COUNT') ?? 100,
+        );
         if (!(sessionStore instanceof TypeOrmSessionStore)) {
-          return new MemoryWsV1EventStore();
+          return new MemoryWsV1EventStore(retentionCount);
         }
         const databaseUrl = configService.get<string>('DATABASE_URL');
         if (!databaseUrl) throw new Error('DATABASE_URL 未配置');
         return new TypeOrmWsV1EventStore(
           sessionStore.getDataSource(),
           databaseUrl,
+          undefined,
+          undefined,
+          {
+            count: retentionCount,
+            ageMs: Number(
+              configService.get<string>('WS_EVENT_RETENTION_AGE_MS') ??
+                86_400_000,
+            ),
+            batchSize: Number(
+              configService.get<string>('WS_EVENT_RETENTION_BATCH_SIZE') ?? 500,
+            ),
+            intervalMs: Number(
+              configService.get<string>('WS_EVENT_RETENTION_INTERVAL_MS') ??
+                60_000,
+            ),
+          },
         );
       },
     },
