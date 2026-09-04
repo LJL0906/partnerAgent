@@ -1,17 +1,28 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ConfigService } from '@nestjs/config';
+import type { ChatRequest } from '@partner-agent/contracts';
 import type { Socket } from 'socket.io';
 import { AgentGateway } from './agent.gateway.js';
 import { SessionManager } from './session-manager.service.js';
+import { MemorySessionStore } from '../database/memory-session.store.js';
 
 type Gate = {
   resolve: () => void;
 };
 
-function createSocket(id: string) {
+function createSocket(id: string, userId: string) {
   return {
     id,
+    data: { userId },
     emit: vi.fn(),
   } as unknown as Socket;
+}
+
+function createManager(limit = 100) {
+  return new SessionManager(
+    new ConfigService({ MAX_SESSIONS_PER_USER: String(limit) }),
+    new MemorySessionStore(),
+  );
 }
 
 describe('AgentGateway', () => {
@@ -28,10 +39,11 @@ describe('AgentGateway', () => {
     };
     const gateway = new AgentGateway(
       piAgentService as never,
-      new SessionManager(),
+      createManager(),
+      {} as never,
     );
-    const socketA = createSocket('socket-a');
-    const socketB = createSocket('socket-b');
+    const socketA = createSocket('socket-a', 'user-a');
+    const socketB = createSocket('socket-b', 'user-b');
 
     const requestA = gateway.handleChat(socketA, {
       sessionId: 'session-a',
@@ -45,13 +57,13 @@ describe('AgentGateway', () => {
       expect(gates.size).toBe(2);
     });
 
-    gateway.handleCancel(socketA, { sessionId: 'session-a' });
+    await gateway.handleCancel(socketA, { sessionId: 'session-a' });
     gates.get('session-a')?.resolve();
     gates.get('session-b')?.resolve();
     await Promise.all([requestA, requestB]);
 
-    expect(cancel).toHaveBeenCalledWith('session-a');
-    expect(cancel).not.toHaveBeenCalledWith('session-b');
+    expect(cancel).toHaveBeenCalledWith('session-a', 'user-a');
+    expect(cancel).not.toHaveBeenCalledWith('session-b', 'user-b');
     expect(socketA.emit).toHaveBeenCalledWith(
       'agent_event',
       expect.objectContaining({ type: 'cancelled', sessionId: 'session-a' }),
@@ -62,13 +74,20 @@ describe('AgentGateway', () => {
     );
   });
 
-  it('returns saved history when a session reconnects', () => {
-    const manager = new SessionManager();
-    manager.saveMessage('restored-session', 'user', '记住我');
-    const gateway = new AgentGateway({ cancel: vi.fn() } as never, manager);
-    const socket = createSocket('new-socket');
+  it('returns saved history when a session reconnects', async () => {
+    const manager = createManager();
+    await manager.getOrCreate('restored-session', 'user-a');
+    await manager.saveMessage('restored-session', 'user-a', 'user', '记住我');
+    const gateway = new AgentGateway(
+      { cancel: vi.fn() } as never,
+      manager,
+      {} as never,
+    );
+    const socket = createSocket('new-socket', 'user-a');
 
-    gateway.handleResumeSession(socket, { sessionId: 'restored-session' });
+    await gateway.handleResumeSession(socket, {
+      sessionId: 'restored-session',
+    });
 
     expect(socket.emit).toHaveBeenCalledWith(
       'agent_event',
@@ -80,6 +99,74 @@ describe('AgentGateway', () => {
             expect.objectContaining({ role: 'user', content: '记住我' }),
           ],
         },
+      }),
+    );
+  });
+
+  it('uses the authenticated socket identity instead of a forged payload userId', async () => {
+    const chat = vi.fn(async function* () {
+      yield { type: 'done', timestamp: Date.now() };
+    });
+    const gateway = new AgentGateway(
+      { chat, cancel: vi.fn() } as never,
+      createManager(),
+      {} as never,
+    );
+    const socket = createSocket('socket-x', 'trusted-user');
+
+    await gateway.handleChat(socket, {
+      sessionId: 'trusted-session',
+      message: '你好',
+      userId: 'forged-user',
+    } as unknown as ChatRequest);
+
+    expect(chat).toHaveBeenCalledWith(
+      'trusted-session',
+      '你好',
+      'trusted-user',
+    );
+  });
+
+  it('does not expose or cancel a session owned by another user', async () => {
+    const manager = createManager();
+    await manager.getOrCreate('private-session', 'user-x');
+    await manager.saveMessage(
+      'private-session',
+      'user-x',
+      'user',
+      '私密消息',
+    );
+    const cancel = vi.fn();
+    const chat = vi.fn(async function* () {
+      yield { type: 'done', timestamp: Date.now() };
+    });
+    const gateway = new AgentGateway(
+      { chat, cancel } as never,
+      manager,
+      {} as never,
+    );
+    const attacker = createSocket('socket-y', 'user-y');
+
+    await gateway.handleResumeSession(attacker, {
+      sessionId: 'private-session',
+    });
+    await gateway.handleCancel(attacker, { sessionId: 'private-session' });
+    await gateway.handleChat(attacker, {
+      sessionId: 'private-session',
+      message: '窃取历史',
+    });
+
+    expect(chat).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(attacker.emit).not.toHaveBeenCalledWith(
+      'agent_event',
+      expect.objectContaining({ type: 'history' }),
+    );
+    expect(attacker.emit).toHaveBeenCalledWith(
+      'agent_event',
+      expect.objectContaining({
+        type: 'error',
+        data: { message: '会话不存在' },
       }),
     );
   });

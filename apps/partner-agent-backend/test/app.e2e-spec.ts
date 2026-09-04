@@ -4,6 +4,9 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module.js';
 
+process.env.AUTH_JWT_SECRET = 'test-secret-that-is-at-least-32-bytes';
+process.env.SESSION_STORE = 'memory';
+
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
 

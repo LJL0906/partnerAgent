@@ -6,7 +6,8 @@ import type { Model } from '@earendil-works/pi-ai';
 import type { SessionMessage } from '@partner-agent/contracts';
 import { ModelGatewayService } from '../model-gateway/model-gateway.service.js';
 import { SessionManager } from './session-manager.service.js';
-import { getCurrentTimeTool } from './tools/current-time.tool.js';
+import { ToolExecutionService } from '../tools/tool-execution.service.js';
+import { ToolRegistryService } from '../tools/tool-registry.service.js';
 
 type BackendAgentEvent = {
   type: string;
@@ -22,6 +23,8 @@ export class PiAgentService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly modelGateway: ModelGatewayService,
     private readonly sessionManager: SessionManager,
+    private readonly toolExecution: ToolExecutionService,
+    private readonly toolRegistry: ToolRegistryService,
   ) {}
 
   onModuleInit(): void {
@@ -34,7 +37,7 @@ export class PiAgentService implements OnModuleInit {
   async *chat(
     sessionId: string,
     message: string,
-    userId?: string,
+    userId: string,
   ): AsyncGenerator<BackendAgentEvent> {
     const provider =
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
@@ -54,16 +57,26 @@ export class PiAgentService implements OnModuleInit {
       );
     }
 
-    const session = this.sessionManager.getOrCreate(sessionId, userId);
+    const session = await this.sessionManager.getOrCreate(sessionId, userId);
+    const persistedAfterSnapshot = session.messages.filter(
+      (entry) => entry.sequence > session.contextRevision,
+    );
+    const contextMessages = session.contextMessages.length
+      ? [
+          ...session.contextMessages,
+          ...this.toAgentMessages(persistedAfterSnapshot, model),
+        ]
+      : this.toAgentMessages(session.messages, model);
     const agent =
-      session.agent ?? this.createAgent(sessionId, session.messages, model);
+      session.agent ??
+      this.createAgent(sessionId, contextMessages, model, userId);
     if (agent.state.isStreaming) {
       throw new Error(`会话 ${sessionId} 已有请求正在处理中`);
     }
     if (!session.agent) {
-      this.sessionManager.setAgent(sessionId, agent);
+      await this.sessionManager.setAgent(sessionId, userId, agent);
     }
-    this.sessionManager.saveMessage(sessionId, 'user', message);
+    await this.sessionManager.saveMessage(sessionId, userId, 'user', message);
 
     const pending: BackendAgentEvent[] = [];
     let wake: (() => void) | undefined;
@@ -128,36 +141,40 @@ export class PiAgentService implements OnModuleInit {
 
       if (!failed) {
         await agent.waitForIdle();
-        if (assistantText) {
-          this.sessionManager.saveMessage(
-            sessionId,
-            'assistant',
-            assistantText,
-          );
-        }
-        agent.state.messages = agent.state.messages.slice(-100);
+        agent.state.messages = this.trimCompleteTurns(agent.state.messages);
+        await this.sessionManager.completeAssistantTurn(
+          sessionId,
+          userId,
+          assistantText || undefined,
+          agent.state.messages,
+        );
       }
     } finally {
       unsubscribe();
       if (!ended) {
         agent.abort();
       }
+      if (failed || runError || !ended) {
+        this.sessionManager.clearAgent(sessionId);
+      }
     }
   }
 
-  cancel(sessionId: string): boolean {
-    const agent = this.sessionManager.getAgent(sessionId);
+  async cancel(sessionId: string, userId: string): Promise<boolean> {
+    const agent = await this.sessionManager.getAgent(sessionId, userId);
     if (!agent?.state.isStreaming) {
       return false;
     }
     agent.abort();
+    this.sessionManager.clearAgent(sessionId);
     return true;
   }
 
   private createAgent(
     sessionId: string,
-    history: SessionMessage[],
+    messages: AgentMessage[],
     model: Model<any>,
+    ownerId: string,
   ): Agent {
     const models = this.modelGateway.getModels();
     return new Agent({
@@ -166,8 +183,8 @@ export class PiAgentService implements OnModuleInit {
         systemPrompt:
           '你是一个友好的个人助手。请使用中文回答，回答清晰、准确、简洁。',
         model,
-        messages: this.toAgentMessages(history, model),
-        tools: [getCurrentTimeTool],
+        messages,
+        tools: this.toolExecution.createAgentTools({ ownerId, sessionId }),
       },
       streamFn: models.streamSimple.bind(models),
     });
@@ -212,6 +229,25 @@ export class PiAgentService implements OnModuleInit {
     });
   }
 
+  /** 裁剪只从用户回合边界开始，避免留下孤立的 toolResult/toolCall。 */
+  private trimCompleteTurns(
+    messages: AgentMessage[],
+    maxMessages = 100,
+  ): AgentMessage[] {
+    if (messages.length <= maxMessages) return [...messages];
+
+    const preferredStart = messages.length - maxMessages;
+    const nextTurnStart = messages.findIndex(
+      (message, index) => index >= preferredStart && message.role === 'user',
+    );
+    if (nextTurnStart >= 0) return messages.slice(nextTurnStart);
+
+    for (let index = preferredStart - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === 'user') return messages.slice(index);
+    }
+    return [...messages];
+  }
+
   private mapAgentEvent(
     event: AgentEvent,
     markFailed: () => void,
@@ -233,6 +269,9 @@ export class PiAgentService implements OnModuleInit {
     }
 
     if (event.type === 'tool_execution_start') {
+      if (this.toolRegistry.isToolApprovalRequired(event.toolName)) {
+        return undefined;
+      }
       return {
         type: 'tool_execution_start',
         data: { tool: event.toolName, toolCallId: event.toolCallId },
@@ -241,6 +280,32 @@ export class PiAgentService implements OnModuleInit {
     }
 
     if (event.type === 'tool_execution_end') {
+      const details = event.result?.details as
+        | {
+            status?: string;
+            confirmationId?: string;
+            requestSummary?: string;
+            expiresAt?: string;
+          }
+        | undefined;
+      if (
+        details?.status === 'pending_tool_approval' &&
+        details.confirmationId &&
+        details.expiresAt
+      ) {
+        return {
+          type: 'tool_confirmation_pending',
+          data: {
+            confirmationId: details.confirmationId,
+            tool: event.toolName,
+            toolCallId: event.toolCallId,
+            riskLevel: this.toolRegistry.get(event.toolName).riskLevel,
+            requestSummary: details.requestSummary ?? '',
+            expiresAt: new Date(details.expiresAt).getTime(),
+          },
+          timestamp,
+        };
+      }
       return {
         type: 'tool_execution_end',
         data: {
