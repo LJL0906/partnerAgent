@@ -58,7 +58,7 @@
     "@types/supertest": "^7.0.0",
     "@types/uuid": "^10.0.0",
     "@vitest/coverage-v8": "^4.1.2",
-    "oxlint": "^1.58.0",
+    "oxlint": "1.81.0",
     "pg-mem": "^3.0.14",
     "prettier": "^3.4.2",
     "socket.io-client": "^4.8.3",
@@ -68,5 +68,8 @@
     "typescript": "^6.0.2",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^4.1.2"
+  },
+  "optionalDependencies": {
+    "@oxlint/binding-linux-x64-gnu": "1.81.0"
   }
 }
