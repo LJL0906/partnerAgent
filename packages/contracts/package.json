@@ -1,0 +1,14 @@
+{
+  "name": "@partner-agent/contracts",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0",
+    "typescript": "^5.3.0"
+  }
+}
