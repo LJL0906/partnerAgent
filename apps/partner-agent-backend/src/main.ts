@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
 import { AuthService } from './auth/auth.service.js';
+import { parseServerBinding } from './main-config.js';
 import {
   getAllowedOrigins,
   SecureIoAdapter,
@@ -24,6 +25,10 @@ async function bootstrap() {
   app.useWebSocketAdapter(
     new SecureIoAdapter(app, app.get(AuthService), configService),
   );
-  await app.listen(process.env.PORT ?? 3000);
+  const binding = parseServerBinding({
+    HOST: configService.get<string>('HOST'),
+    PORT: configService.get<string>('PORT'),
+  });
+  await app.listen(binding.port, binding.host);
 }
 await bootstrap();

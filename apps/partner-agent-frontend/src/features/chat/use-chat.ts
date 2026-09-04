@@ -1,4 +1,6 @@
+import { SENSITIVE_CATEGORIES } from '@partner-agent/contracts';
 import type {
+  PrivacyDecisionStatus,
   ServerPushEventV1,
   SubscriptionAckV1,
   SubscriptionChannel,
@@ -8,6 +10,8 @@ import type { MutableRefObject } from 'react';
 import { useCallback, useEffect, useRef } from 'react';
 
 import {
+  closeAllAgentStreams,
+  AgentStreamConnectError,
   subscribeAgentStream,
   SubscriptionRejectedError,
   type AgentStreamConnection,
@@ -33,6 +37,12 @@ interface ReconciliationQueries {
   getChatSession: typeof getChatSession;
 }
 
+interface ReconcileChatOptions {
+  queries?: ReconciliationQueries;
+  assistantMessageIdRef?: MutableRefObject<string | undefined>;
+  shouldApplyTask?: (task: RecoverableTaskStatus) => boolean;
+}
+
 type TaskQueryResult = PromiseSettledResult<RecoverableTaskStatus | undefined>;
 type SessionQueryResult = PromiseSettledResult<RecoverableChatSession | undefined>;
 
@@ -48,6 +58,53 @@ export function loadChatReconciliation(
     ? queries.getChatSession(sessionId)
     : Promise.resolve<RecoverableChatSession | undefined>(undefined);
   return Promise.allSettled([taskRequest, sessionRequest]);
+}
+
+/**
+ * 统一以 REST 快照修复聊天状态。隐私决定提交成功后也调用此入口，避免客户端
+ * 推测任务终态；两个请求独立结算，任一成功的快照都会被应用。
+ */
+export async function reconcileChatFromRest(
+  taskId: string | undefined,
+  sessionId: string | undefined,
+  options: ReconcileChatOptions = {},
+): Promise<[TaskQueryResult, SessionQueryResult]> {
+  const results = await loadChatReconciliation(
+    taskId,
+    sessionId,
+    options.queries ?? { getTaskStatus, getChatSession },
+  );
+  const [taskResult, sessionResult] = results;
+  const assistantMessageIdRef =
+    options.assistantMessageIdRef ?? ({ current: undefined } as MutableRefObject<string | undefined>);
+
+  if (sessionResult.status === 'fulfilled' && sessionResult.value) {
+    useChatStore.getState().reconcileMessages(
+      sessionResult.value.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+      })),
+    );
+    assistantMessageIdRef.current = findLatestAssistantId();
+  }
+
+  if (
+    taskResult.status === 'fulfilled' &&
+    taskResult.value &&
+    (!taskId || taskResult.value.task_id === taskId) &&
+    (options.shouldApplyTask?.(taskResult.value) ?? true)
+  ) {
+    applyRecoveredTask(taskResult.value, assistantMessageIdRef);
+  }
+
+  return results;
+}
+
+/** 鉴权退出的单一清理入口：先断开流，再清除全部本地聊天运行态。 */
+export function resetChatRuntime(): void {
+  closeAllAgentStreams();
+  useChatStore.getState().resetChat();
 }
 
 export function useChat() {
@@ -79,36 +136,19 @@ export function useChat() {
       if (existing) return existing;
 
       const reconciliation = (async () => {
-        const stateBefore = useChatStore.getState();
-        const previousStatus = stateBefore.taskStatus;
-
-        const [taskResult, sessionResult] = await loadChatReconciliation(
+        const [taskResult, sessionResult] = await reconcileChatFromRest(
           taskId,
           recoverySessionId,
+          {
+            assistantMessageIdRef,
+            shouldApplyTask: (task) => {
+              if (!currentTaskIdRef.current || currentTaskIdRef.current === PENDING_TASK_ID) {
+                currentTaskIdRef.current = task.task_id;
+              }
+              return task.task_id === currentTaskIdRef.current;
+            },
+          },
         );
-        const state = useChatStore.getState();
-
-        if (sessionResult.status === 'fulfilled' && sessionResult.value) {
-          state.reconcileMessages(
-            sessionResult.value.messages.map((message) => ({
-              id: message.id,
-              role: message.role,
-              content: message.content,
-            })),
-          );
-          assistantMessageIdRef.current = findLatestAssistantId();
-        }
-
-        if (taskResult.status === 'fulfilled' && taskResult.value) {
-          if (!currentTaskIdRef.current || currentTaskIdRef.current === PENDING_TASK_ID) {
-            currentTaskIdRef.current = taskResult.value.task_id;
-          }
-          if (taskResult.value.task_id === currentTaskIdRef.current) {
-            applyRecoveredTask(taskResult.value, assistantMessageIdRef);
-          }
-        } else if (taskId && !isTerminalTaskStatus(previousStatus)) {
-          state.setTaskStatus(previousStatus);
-        }
 
         const failures: string[] = [];
         if (taskResult.status === 'rejected') failures.push('任务状态');
@@ -186,10 +226,14 @@ export function useChat() {
     if (!sessionId) return;
     let disposed = false;
     const opening = subscribeAgentStream({
-      channels: stableChannels(sessionId),
+      // 新生成的 sessionId 在首条 REST 提交前尚未归属当前用户，不能提前
+      // 订阅。先以 user:self 完成鉴权与连接握手，REST 创建会话后再追加
+      // session/task/operation，并通过权威 REST 快照补齐 ACK 前的事件。
+      channels: initialChatChannels(),
       onEvent: handleAgentEvent,
       onSubscriptionAck: handleSubscriptionAck,
       onSubscriptionError: (error) => reportError(error, '实时订阅失败。'),
+      onConnectionError: (error) => reportError(error, '无法连接实时服务，请稍后重试。'),
       onStatusChange: (status) => useChatStore.getState().setConnectionStatus(status),
     });
     streamReadyRef.current = opening;
@@ -201,13 +245,13 @@ export function useChat() {
           return;
         }
         streamConnectionRef.current = connection;
-        const state = useChatStore.getState();
-        return connection.setChannels(
-          desiredChannels(state.sessionId, state.activeTaskId, state.activeOperationId),
-        );
       })
       .catch((error: unknown) => {
-        if (!disposed && !(error instanceof SubscriptionRejectedError)) {
+        if (
+          !disposed &&
+          !(error instanceof SubscriptionRejectedError) &&
+          !(error instanceof AgentStreamConnectError)
+        ) {
           reportError(error, '实时连接建立失败。');
         }
       });
@@ -384,7 +428,12 @@ export function applyAgentEvent(
       state.completeTool(event.data.tool_call_id, event.data.success);
       return;
     case 'task_state':
-      applyTaskState(event.data.state, event.data.message, assistantIdRef);
+      applyTaskState(
+        event.data.state,
+        event.data.message,
+        assistantIdRef,
+        event.data.privacy_decision,
+      );
       return;
     case 'done':
       applyTaskState('completed', undefined, assistantIdRef);
@@ -417,18 +466,22 @@ function applyRecoveredTask(
   task: RecoverableTaskStatus,
   assistantIdRef: MutableRefObject<string | undefined>,
 ): void {
-  applyTaskState(task.state, task.error, assistantIdRef);
+  applyTaskState(task.state, task.error, assistantIdRef, task.privacy_decision);
 }
 
 function applyTaskState(
   taskState: RecoverableTaskStatus['state'],
   error: string | undefined,
   assistantIdRef: MutableRefObject<string | undefined>,
+  privacyDecision?: PrivacyDecisionStatus,
 ): void {
   const state = useChatStore.getState();
   const taskStatus = toChatTaskStatus(taskState);
   const previousStatus = state.taskStatus;
   if (!state.setTaskStatus(taskStatus)) return;
+  if (taskStatus === 'waiting_privacy_decision') {
+    state.setPrivacyDecision(toPrivacyDecisionSummary(privacyDecision));
+  }
   if (isTerminalTaskStatus(taskStatus)) {
     finishStream(assistantIdRef, taskStatus);
   } else {
@@ -442,6 +495,20 @@ function applyTaskState(
       content: error,
     });
   }
+}
+
+export function toPrivacyDecisionSummary(
+  privacyDecision: PrivacyDecisionStatus | undefined,
+): PrivacyDecisionStatus | undefined {
+  if (!privacyDecision) return undefined;
+  const allowedCategories = new Set<string>(SENSITIVE_CATEGORIES);
+  return {
+    egress_id: privacyDecision.egress_id,
+    categories: privacyDecision.categories.filter((category) => allowedCategories.has(category)),
+    provider: privacyDecision.provider,
+    model_id: privacyDecision.model_id,
+    expires_at: privacyDecision.expires_at,
+  };
 }
 
 function toChatTaskStatus(state: RecoverableTaskStatus['state']): ChatTaskStatus {
@@ -467,16 +534,16 @@ function findLatestAssistantId(): string | undefined {
     .find((message) => message.role === 'assistant')?.id;
 }
 
-function stableChannels(sessionId: string): SubscriptionChannel[] {
-  return ['user:self', `session:${sessionId}`];
+export function initialChatChannels(): SubscriptionChannel[] {
+  return ['user:self'];
 }
 
-function desiredChannels(
+export function desiredChannels(
   sessionId: string,
   taskId?: string,
   operationId?: string,
 ): SubscriptionChannel[] {
-  const channels = stableChannels(sessionId);
+  const channels: SubscriptionChannel[] = ['user:self', `session:${sessionId}`];
   if (taskId) channels.push(`task:${taskId}`);
   if (operationId) channels.push(`operation:${operationId}`);
   return channels;

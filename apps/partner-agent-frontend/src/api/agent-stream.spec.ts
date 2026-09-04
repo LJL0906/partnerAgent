@@ -1,7 +1,10 @@
 import type { ServerPushEventV1, SubscriptionAckV1 } from '@partner-agent/contracts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { apiConfig } from './config';
 import {
+  AgentStreamConnectError,
+  closeAllAgentStreams,
   subscribeAgentStream,
   SubscriptionRejectedError,
   type AgentStreamConnection,
@@ -17,7 +20,11 @@ vi.mock('expo-crypto', () => ({
 }));
 vi.mock('./access-token', () => ({ requireAccessToken: vi.fn(async () => 'token') }));
 vi.mock('./config', () => ({
-  apiConfig: { serverUrl: 'http://example.test', streamNamespace: '/ws/v1' },
+  apiConfig: {
+    serverUrl: 'http://example.test',
+    serverUrlConfigError: undefined,
+    streamNamespace: '/ws/v1',
+  },
 }));
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => mocks.socket),
@@ -81,6 +88,9 @@ class FakeSocket {
 
 describe('agent stream', () => {
   beforeEach(() => {
+    closeAllAgentStreams();
+    (apiConfig as { serverUrl: string }).serverUrl = 'http://example.test';
+    (apiConfig as { serverUrlConfigError?: string }).serverUrlConfigError = undefined;
     mocks.socket = new FakeSocket();
     mocks.uuid = 0;
   });
@@ -210,6 +220,124 @@ describe('agent stream', () => {
     expect(onSubscriptionError).toHaveBeenCalledOnce();
     expect(connection.getChannels()).not.toContain('task:forbidden');
     connection.close();
+  });
+
+  it('closes every active stream and clears its channels on logout', async () => {
+    const connection = await openConnection();
+
+    closeAllAgentStreams();
+
+    expect(mocks.socket!.connected).toBe(false);
+    expect(connection.getChannels()).toEqual([]);
+  });
+
+  it('rejects an opening stream when logout happens before its first ACK', async () => {
+    const opening = subscribeAgentStream({
+      channels: ['user:self', 'session:session-1'],
+      onEvent: vi.fn(),
+    });
+    await nextMicrotask();
+
+    closeAllAgentStreams();
+
+    await expect(opening).rejects.toBeInstanceOf(Error);
+    expect(mocks.socket!.connected).toBe(false);
+  });
+
+  it('classifies 401 connect_error as auth_required without exposing server details', async () => {
+    const statuses: string[] = [];
+    const onConnectionError = vi.fn();
+    const opening = subscribeAgentStream({
+      channels: ['user:self'],
+      onEvent: vi.fn(),
+      onConnectionError,
+      onStatusChange: (status) => statuses.push(status),
+    });
+    await nextMicrotask();
+
+    const cause = Object.assign(new Error('Authorization: Bearer private-token'), {
+      data: { status: 401, token: 'private-token' },
+    });
+    mocks.socket!.serverEmit('connect_error', cause);
+
+    await expect(opening).rejects.toMatchObject({
+      kind: 'auth',
+      message: '实时连接鉴权失败，请重新登录。',
+    });
+    expect(statuses).toContain('auth_required');
+    expect(onConnectionError).toHaveBeenCalledOnce();
+    expect(JSON.stringify(onConnectionError.mock.calls)).not.toContain('private-token');
+  });
+
+  it('reports repeated network connect_error once while retaining reconnection', async () => {
+    const statuses: string[] = [];
+    const onConnectionError = vi.fn();
+    const opening = subscribeAgentStream({
+      channels: ['user:self'],
+      onEvent: vi.fn(),
+      onConnectionError,
+      onStatusChange: (status) => statuses.push(status),
+    });
+    const observedOpening = opening.catch((error: unknown) => error);
+    await nextMicrotask();
+
+    mocks.socket!.serverEmit('connect_error', new Error('ECONNREFUSED at private-host'));
+    mocks.socket!.serverEmit('connect_error', new Error('ECONNREFUSED at private-host'));
+
+    expect(statuses.at(-1)).toBe('error');
+    expect(onConnectionError).toHaveBeenCalledOnce();
+    expect(onConnectionError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'network',
+        message: '无法连接实时服务，请检查网络后重试。',
+      }),
+    );
+    expect(mocks.socket!.connected).toBe(true);
+    expect(JSON.stringify(onConnectionError.mock.calls)).not.toContain('private-host');
+
+    closeAllAgentStreams();
+    await observedOpening;
+  });
+
+  it('fails before socket creation when the server URL is invalid', async () => {
+    (apiConfig as { serverUrl: string }).serverUrl = 'private-token-not-a-url';
+    const onConnectionError = vi.fn();
+
+    await expect(
+      subscribeAgentStream({
+        channels: ['user:self'],
+        onEvent: vi.fn(),
+        onConnectionError,
+      }),
+    ).rejects.toEqual(new AgentStreamConnectError('configuration'));
+
+    expect(onConnectionError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'configuration',
+        message: '实时服务配置无效，请联系管理员。',
+      }),
+    );
+    expect(mocks.socket!.sent).toEqual([]);
+    expect(JSON.stringify(onConnectionError.mock.calls)).not.toContain('private-token');
+  });
+
+  it('uses the fixed configuration error when config resolution has failed', async () => {
+    (apiConfig as { serverUrlConfigError?: string }).serverUrlConfigError =
+      'raw private environment value';
+    const onConnectionError = vi.fn();
+
+    await expect(
+      subscribeAgentStream({
+        channels: ['user:self'],
+        onEvent: vi.fn(),
+        onConnectionError,
+      }),
+    ).rejects.toMatchObject({
+      kind: 'configuration',
+      message: '实时服务配置无效，请联系管理员。',
+    });
+    expect(JSON.stringify(onConnectionError.mock.calls)).not.toContain('raw private');
+    expect(mocks.socket!.sent).toEqual([]);
   });
 });
 

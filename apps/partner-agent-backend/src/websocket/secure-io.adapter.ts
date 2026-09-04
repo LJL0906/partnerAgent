@@ -39,7 +39,7 @@ export class SecureIoAdapter extends IoAdapter {
 
   createIOServer(port: number, options?: Partial<ServerOptions>): Server {
     const isAllowed = (origin?: string): boolean =>
-      typeof origin === 'string' && this.allowedOrigins.has(origin);
+      origin === undefined || this.allowedOrigins.has(origin);
     const serverOptions = {
       ...options,
       cors: {

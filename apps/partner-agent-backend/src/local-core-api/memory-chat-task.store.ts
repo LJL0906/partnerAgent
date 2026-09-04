@@ -3,7 +3,10 @@ import { SessionStore } from '../database/session-store.js';
 import {
   ChatTaskConflictError,
   ChatTaskStore,
+  INPUT_ANALYSIS_REJECTION_COMMAND,
+  inputAnalysisNotImplementedResult,
   type AcceptedChatTask,
+  type RejectInputAnalysisCommand,
   type SessionMessageView,
   type StoredChatTask,
   type SubmitTextCommand,
@@ -31,6 +34,26 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     private readonly maxSessionsPerUser = 100,
   ) {
     super();
+  }
+
+  async rejectInputAnalysis(command: RejectInputAnalysisCommand) {
+    const operationKey = this.key(command.ownerId, command.operationId);
+    const prior = this.operations.get(operationKey);
+    if (prior) {
+      if (
+        prior.commandName !== INPUT_ANALYSIS_REJECTION_COMMAND ||
+        prior.fingerprint !== command.requestFingerprint
+      )
+        throw new ChatTaskConflictError();
+      return { ...prior.result };
+    }
+    const result = inputAnalysisNotImplementedResult(command);
+    this.operations.set(operationKey, {
+      commandName: INPUT_ANALYSIS_REJECTION_COMMAND,
+      fingerprint: command.requestFingerprint,
+      result,
+    });
+    return { ...result };
   }
 
   async submitText(command: SubmitTextCommand) {

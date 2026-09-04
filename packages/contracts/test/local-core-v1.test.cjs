@@ -2,6 +2,7 @@ const {
   ACTION_EXECUTION_STATUSES,
   ACTION_PLAN_STATUSES,
   ACTION_TIMELINESS_STATUSES,
+  ANALYSIS_TYPES,
   BUSINESS_OBJECT_ACTIONS,
   CANDIDATE_STATUSES,
   CONFIRMATION_DECISIONS,
@@ -89,6 +90,24 @@ describe("Local Core v1 contract constants", () => {
 
   it("exposes the REST scaffold not-implemented error", () => {
     expect(ERRORS.NOT_IMPLEMENTED_001).toBe("NOT_IMPLEMENTED_001");
+  });
+
+  it("freezes the SubmitTextInput analysis type vocabulary", () => {
+    expect(ANALYSIS_TYPES).toEqual([
+      "idea_organize",
+      "experience_review",
+      "problem_analysis",
+      "content_extract",
+    ]);
+    expect(new Set(ANALYSIS_TYPES).size).toBe(ANALYSIS_TYPES.length);
+
+    const explicitAnalysisExample = {
+      text: "整理这段经历",
+      input_id: "input-contract-example",
+      request_analysis: true,
+      analysis_types: [ANALYSIS_TYPES[1]],
+    };
+    expect(explicitAnalysisExample.analysis_types).toEqual(["experience_review"]);
   });
 
   it("freezes the privacy decision safe category vocabulary", () => {

@@ -1,63 +1,93 @@
 import { Text, View } from 'react-native';
 
+import { AppIcon } from '@/components/ui/app-icon';
+import { StatusBadge } from '@/components/ui/status-badge';
 import type { ChatMessage } from '@/store/chat-store';
 import { colors } from '@/theme/colors';
+import { radius } from '@/theme/radius';
+import { spacing } from '@/theme/spacing';
+import { typography } from '@/theme/typography';
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'tool') {
     const finished = message.toolSuccess !== undefined;
+    const succeeded = message.toolSuccess === true;
+    const label = finished
+      ? `${message.tool ?? '工具'}执行${succeeded ? '完成' : '失败'}`
+      : message.content;
     return (
-      <View
-        style={{
-          alignSelf: 'stretch',
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          backgroundColor: colors.card,
-          borderColor: colors.border,
-          borderWidth: 1,
-          borderRadius: 16,
-          borderCurve: 'continuous',
-        }}>
-        <View
-          style={{
-            width: 9,
-            height: 9,
-            borderRadius: 5,
-            backgroundColor: finished ? colors.primary : colors.ai,
-          }}
+      <View style={{ alignSelf: 'stretch', alignItems: 'flex-start' }}>
+        <StatusBadge
+          label={label}
+          tone={!finished ? 'ai' : succeeded ? 'success' : 'danger'}
         />
-        <Text selectable style={{ flex: 1, color: colors.textSecondary, fontSize: 14, lineHeight: 20 }}>
-          {finished
-            ? `${message.tool ?? '工具'}执行${message.toolSuccess ? '完成' : '失败'}`
-            : message.content}
-        </Text>
       </View>
     );
   }
 
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+
+  if (isSystem) {
+    return (
+      <View
+        accessibilityRole="alert"
+        style={{
+          alignSelf: 'stretch',
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          gap: spacing.xs,
+          paddingHorizontal: 14,
+          paddingVertical: spacing.sm,
+          backgroundColor: colors.dangerSoft,
+          borderRadius: radius.medium,
+          borderCurve: 'continuous',
+        }}>
+        <AppIcon decorative color={colors.danger} name="error" size={18} />
+        <Text selectable style={{ flex: 1, color: colors.danger, ...typography.label }}>
+          {message.content}
+        </Text>
+      </View>
+    );
+  }
+
   return (
-    <View
-      style={{
-        alignSelf: isUser ? 'flex-end' : 'flex-start',
-        maxWidth: isSystem ? '100%' : '84%',
-        paddingHorizontal: isSystem ? 12 : 16,
-        paddingVertical: isSystem ? 10 : 13,
-        backgroundColor: isUser ? colors.primarySoft : isSystem ? colors.errorSoft : colors.card,
-        borderColor: isUser ? colors.primarySoft : isSystem ? colors.error : colors.border,
-        borderWidth: 1,
-        borderRadius: isSystem ? 12 : 18,
-        borderCurve: 'continuous',
-      }}>
-      <Text
-        selectable
-        style={{ color: isSystem ? colors.error : colors.text, fontSize: 16, lineHeight: 24 }}>
-        {message.content}
-      </Text>
+    <View style={{ alignSelf: isUser ? 'flex-end' : 'stretch', maxWidth: isUser ? '88%' : '100%' }}>
+      {!isUser ? (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm }}>
+          <View
+            style={{
+              width: 36,
+              height: 36,
+              flexShrink: 0,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: radius.medium,
+              borderCurve: 'continuous',
+              backgroundColor: colors.aiCore,
+            }}>
+            <AppIcon accessibilityLabel="伙伴" color={colors.violet500} name="sparkle" size={18} />
+          </View>
+          <Text selectable style={{ flex: 1, color: colors.ink, ...typography.body }}>
+            {message.content}
+          </Text>
+        </View>
+      ) : (
+        <View
+          style={{
+            paddingHorizontal: spacing.md,
+            paddingVertical: spacing.sm,
+            backgroundColor: colors.surfaceSubtle,
+            borderColor: colors.border,
+            borderWidth: 1,
+            borderRadius: radius.large,
+            borderCurve: 'continuous',
+          }}>
+          <Text selectable style={{ color: colors.ink, ...typography.body }}>
+            {message.content}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }

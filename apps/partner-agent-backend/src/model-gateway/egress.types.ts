@@ -46,9 +46,15 @@ export interface EgressPolicyResult {
 
 export interface EgressAuditRecord {
   requestId: string;
+  egressId?: string;
+  ownerId: string;
+  sessionId: string;
   taskId?: string;
+  operationId?: string;
+  requestFingerprint: string;
   source: string;
   provider: string;
+  modelId: string;
   categories: SensitiveCategory[];
   decision: EgressDecision;
   createdAt: Date;
@@ -66,9 +72,16 @@ export class EgressDecisionError extends Error {
       provider?: string;
       modelId?: string;
       requestFingerprint?: string;
+      reason?: 'audit_unavailable';
     } = {},
   ) {
-    super(decision === 'blocked' ? '外发已被策略阻止' : '外发等待用户决定');
+    super(
+      details.reason === 'audit_unavailable'
+        ? '外发安全检查暂时不可用，本次内容未发送。'
+        : decision === 'blocked'
+          ? '外发已被策略阻止'
+          : '外发等待用户决定',
+    );
     this.name = 'EgressDecisionError';
     this.code = decision === 'blocked' ? 'EGRESS_001' : 'EGRESS_002';
   }

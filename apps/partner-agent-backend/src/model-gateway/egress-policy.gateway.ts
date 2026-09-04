@@ -2,11 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Context, SimpleStreamOptions, Tool } from '@earendil-works/pi-ai';
-import type {
-  ApprovedEgressRequest,
-  EgressPolicyResult,
-  ExternalModelRequest,
-  SensitiveCategory,
+import {
+  EgressDecisionError,
+  type ApprovedEgressRequest,
+  type EgressPolicyResult,
+  type ExternalModelRequest,
+  type SensitiveCategory,
 } from './egress.types.js';
 import {
   EGRESS_DECISION_STORE,
@@ -14,58 +15,99 @@ import {
   type StoredEgressDecision,
 } from './egress-decision.store.js';
 import { EgressAuditStore } from '../database/egress-audit.store.js';
+import { SensitiveDataScanner } from './sensitive-data-scanner.js';
+import { SensitiveDataRedactor } from './sensitive-data-redactor.js';
+import {
+  DEFAULT_FINGERPRINT_MAX_BYTES,
+  fingerprintExternalPayload,
+} from './external-request-fingerprint.js';
 
-const DEFAULT_FINGERPRINT_LIMIT = 1_048_576;
-const MAX_SERIALIZATION_DEPTH = 64;
-
+type EvaluatedEgressResult = Omit<EgressPolicyResult, 'request'> & {
+  approvedInput?: ExternalModelRequest;
+};
 @Injectable()
 export class EgressPolicyGateway {
+  private readonly scanner = new SensitiveDataScanner();
+  private readonly redactor = new SensitiveDataRedactor();
   constructor(
     private readonly config: ConfigService,
     private readonly auditSink: EgressAuditStore,
     @Inject(EGRESS_DECISION_STORE)
     private readonly decisions: EgressDecisionStore,
   ) {}
-
   async evaluate(input: ExternalModelRequest): Promise<EgressPolicyResult> {
     let categories: SensitiveCategory[] = [];
     let fingerprint: string | undefined;
+    let result: EvaluatedEgressResult = { decision: 'blocked', categories };
     try {
-      const serialized = this.stableSerialize(this.semanticPayload(input));
-      fingerprint = createHash('sha256').update(serialized).digest('hex');
-      categories = this.scan(serialized);
-      const configuredDecision = this.decide(categories);
-      const result =
-        configuredDecision === 'pending_user_decision'
-          ? await this.evaluatePendingDecision(input, fingerprint, categories)
-          : this.completeConfiguredDecision(
-              input,
-              configuredDecision,
-              categories,
-            );
-      this.audit(input, result.decision, categories);
-      return { ...result, requestFingerprint: fingerprint };
+      const payload = this.semanticPayload(input);
+      const scanned = this.scanner.scan(payload);
+      if (!scanned.ok) {
+        result = { decision: 'blocked', categories };
+      } else {
+        categories = scanned.categories;
+        fingerprint = fingerprintExternalPayload(
+          payload,
+          this.fingerprintLimit(),
+        );
+        const configuredDecision = this.decide(categories);
+        result =
+          configuredDecision === 'pending_user_decision'
+            ? await this.evaluatePendingDecision(
+                input,
+                fingerprint,
+                categories,
+              )
+            : this.completeConfiguredDecision(
+                input,
+                configuredDecision,
+                categories,
+              );
+      }
     } catch {
-      this.audit(input, 'blocked', categories);
-      return {
-        decision: 'blocked',
-        categories,
-        requestFingerprint: fingerprint,
-      };
+      result = { decision: 'blocked', categories };
     }
+
+    fingerprint ??= this.unavailableFingerprint(input);
+    try {
+      await this.audit(input, result, fingerprint);
+    } catch {
+      throw new EgressDecisionError('blocked', categories, {
+        reason: 'audit_unavailable',
+        provider: input.metadata.provider,
+        modelId: input.model.id,
+        requestFingerprint: fingerprint,
+      });
+    }
+
+    const { approvedInput, ...publicResult } = result;
+    return {
+      ...publicResult,
+      requestFingerprint: fingerprint,
+      ...(approvedInput
+        ? {
+            request: this.approve(
+              approvedInput,
+              result.decision as 'allowed' | 'redacted',
+              categories,
+            ),
+          }
+        : {}),
+    };
   }
 
   computeRequestFingerprint(input: ExternalModelRequest): string {
-    return createHash('sha256')
-      .update(this.stableSerialize(this.semanticPayload(input)))
-      .digest('hex');
+    return fingerprintExternalPayload(
+      this.semanticPayload(input),
+      this.fingerprintLimit(),
+    );
   }
 
   private async evaluatePendingDecision(
     input: ExternalModelRequest,
     requestFingerprint: string,
     categories: SensitiveCategory[],
-  ): Promise<EgressPolicyResult> {
+  ): Promise<EvaluatedEgressResult> {
     const { taskId, ownerId } = input.metadata;
     if (!taskId || !input.metadata.operationId) {
       return { decision: 'blocked', categories };
@@ -92,25 +134,25 @@ export class EgressPolicyGateway {
       }
       if (checked.status === 'consumed' && checked.record) {
         if (checked.record.decision === 'redact') {
-          const request = this.redactAndApprove(input, categories);
-          return request
-            ? { decision: 'redacted', categories, request }
+          const approvedInput = this.redactAndRescan(input);
+          return approvedInput
+            ? { decision: 'redacted', categories, approvedInput }
             : { decision: 'blocked', categories };
         }
         return {
           decision: 'allowed',
           categories,
-          request: this.approve(input, 'allowed', categories),
+          approvedInput: input,
         };
       }
     }
 
-    let redacted: ApprovedEgressRequest | undefined;
+    let redacted: ExternalModelRequest | undefined;
     if (
       current?.state === 'ready_redact' &&
       this.matches(current, input, requestFingerprint)
     ) {
-      redacted = this.redactAndApprove(input, categories);
+      redacted = this.redactAndRescan(input);
       if (!redacted) return { decision: 'blocked', categories };
     }
 
@@ -125,15 +167,15 @@ export class EgressPolicyGateway {
       });
       if (consumed.status === 'consumed' && consumed.record) {
         if (consumed.record.decision === 'redact') {
-          redacted ??= this.redactAndApprove(input, categories);
+          redacted ??= this.redactAndRescan(input);
           return redacted
-            ? { decision: 'redacted', categories, request: redacted }
+            ? { decision: 'redacted', categories, approvedInput: redacted }
             : { decision: 'blocked', categories };
         }
         return {
           decision: 'allowed',
           categories,
-          request: this.approve(input, 'allowed', categories),
+          approvedInput: input,
         };
       }
       if (['blocked', 'expired', 'cancelled'].includes(consumed.status)) {
@@ -179,35 +221,43 @@ export class EgressPolicyGateway {
     input: ExternalModelRequest,
     decision: Exclude<EgressPolicyResult['decision'], 'pending_user_decision'>,
     categories: SensitiveCategory[],
-  ): EgressPolicyResult {
+  ): EvaluatedEgressResult {
     if (decision === 'blocked') return { decision, categories };
     if (decision === 'redacted') {
-      const request = this.redactAndApprove(input, categories);
-      return request
-        ? { decision, categories, request }
+      const approvedInput = this.redactAndRescan(input);
+      return approvedInput
+        ? { decision, categories, approvedInput }
         : { decision: 'blocked', categories };
     }
     return {
       decision,
       categories,
-      request: this.approve(input, decision, categories),
+      approvedInput: input,
     };
   }
 
-  private redactAndApprove(
+  private redactAndRescan(
     input: ExternalModelRequest,
-    categories: SensitiveCategory[],
-  ): ApprovedEgressRequest | undefined {
+  ): ExternalModelRequest | undefined {
+    const redacted = this.redactor.redact({
+      context: this.providerContext(input.context),
+      options: this.providerOptions(input.options),
+    });
+    if (!redacted.ok) return undefined;
+    const payload = redacted.value as {
+      context: Context;
+      options?: SimpleStreamOptions;
+    };
     const redactedInput: ExternalModelRequest = {
       ...input,
-      context: this.redactValue(this.providerContext(input.context)) as Context,
-      options: this.redactOptions(input.options),
+      context: payload.context,
+      options: input.options
+        ? ({ ...input.options, ...payload.options } as SimpleStreamOptions)
+        : undefined,
     };
-    const rescanned = this.scan(
-      this.stableSerialize(this.semanticPayload(redactedInput)),
-    );
-    if (rescanned.length > 0) return undefined;
-    return this.approve(redactedInput, 'redacted', categories);
+    const rescanned = this.scanner.scan(this.semanticPayload(redactedInput));
+    if (!rescanned.ok || rescanned.findings.length > 0) return undefined;
+    return redactedInput;
   }
 
   private approve(
@@ -290,6 +340,7 @@ export class EgressPolicyGateway {
     const source = options as Record<string, unknown>;
     const keys = [
       'temperature',
+      'apiKey',
       'samplingParams',
       'maxTokens',
       'transport',
@@ -314,61 +365,6 @@ export class EgressPolicyGateway {
     );
   }
 
-  private stableSerialize(value: unknown): string {
-    const limit = this.fingerprintLimit();
-    let bytes = 0;
-    const ancestors = new Set<object>();
-    const add = (part: string): string => {
-      bytes += Buffer.byteLength(part);
-      if (bytes > limit) throw new Error('fingerprint payload too large');
-      return part;
-    };
-    const encode = (item: unknown, depth: number): string => {
-      if (depth > MAX_SERIALIZATION_DEPTH)
-        throw new Error('fingerprint depth exceeded');
-      if (item === null) return add('null');
-      if (typeof item === 'string') return add(JSON.stringify(item));
-      if (typeof item === 'boolean') return add(item ? 'true' : 'false');
-      if (typeof item === 'number') {
-        if (!Number.isFinite(item)) throw new Error('non-finite number');
-        return add(Object.is(item, -0) ? '0' : String(item));
-      }
-      if (typeof item === 'undefined') return add('null');
-      if (typeof item !== 'object')
-        throw new Error('unsupported fingerprint value');
-      if (ancestors.has(item)) throw new Error('circular fingerprint value');
-      if (
-        Object.getPrototypeOf(item) !== Object.prototype &&
-        !Array.isArray(item)
-      ) {
-        throw new Error('unsupported fingerprint object');
-      }
-      ancestors.add(item);
-      let encoded: string;
-      if (Array.isArray(item)) {
-        const parts = Array.from(item, (entry) => encode(entry, depth + 1));
-        if (parts.length > 1) add(','.repeat(parts.length - 1));
-        encoded = add('[') + parts.join(',') + add(']');
-      } else {
-        const object = item as Record<string, unknown>;
-        const keys = Object.keys(object)
-          .filter((key) => object[key] !== undefined)
-          .sort();
-        const parts = keys.map(
-          (key) =>
-            add(JSON.stringify(key)) +
-            add(':') +
-            encode(object[key], depth + 1),
-        );
-        if (parts.length > 1) add(','.repeat(parts.length - 1));
-        encoded = add('{') + parts.join(',') + add('}');
-      }
-      ancestors.delete(item);
-      return encoded;
-    };
-    return encode(value, 0);
-  }
-
   private decide(
     categories: SensitiveCategory[],
   ): EgressPolicyResult['decision'] {
@@ -390,59 +386,6 @@ export class EgressPolicyGateway {
     throw new Error('invalid egress policy');
   }
 
-  private scan(value: string): SensitiveCategory[] {
-    const rules: Array<[SensitiveCategory, RegExp]> = [
-      ['identity_document', /\b\d{17}[\dXx]\b/],
-      ['bank_card', /\b(?:\d[ -]?){16,19}\b/],
-      ['password', /(?:password|passwd|密码)\s*[:=]\s*[^\s,;]+/i],
-      [
-        'api_key',
-        /(?:api[_-]?key|sk-[a-z0-9_-]{12,})\s*[:=]?\s*[a-z0-9_-]{8,}/i,
-      ],
-      ['secret', /(?:secret|token|密钥)\s*[:=]\s*[^\s,;]+/i],
-    ];
-    return rules
-      .filter(([, rule]) => rule.test(value))
-      .map(([category]) => category);
-  }
-
-  private redactOptions(
-    options?: SimpleStreamOptions,
-  ): SimpleStreamOptions | undefined {
-    if (!options) return undefined;
-    const result = { ...options } as Record<string, unknown>;
-    for (const [key, value] of Object.entries(
-      this.providerOptions(options) ?? {},
-    )) {
-      result[key] = this.redactValue(value);
-    }
-    return result as SimpleStreamOptions;
-  }
-
-  private redactValue(value: unknown): unknown {
-    if (typeof value === 'string') {
-      return value.replace(
-        /\b\d{17}[\dXx]\b|\b(?:\d[ -]?){16,19}\b|(?:password|passwd|密码|api[_-]?key|secret|token|密钥)\s*[:=]\s*[^\s,;"}]+|sk-[a-z0-9_-]{12,}/gi,
-        '[REDACTED]',
-      );
-    }
-    if (Array.isArray(value))
-      return value.map((entry) => this.redactValue(entry));
-    if (
-      value &&
-      typeof value === 'object' &&
-      Object.getPrototypeOf(value) === Object.prototype
-    ) {
-      return Object.fromEntries(
-        Object.entries(value).map(([key, entry]) => [
-          key,
-          this.redactValue(entry),
-        ]),
-      );
-    }
-    return value;
-  }
-
   private privacyDecisionTtlMs(): number {
     const configured = Number(
       this.config.get('PRIVACY_DECISION_TTL_MS') ?? 900_000,
@@ -455,25 +398,49 @@ export class EgressPolicyGateway {
   private fingerprintLimit(): number {
     const configured = Number(
       this.config.get('EGRESS_FINGERPRINT_MAX_BYTES') ??
-        DEFAULT_FINGERPRINT_LIMIT,
+        DEFAULT_FINGERPRINT_MAX_BYTES,
     );
     return Number.isSafeInteger(configured) && configured > 0
       ? configured
-      : DEFAULT_FINGERPRINT_LIMIT;
+      : DEFAULT_FINGERPRINT_MAX_BYTES;
   }
 
-  private audit(
+  private unavailableFingerprint(input: ExternalModelRequest): string {
+    return createHash('sha256')
+      .update(input.metadata.ownerId)
+      .update('\0')
+      .update(input.metadata.sessionId)
+      .update('\0')
+      .update(input.metadata.taskId ?? '')
+      .update('\0')
+      .update(input.metadata.operationId ?? '')
+      .update('\0')
+      .update(input.metadata.provider)
+      .update('\0')
+      .update(input.model.id)
+      .update('\0')
+      .update(input.metadata.source)
+      .digest('hex');
+  }
+
+  private async audit(
     input: ExternalModelRequest,
-    decision: EgressPolicyResult['decision'],
-    categories: SensitiveCategory[],
-  ): void {
-    this.auditSink.record({
+    result: EvaluatedEgressResult,
+    requestFingerprint: string,
+  ): Promise<void> {
+    await this.auditSink.record({
       requestId: randomUUID(),
+      egressId: result.egressId,
+      ownerId: input.metadata.ownerId,
+      sessionId: input.metadata.sessionId,
       taskId: input.metadata.taskId,
+      operationId: input.metadata.operationId,
+      requestFingerprint,
       source: input.metadata.source,
       provider: input.metadata.provider,
-      categories,
-      decision,
+      modelId: input.model.id,
+      categories: result.categories,
+      decision: result.decision,
       createdAt: new Date(),
     });
   }

@@ -1,3 +1,4 @@
+import type { PrivacyDecisionStatus } from '@partner-agent/contracts';
 import { create } from 'zustand';
 
 export type ChatRole = 'user' | 'assistant' | 'system' | 'tool';
@@ -112,12 +113,14 @@ export interface ChatState {
   isThinking: boolean;
   connectionStatus: ChatConnectionStatus;
   taskStatus: ChatTaskStatus;
+  privacyDecision?: PrivacyDecisionStatus;
   setSessionId: (sessionId: string) => void;
   setActiveTaskId: (activeTaskId?: string) => void;
   setActiveOperationId: (activeOperationId?: string) => void;
   setConnectionStatus: (connectionStatus: ChatConnectionStatus) => void;
   beginTask: () => void;
   setTaskStatus: (taskStatus: ChatTaskStatus) => boolean;
+  setPrivacyDecision: (privacyDecision?: PrivacyDecisionStatus) => void;
   setStreaming: (isStreaming: boolean) => void;
   setThinking: (isThinking: boolean) => void;
   addMessage: (message: ChatMessage) => void;
@@ -126,15 +129,23 @@ export interface ChatState {
   completeTool: (toolCallId: string, success: boolean) => void;
   reconcileMessages: (messages: ChatMessage[]) => void;
   replaceMessages: (messages: ChatMessage[]) => void;
+  resetChat: () => void;
 }
 
-export const useChatStore = create<ChatState>((set) => ({
+const INITIAL_CHAT_STATE = {
   sessionId: '',
-  messages: [],
+  activeTaskId: undefined,
+  activeOperationId: undefined,
+  messages: [] as ChatMessage[],
   isStreaming: false,
   isThinking: false,
-  connectionStatus: 'idle',
-  taskStatus: 'idle',
+  connectionStatus: 'idle' as ChatConnectionStatus,
+  taskStatus: 'idle' as ChatTaskStatus,
+  privacyDecision: undefined,
+};
+
+export const useChatStore = create<ChatState>((set) => ({
+  ...INITIAL_CHAT_STATE,
   setSessionId: (sessionId) => set({ sessionId }),
   setActiveTaskId: (activeTaskId) => set({ activeTaskId }),
   setActiveOperationId: (activeOperationId) => set({ activeOperationId }),
@@ -146,16 +157,24 @@ export const useChatStore = create<ChatState>((set) => ({
       isStreaming: true,
       isThinking: true,
       taskStatus: 'queued',
+      privacyDecision: undefined,
     }),
   setTaskStatus: (taskStatus) => {
     let accepted = false;
     set((state) => {
       const mergedStatus = mergeChatTaskStatus(state.taskStatus, taskStatus);
       accepted = mergedStatus === taskStatus;
-      return mergedStatus === state.taskStatus ? state : { taskStatus: mergedStatus };
+      if (mergedStatus === state.taskStatus) return state;
+      return {
+        taskStatus: mergedStatus,
+        ...(mergedStatus === 'waiting_privacy_decision'
+          ? {}
+          : { privacyDecision: undefined }),
+      };
     });
     return accepted;
   },
+  setPrivacyDecision: (privacyDecision) => set({ privacyDecision }),
   setStreaming: (isStreaming) => set({ isStreaming }),
   setThinking: (isThinking) => set({ isThinking }),
   addMessage: (message) =>
@@ -198,4 +217,5 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => ({ messages: mergeChatMessages(state.messages, messages) })),
   replaceMessages: (messages) =>
     set((state) => ({ messages: mergeChatMessages(state.messages, messages) })),
+  resetChat: () => set({ ...INITIAL_CHAT_STATE, messages: [] }),
 }));

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PiAgentService } from '../agent/pi-agent.service.js';
 import { MemorySessionStore } from '../database/memory-session.store.js';
 import { MemoryEgressDecisionStore } from '../model-gateway/memory-egress-decision.store.js';
+import { EgressDecisionError } from '../model-gateway/egress.types.js';
 import { ChatTaskEventBus, type ChatTaskEvent } from './chat-task-event.bus.js';
 import { PiChatTaskScheduler } from './chat-task-scheduler.js';
 import { MemoryChatTaskStore } from './memory-chat-task.store.js';
@@ -172,5 +173,48 @@ describe('PiChatTaskScheduler', () => {
     });
     expect(serialized).not.toContain('hunter2');
     expect(serialized).toContain('EGRESS_001');
+  });
+
+  it('persists a directly thrown egress safety failure with the safe code and message', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    const accepted = await store.submitText(command);
+    const bus = new ChatTaskEventBus();
+    const events: ChatTaskEvent[] = [];
+    bus.subscribe((event) => events.push(event));
+    const agent = {
+      chat: async function* () {
+        yield* [];
+        throw new EgressDecisionError('blocked', [], {
+          reason: 'audit_unavailable',
+        });
+      },
+      cancel: vi.fn(),
+    } as unknown as PiAgentService;
+
+    new PiChatTaskScheduler(
+      agent,
+      store,
+      bus,
+      new MemoryEgressDecisionStore(),
+    ).schedule(accepted.task!);
+
+    await vi.waitFor(async () =>
+      expect(
+        (await store.getTask(command.ownerId, accepted.task!.taskId))?.state,
+      ).toBe('failed'),
+    );
+    expect(await store.getTask(command.ownerId, accepted.task!.taskId)).toMatchObject(
+      {
+        errorCode: 'EGRESS_001',
+        errorMessage: '外发安全检查暂时不可用，本次内容未发送。',
+      },
+    );
+    expect(events.at(-1)).toMatchObject({
+      state: 'failed',
+      data: {
+        code: 'EGRESS_001',
+        message: '外发安全检查暂时不可用，本次内容未发送。',
+      },
+    });
   });
 });

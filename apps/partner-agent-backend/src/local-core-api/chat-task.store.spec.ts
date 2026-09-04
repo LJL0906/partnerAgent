@@ -13,6 +13,52 @@ const base = {
 };
 
 describe('ChatTaskStore', () => {
+  it('persists analysis rejection idempotently without chat side effects', async () => {
+    const sessions = new MemorySessionStore();
+    const store = new MemoryChatTaskStore(sessions);
+    const command = {
+      ownerId: base.ownerId,
+      operationId: base.operationId,
+      requestFingerprint: base.requestFingerprint,
+      requestedTypes: ['idea_organize'],
+    };
+
+    const first = await store.rejectInputAnalysis(command);
+    const replay = await store.rejectInputAnalysis(command);
+
+    expect(first).toEqual(replay);
+    expect(first).toMatchObject({
+      code: 'NOT_IMPLEMENTED_001',
+      details: {
+        feature: 'input_analysis',
+        requested_types: ['idea_organize'],
+        operation_id: base.operationId,
+      },
+    });
+    expect(await store.ownsOperation(base.ownerId, base.operationId)).toBe(
+      true,
+    );
+    expect(await sessions.find('anything', base.ownerId)).toBeUndefined();
+  });
+
+  it('rejects an analysis operation replay with a different fingerprint', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    await store.rejectInputAnalysis({
+      ownerId: base.ownerId,
+      operationId: base.operationId,
+      requestFingerprint: base.requestFingerprint,
+      requestedTypes: ['idea_organize'],
+    });
+    await expect(
+      store.rejectInputAnalysis({
+        ownerId: base.ownerId,
+        operationId: base.operationId,
+        requestFingerprint: 'different',
+        requestedTypes: ['idea_organize'],
+      }),
+    ).rejects.toBeInstanceOf(ChatTaskConflictError);
+  });
+
   it('atomically registers one input, user message and queued task', async () => {
     const sessions = new MemorySessionStore();
     const store = new MemoryChatTaskStore(sessions);

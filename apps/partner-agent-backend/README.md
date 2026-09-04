@@ -44,6 +44,38 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
+## Local device integration
+
+The server binds to `127.0.0.1:3000` by default. For an Expo app running on a
+physical device, opt in to LAN access in `.env` and point the app at the
+computer's LAN IP address:
+
+```dotenv
+HOST=0.0.0.0
+PORT=3000
+CORS_ALLOWED_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
+```
+
+`PORT` must be an integer from 1 to 65535. Keep
+`CORS_ALLOWED_ORIGINS` as an explicit comma-separated allowlist: do not use `*`
+and do not allow arbitrary development ports. Add another exact origin only
+when the browser really uses it.
+
+Expo native Socket.IO clients normally omit `Origin`; they may enter the
+handshake without that header, but still need the same valid HS256 JWT as REST.
+A browser request that supplies an origin outside the allowlist is rejected.
+
+Create a short-lived local development JWT from the existing
+`AUTH_JWT_SECRET` without exposing an anonymous token endpoint:
+
+```powershell
+npm run dev:jwt -- --subject local-device-user --expires-in 900
+```
+
+The command prints only the token, never the secret. Keep both values out of
+Git, URLs, logs, screenshots, and chat messages. Token issuance is a local
+development convenience and does not weaken production authentication.
+
 ## Run tests
 
 ```bash

@@ -21,6 +21,10 @@ import { SecureIoAdapter } from '../src/websocket/secure-io.adapter.js';
 
 const secret = 'test-secret-that-is-at-least-32-bytes';
 const allowedOrigin = 'https://allowed.example';
+const expoWebOrigins = [
+  'http://localhost:8081',
+  'http://127.0.0.1:8081',
+] as const;
 
 describe('Agent WebSocket authentication (e2e)', () => {
   let app: INestApplication;
@@ -30,7 +34,9 @@ describe('Agent WebSocket authentication (e2e)', () => {
 
   beforeAll(async () => {
     process.env.AUTH_JWT_SECRET = secret;
-    process.env.CORS_ALLOWED_ORIGINS = allowedOrigin;
+    process.env.CORS_ALLOWED_ORIGINS = [allowedOrigin, ...expoWebOrigins].join(
+      ',',
+    );
     process.env.MAX_SESSIONS_PER_USER = '1';
     process.env.SESSION_STORE = 'memory';
 
@@ -77,6 +83,24 @@ describe('Agent WebSocket authentication (e2e)', () => {
       connect(await createToken('cors-user'), 'https://evil.example'),
     ).rejects.toThrow('连接被拒绝');
   });
+
+  it('allows a native client without Origin only after valid JWT authentication', async () => {
+    await expect(
+      connect(await createToken('native-user')),
+    ).resolves.toMatchObject({
+      connected: true,
+    });
+    await expect(connect('invalid-token')).rejects.toThrow('连接被拒绝');
+  });
+
+  it.each(expoWebOrigins)(
+    'allows the explicit Expo Web origin %s with a valid JWT',
+    async (origin) => {
+      await expect(
+        connect(await createToken(`expo-web-${origin}`), origin),
+      ).resolves.toMatchObject({ connected: true });
+    },
+  );
 
   it('prevents one user from reading, continuing or cancelling another user session', async () => {
     const owner = await connect(await createToken('owner-x'), allowedOrigin);
@@ -144,11 +168,11 @@ describe('Agent WebSocket authentication (e2e)', () => {
 
   async function connect(
     token: string | undefined,
-    origin: string,
+    origin?: string,
   ): Promise<ClientSocket> {
     const client = io(url, {
       auth: token ? { token } : {},
-      extraHeaders: { Origin: origin },
+      ...(origin ? { extraHeaders: { Origin: origin } } : {}),
       forceNew: true,
       reconnection: false,
       transports: ['websocket'],

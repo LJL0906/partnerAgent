@@ -13,6 +13,7 @@ import { requireAccessToken } from './access-token';
 import { apiConfig } from './config';
 
 const MAX_SEEN_EVENT_IDS = 500;
+const activeStreamClosers = new Set<() => void>();
 
 interface ServerToClientEvents {
   agent_event: (event: ServerPushEventV1) => void;
@@ -54,6 +55,7 @@ export interface StreamSubscription {
   onEvent: (event: ServerPushEventV1) => void;
   onSubscriptionAck?: (ack: SubscriptionAckV1) => void;
   onSubscriptionError?: (error: SubscriptionRejectedError) => void;
+  onConnectionError?: (error: AgentStreamConnectError) => void;
   onStatusChange?: (status: StreamConnectionStatus) => void;
 }
 
@@ -90,10 +92,39 @@ export class StreamDisconnectedError extends Error {
   }
 }
 
+export type AgentStreamConnectErrorKind = 'auth' | 'network' | 'configuration';
+
+/** 对 UI 安全的连接错误；绝不透传 Socket.IO 或服务端原始消息。 */
+export class AgentStreamConnectError extends Error {
+  constructor(public readonly kind: AgentStreamConnectErrorKind) {
+    super(
+      kind === 'auth'
+        ? '实时连接鉴权失败，请重新登录。'
+        : kind === 'configuration'
+          ? '实时服务配置无效，请联系管理员。'
+          : '无法连接实时服务，请检查网络后重试。',
+    );
+    this.name = 'AgentStreamConnectError';
+  }
+}
+
+/** 退出登录时同步关闭全部连接，并丢弃各连接闭包内的游标与去重状态。 */
+export function closeAllAgentStreams(): void {
+  for (const close of [...activeStreamClosers]) close();
+}
+
 export async function subscribeAgentStream(
   subscription: StreamSubscription,
 ): Promise<AgentStreamConnection> {
   subscription.onStatusChange?.('connecting');
+
+  const serverUrl = getConfiguredServerUrl();
+  if (!serverUrl) {
+    const error = new AgentStreamConnectError('configuration');
+    subscription.onStatusChange?.('error');
+    safelyReportConnectionError(subscription, error);
+    throw error;
+  }
 
   let accessToken: string;
   try {
@@ -104,7 +135,7 @@ export async function subscribeAgentStream(
   }
 
   const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(
-    `${apiConfig.serverUrl}${apiConfig.streamNamespace}`,
+    `${serverUrl}${apiConfig.streamNamespace}`,
     { autoConnect: false, auth: { token: accessToken } },
   );
   const desiredChannels = new Set(subscription.channels);
@@ -116,6 +147,7 @@ export async function subscribeAgentStream(
   const deferredSubscriptions: DeferredSubscription[] = [];
   let closed = false;
   let hasBeenReady = false;
+  let lastConnectionErrorKind: AgentStreamConnectErrorKind | undefined;
 
   let resolveReady!: () => void;
   let rejectReady!: (error: Error) => void;
@@ -238,6 +270,7 @@ export async function subscribeAgentStream(
   };
 
   const handleConnect = () => {
+    lastConnectionErrorKind = undefined;
     acknowledgedChannels.clear();
     const channels = [...desiredChannels];
     if (channels.length === 0) {
@@ -268,23 +301,40 @@ export async function subscribeAgentStream(
     pendingRequests.clear();
     if (!closed) subscription.onStatusChange?.('disconnected');
   };
-  const handleConnectError = () => {
-    subscription.onStatusChange?.('error');
-    // Socket.IO will keep reconnecting this same transport. The initial ready
-    // promise stays pending until a real subscribe ACK instead of turning a
-    // transient network failure into a permanently closed stream.
+  const handleConnectError = (cause?: unknown) => {
+    const error = new AgentStreamConnectError(classifyConnectError(cause));
+    subscription.onStatusChange?.(error.kind === 'auth' ? 'auth_required' : 'error');
+    if (lastConnectionErrorKind !== error.kind) {
+      lastConnectionErrorKind = error.kind;
+      safelyReportConnectionError(subscription, error);
+    }
+
+    if (error.kind === 'auth') {
+      if (!hasBeenReady) rejectReady(error);
+      close();
+    }
+    // 网络错误保留同一个 Socket.IO 客户端继续重连；提示按连续错误类别去重。
   };
 
   const close = () => {
     if (closed) return;
     closed = true;
     const error = new StreamDisconnectedError();
+    activeStreamClosers.delete(close);
     for (const pending of pendingRequests.values()) pending.reject(error);
     pendingRequests.clear();
     for (const deferred of deferredSubscriptions.splice(0)) deferred.reject(error);
+    desiredChannels.clear();
+    acknowledgedChannels.clear();
+    channelWatermarks.clear();
+    seenEventIds.clear();
+    seenEventOrder.length = 0;
     socket.removeAllListeners();
     socket.disconnect();
+    if (!hasBeenReady) rejectReady(error);
   };
+
+  activeStreamClosers.add(close);
 
   socket.on('connect', handleConnect);
   socket.on('disconnect', handleDisconnect);
@@ -385,4 +435,63 @@ function unique(channels: SubscriptionChannel[]): SubscriptionChannel[] {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function isValidServerUrl(serverUrl: string): boolean {
+  try {
+    const parsed = new URL(serverUrl);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.host);
+  } catch {
+    return false;
+  }
+}
+
+function getConfiguredServerUrl(): string | undefined {
+  if (apiConfig.serverUrlConfigError) return undefined;
+  try {
+    const serverUrl = apiConfig.serverUrl;
+    return isValidServerUrl(serverUrl) ? serverUrl : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function classifyConnectError(error: unknown): Exclude<AgentStreamConnectErrorKind, 'configuration'> {
+  const record = isRecord(error) ? error : undefined;
+  const data = isRecord(record?.data) ? record.data : undefined;
+  const context = isRecord(record?.context) ? record.context : undefined;
+  const statusCandidates = [record?.status, record?.statusCode, data?.status, data?.statusCode, context?.status];
+  if (
+    statusCandidates.some(
+      (status) => status === 401 || status === 403 || status === '401' || status === '403',
+    )
+  ) {
+    return 'auth';
+  }
+
+  const codeCandidates = [record?.code, data?.code]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  const message = typeof record?.message === 'string' ? record.message : '';
+  const searchable = `${codeCandidates} ${message}`.toLowerCase();
+  return /\b(401|403)\b|unauthori[sz]ed|authorization|forbidden|authentication|auth_required|bearer|jwt|token|鉴权|认证|登录/.test(
+    searchable,
+  )
+    ? 'auth'
+    : 'network';
+}
+
+function safelyReportConnectionError(
+  subscription: StreamSubscription,
+  error: AgentStreamConnectError,
+): void {
+  try {
+    subscription.onConnectionError?.(error);
+  } catch {
+    // 消费方错误不得暴露原始连接异常，也不得中断 Socket 清理/重连。
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

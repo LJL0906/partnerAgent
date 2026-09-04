@@ -12,6 +12,9 @@ import { UserEntity } from '../database/entities/core/user.entity.js';
 import {
   ChatTaskConflictError,
   ChatTaskStore,
+  INPUT_ANALYSIS_REJECTION_COMMAND,
+  inputAnalysisNotImplementedResult,
+  type RejectInputAnalysisCommand,
   type StoredChatTask,
   type SubmitTextCommand,
 } from './chat-task.store.js';
@@ -23,6 +26,47 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
     private readonly maxSessionsPerUser = 100,
   ) {
     super();
+  }
+
+  async rejectInputAnalysis(command: RejectInputAnalysisCommand) {
+    return this.dataSource.transaction(async (manager) => {
+      await this.lock(manager, command.ownerId, command.operationId);
+      const prior = await this.findOperation(
+        manager,
+        command.ownerId,
+        command.operationId,
+      );
+      if (prior) {
+        if (
+          prior.commandName !== INPUT_ANALYSIS_REJECTION_COMMAND ||
+          prior.requestFingerprint !== command.requestFingerprint
+        )
+          throw new ChatTaskConflictError();
+        return { ...prior.resultJson };
+      }
+      await manager
+        .getRepository(UserEntity)
+        .createQueryBuilder()
+        .insert()
+        .values({
+          id: command.ownerId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .orIgnore()
+        .execute();
+      const result = inputAnalysisNotImplementedResult(command);
+      await manager.getRepository(LocalCoreOperationEntity).insert({
+        id: randomUUID(),
+        ownerId: command.ownerId,
+        operationId: command.operationId,
+        requestFingerprint: command.requestFingerprint,
+        commandName: INPUT_ANALYSIS_REJECTION_COMMAND,
+        resultJson: result,
+        createdAt: new Date(),
+      });
+      return result;
+    });
   }
 
   async submitText(command: SubmitTextCommand) {

@@ -9,6 +9,7 @@
   "scripts": {
     "build": "nest build",
     "deploy": "nest deploy",
+    "dev:jwt": "ts-node-esm scripts/dev-jwt.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",

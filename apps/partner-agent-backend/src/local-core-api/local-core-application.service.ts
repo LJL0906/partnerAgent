@@ -14,6 +14,7 @@ import { ConfirmationTransactionService } from './confirmation-transaction.servi
 import { ChatTaskConflictError, ChatTaskStore } from './chat-task.store.js';
 import { ChatTaskScheduler } from './chat-task-scheduler.js';
 import { PrivacyDecisionService } from './privacy-decision.service.js';
+import { requestedInputAnalysis } from './input-analysis.validator.js';
 
 @Injectable()
 export class LocalCoreApplicationService extends LocalCoreApplicationPort {
@@ -114,17 +115,33 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     request: LocalCoreCommandRequest,
   ): Promise<unknown> {
     const payload = this.objectPayload(request);
+    const operationId = this.requiredEnvelopeString(request, 'operation_id');
+    const requestFingerprint = this.requiredEnvelopeString(
+      request,
+      'request_fingerprint',
+    );
+    const analysisTypes = requestedInputAnalysis(payload);
+    if (analysisTypes) {
+      try {
+        const error = await this.chatTasks.rejectInputAnalysis({
+          ownerId: request.userId,
+          operationId,
+          requestFingerprint,
+          requestedTypes: analysisTypes,
+        });
+        throw new HttpException(error, HttpStatus.NOT_IMPLEMENTED);
+      } catch (error) {
+        this.mapTaskError(error);
+      }
+    }
     const text = this.requiredString(payload, 'text');
     const inputId = this.requiredString(payload, 'input_id');
     const sessionId = this.optionalString(payload, 'session_id');
     try {
       const accepted = await this.chatTasks.submitText({
         ownerId: request.userId,
-        operationId: this.requiredEnvelopeString(request, 'operation_id'),
-        requestFingerprint: this.requiredEnvelopeString(
-          request,
-          'request_fingerprint',
-        ),
+        operationId,
+        requestFingerprint,
         clientSource: this.requiredEnvelopeString(request, 'client_source'),
         text,
         inputId,

@@ -138,14 +138,15 @@ export class PiChatTaskScheduler extends ChatTaskScheduler {
       const message = this.safeErrorMessage(
         error instanceof Error ? error.message : '聊天任务执行失败',
       );
+      const code = this.thrownErrorCode(error);
       const failed = await this.store.markFailed(
         task.taskId,
         task.ownerId,
-        'INTERNAL_000',
+        code,
         message,
       );
       if (failed?.state !== 'cancelled')
-        this.state(task, 'failed', { code: 'INTERNAL_000', message });
+        this.state(task, 'failed', { code, message });
     } finally {
       this.cancelledTasks.delete(task.taskId);
     }
@@ -194,6 +195,15 @@ export class PiChatTaskScheduler extends ChatTaskScheduler {
       data.result === 'blocked'
       ? 'EGRESS_001'
       : 'MODEL_002';
+  }
+
+  private thrownErrorCode(error: unknown) {
+    return error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'EGRESS_001'
+      ? 'EGRESS_001'
+      : 'INTERNAL_000';
   }
 
   private safeErrorMessage(message: string) {

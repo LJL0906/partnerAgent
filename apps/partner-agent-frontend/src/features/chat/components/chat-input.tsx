@@ -1,7 +1,12 @@
 import { useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { TextInput, View } from 'react-native';
 
+import { AppButton } from '@/components/ui/app-button';
 import { colors } from '@/theme/colors';
+import { radius } from '@/theme/radius';
+import { shadows } from '@/theme/shadows';
+import { spacing } from '@/theme/spacing';
+import { typography } from '@/theme/typography';
 
 interface ChatInputProps {
   isStreaming: boolean;
@@ -11,6 +16,7 @@ interface ChatInputProps {
 
 export function ChatInput({ isStreaming, onSend, onCancel }: ChatInputProps) {
   const [value, setValue] = useState('');
+  const [isFocused, setIsFocused] = useState(false);
 
   async function handleSend() {
     const submitted = await onSend(value);
@@ -22,66 +28,62 @@ export function ChatInput({ isStreaming, onSend, onCancel }: ChatInputProps) {
       style={{
         flexDirection: 'row',
         alignItems: 'flex-end',
-        gap: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        backgroundColor: colors.card,
-        borderColor: colors.border,
-        borderWidth: 1,
-        borderRadius: 20,
+        gap: spacing.xs,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: spacing.xxs,
+        backgroundColor: colors.surface,
+        borderColor: isFocused ? colors.brand500 : colors.border,
+        borderWidth: isFocused ? 2 : 1,
+        borderRadius: radius.large,
         borderCurve: 'continuous',
+        boxShadow: shadows.float,
       }}>
       <TextInput
         accessibilityLabel="聊天输入"
         multiline
         maxLength={4000}
         placeholder="问问我，或交给我去做…"
-        placeholderTextColor={colors.textSecondary}
+        placeholderTextColor={colors.textTertiary}
         value={value}
         onChangeText={setValue}
+        onBlur={() => setIsFocused(false)}
+        onFocus={() => setIsFocused(true)}
         style={{
           flex: 1,
-          minHeight: 42,
+          minHeight: spacing.minTouchTarget,
           maxHeight: 116,
-          color: colors.text,
-          fontSize: 16,
-          lineHeight: 22,
-          padding: 8,
+          color: colors.ink,
+          ...typography.body,
+          paddingHorizontal: spacing.xs,
+          paddingVertical: spacing.sm,
         }}
       />
       {isStreaming ? (
-        <Pressable
-          accessibilityRole="button"
+        <AppButton
           accessibilityLabel="停止回复"
+          icon="stop"
           onPress={onCancel}
-          style={({ pressed }) => ({
-            minWidth: 58,
-            height: 42,
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 14,
-            backgroundColor: colors.errorSoft,
-            opacity: pressed ? 0.7 : 1,
-          })}>
-          <Text style={{ color: colors.error, fontSize: 14, fontWeight: '700' }}>停止</Text>
-        </Pressable>
+          style={{
+            alignSelf: 'center',
+            minWidth: 76,
+            borderRadius: radius.medium,
+          }}
+          title="停止"
+          variant="danger"
+        />
       ) : (
-        <Pressable
-          accessibilityRole="button"
+        <AppButton
           accessibilityLabel="发送消息"
           disabled={!value.trim()}
+          icon="send"
           onPress={handleSend}
-          style={({ pressed }) => ({
-            minWidth: 58,
-            height: 42,
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: 14,
-            backgroundColor: value.trim() ? colors.primary : colors.border,
-            opacity: pressed ? 0.75 : 1,
-          })}>
-          <Text style={{ color: colors.card, fontSize: 14, fontWeight: '700' }}>发送</Text>
-        </Pressable>
+          style={{
+            alignSelf: 'center',
+            minWidth: 76,
+            borderRadius: radius.medium,
+          }}
+          title="发送"
+        />
       )}
     </View>
   );

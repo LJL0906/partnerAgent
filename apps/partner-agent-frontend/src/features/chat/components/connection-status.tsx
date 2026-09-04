@@ -1,7 +1,8 @@
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
 
+import { StatusBadge } from '@/components/ui/status-badge';
 import { useChatStore } from '@/store/chat-store';
-import { colors } from '@/theme/colors';
+import { spacing } from '@/theme/spacing';
 
 const statusCopy = {
   idle: '等待连接',
@@ -9,7 +10,7 @@ const statusCopy = {
   connected: '已连接',
   disconnected: '已断开',
   error: '连接失败',
-  auth_required: '等待登录',
+  auth_required: '鉴权失败',
 } as const;
 
 const taskStatusCopy = {
@@ -28,38 +29,21 @@ export function ConnectionStatus() {
   const status = useChatStore((state) => state.connectionStatus);
   const taskStatus = useChatStore((state) => state.taskStatus);
   const active = status === 'connected';
+  const hasConnectionProblem = status === 'disconnected' || status === 'error';
+  const connectionTone = active ? 'success' : hasConnectionProblem ? 'danger' : 'warning';
+  const taskTone =
+    taskStatus === 'failed'
+      ? 'danger'
+      : taskStatus === 'waiting_privacy_decision'
+        ? 'warning'
+        : taskStatus === 'completed'
+          ? 'success'
+          : 'info';
   return (
-    <View style={{ alignItems: 'flex-end', gap: 5 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-        <View
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 4,
-            backgroundColor: active ? colors.primary : colors.warn,
-          }}
-        />
-        <Text
-          selectable
-          style={{ color: active ? colors.primary : colors.textSecondary, fontSize: 13 }}>
-          {statusCopy[status]}
-        </Text>
-      </View>
+    <View accessibilityLiveRegion="polite" style={{ alignItems: 'flex-end', gap: spacing.xxs }}>
+      <StatusBadge label={statusCopy[status]} tone={connectionTone} />
       {taskStatus !== 'idle' ? (
-        <Text
-          accessibilityLiveRegion="polite"
-          selectable
-          style={{
-            color:
-              taskStatus === 'failed'
-                ? colors.error
-                : taskStatus === 'waiting_privacy_decision'
-                  ? colors.warn
-                  : colors.textSecondary,
-            fontSize: 13,
-          }}>
-          {taskStatusCopy[taskStatus]}
-        </Text>
+        <StatusBadge label={taskStatusCopy[taskStatus]} tone={taskTone} />
       ) : null}
     </View>
   );

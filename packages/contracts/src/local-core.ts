@@ -138,6 +138,17 @@ export interface ApiError {
 // 输入命令（第 8.3 节）
 // ---------------------------------------------------------------------------
 
+export const ANALYSIS_TYPES = [
+  'idea_organize',
+  'experience_review',
+  'problem_analysis',
+  'content_extract',
+] as const;
+export type AnalysisType = (typeof ANALYSIS_TYPES)[number];
+
+/** 至少包含一个分析类型；类型系统无法表达去重，服务端仍须在运行时拒绝重复值。 */
+export type NonEmptyAnalysisTypes = [AnalysisType, ...AnalysisType[]];
+
 /** 提交文字输入：创建原始记录、消息引用、聊天响应任务，并按需登记分析任务。 */
 export interface SubmitTextInputPayload {
   /** 原始文本内容。 */
@@ -146,13 +157,8 @@ export interface SubmitTextInputPayload {
   session_id?: string;
   /** 是否按需触发结构化分析（默认 false，普通聊天不主动分析）。 */
   request_analysis?: boolean;
-  /** 请求的分析类型（仅 request_analysis 为 true 时）。 */
-  analysis_types?: Array<
-    | 'idea_organize'
-    | 'experience_review'
-    | 'problem_analysis'
-    | 'content_extract'
-  >;
+  /** 请求的非空、无重复分析类型（仅 request_analysis 为 true 时）。 */
+  analysis_types?: NonEmptyAnalysisTypes;
   /** 前端输入幂等标识，重复网络重试不重复创建记录。 */
   input_id: string;
 }

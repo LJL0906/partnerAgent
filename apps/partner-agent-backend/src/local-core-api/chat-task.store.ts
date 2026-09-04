@@ -11,6 +11,30 @@ export interface SubmitTextCommand {
   sessionId?: string;
 }
 
+export interface RejectInputAnalysisCommand {
+  ownerId: string;
+  operationId: string;
+  requestFingerprint: string;
+  requestedTypes: string[];
+}
+
+export const INPUT_ANALYSIS_REJECTION_COMMAND =
+  'SubmitTextInput:input-analysis';
+
+export function inputAnalysisNotImplementedResult(
+  command: RejectInputAnalysisCommand,
+) {
+  return {
+    code: 'NOT_IMPLEMENTED_001',
+    message: 'input_analysis 尚未实现',
+    details: {
+      feature: 'input_analysis',
+      requested_types: [...command.requestedTypes],
+      operation_id: command.operationId,
+    },
+  };
+}
+
 export interface AcceptedChatTask {
   taskId: string;
   ownerId: string;
@@ -43,6 +67,9 @@ export interface SessionMessageView {
 export class ChatTaskConflictError extends Error {}
 
 export abstract class ChatTaskStore {
+  abstract rejectInputAnalysis(
+    command: RejectInputAnalysisCommand,
+  ): Promise<Record<string, unknown>>;
   abstract submitText(command: SubmitTextCommand): Promise<{
     result: Record<string, unknown>;
     task?: AcceptedChatTask;

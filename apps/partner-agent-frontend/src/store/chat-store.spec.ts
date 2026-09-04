@@ -20,6 +20,7 @@ describe('chat task status merge', () => {
       isThinking: false,
       connectionStatus: 'idle',
       taskStatus: 'idle',
+      privacyDecision: undefined,
     });
   });
 
@@ -58,6 +59,57 @@ describe('chat task status merge', () => {
       isStreaming: true,
       isThinking: true,
       taskStatus: 'queued',
+    });
+  });
+
+  it('clears the privacy summary when the task leaves the waiting state', () => {
+    useChatStore.setState({
+      taskStatus: 'waiting_privacy_decision',
+      privacyDecision: {
+        egress_id: 'egress-1',
+        categories: ['secret'],
+        provider: 'provider',
+        model_id: 'model',
+        expires_at: '2026-09-04T01:00:00.000Z',
+      },
+    });
+
+    useChatStore.getState().setTaskStatus('running');
+
+    expect(useChatStore.getState().privacyDecision).toBeUndefined();
+  });
+
+  it('resets all chat data on logout', () => {
+    useChatStore.setState({
+      sessionId: 'session-1',
+      activeTaskId: 'task-1',
+      activeOperationId: 'operation-1',
+      messages: [{ id: 'message-1', role: 'user', content: '敏感消息' }],
+      isStreaming: true,
+      isThinking: true,
+      connectionStatus: 'connected',
+      taskStatus: 'waiting_privacy_decision',
+      privacyDecision: {
+        egress_id: 'egress-1',
+        categories: ['secret'],
+        provider: 'provider',
+        model_id: 'model',
+        expires_at: '2026-09-04T01:00:00.000Z',
+      },
+    });
+
+    useChatStore.getState().resetChat();
+
+    expect(useChatStore.getState()).toMatchObject({
+      sessionId: '',
+      activeTaskId: undefined,
+      activeOperationId: undefined,
+      messages: [],
+      isStreaming: false,
+      isThinking: false,
+      connectionStatus: 'idle',
+      taskStatus: 'idle',
+      privacyDecision: undefined,
     });
   });
 });

@@ -1,9 +1,33 @@
 import type { ServerPushEventV1 } from '@partner-agent/contracts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyAgentEvent, loadChatReconciliation } from './use-chat';
+import {
+  applyAgentEvent,
+  desiredChannels,
+  initialChatChannels,
+  loadChatReconciliation,
+  reconcileChatFromRest,
+  toPrivacyDecisionSummary,
+} from './use-chat';
 import { useChatStore } from '../../store/chat-store';
 
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'generated-message' }));
+vi.mock('expo-constants', () => ({ default: { expoConfig: undefined, expoGoConfig: undefined } }));
+vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
+
+describe('chat subscription bootstrap', () => {
+  it('subscribes only to the owner-scoped channel before REST creates the session', () => {
+    expect(initialChatChannels()).toEqual(['user:self']);
+  });
+
+  it('adds the authoritative session, task and operation channels after REST acceptance', () => {
+    expect(desiredChannels('session-1', 'task-1', 'operation-1')).toEqual([
+      'user:self',
+      'session:session-1',
+      'task:task-1',
+      'operation:operation-1',
+    ]);
+  });
+});
 
 describe('chat REST reconciliation', () => {
   it('starts task and session queries together', async () => {
@@ -88,6 +112,7 @@ describe('chat event state merge', () => {
       isThinking: true,
       connectionStatus: 'connected',
       taskStatus: 'queued',
+      privacyDecision: undefined,
     });
   });
 
@@ -120,6 +145,131 @@ describe('chat event state merge', () => {
 
     expect(useChatStore.getState().taskStatus).toBe('completed');
     expect(useChatStore.getState().messages).toEqual(messagesAtCompletion);
+  });
+
+  it('maps the safe privacy summary from a task_state event', () => {
+    const assistantRef: { current: string | undefined } = { current: undefined };
+
+    applyAgentEvent(
+      event('task_state', {
+        state: 'waiting_privacy_decision',
+        privacy_decision: {
+          egress_id: 'egress-1',
+          categories: ['api_key'],
+          provider: 'provider',
+          model_id: 'model',
+          expires_at: '2026-09-04T01:00:00.000Z',
+        },
+      }),
+      assistantRef,
+    );
+
+    expect(useChatStore.getState()).toMatchObject({
+      taskStatus: 'waiting_privacy_decision',
+      privacyDecision: {
+        egress_id: 'egress-1',
+        categories: ['api_key'],
+        provider: 'provider',
+        model_id: 'model',
+        expires_at: '2026-09-04T01:00:00.000Z',
+      },
+    });
+  });
+});
+
+describe('privacy decision REST reconciliation', () => {
+  beforeEach(() => {
+    useChatStore.setState({
+      sessionId: 'session-1',
+      activeTaskId: 'task-1',
+      messages: [],
+      isStreaming: true,
+      isThinking: false,
+      taskStatus: 'waiting_privacy_decision',
+      privacyDecision: {
+        egress_id: 'egress-1',
+        categories: ['secret'],
+        provider: 'provider',
+        model_id: 'model',
+        expires_at: '2026-09-04T01:00:00.000Z',
+      },
+    });
+  });
+
+  it('applies both TaskStatus and ChatSession without inventing a final state', async () => {
+    await reconcileChatFromRest('task-1', 'session-1', {
+      queries: {
+        getTaskStatus: vi.fn(async () => ({
+          task_id: 'task-1',
+          state: 'running' as const,
+        })),
+        getChatSession: vi.fn(async () => ({
+          id: 'session-1',
+          created_at: '2026-09-04T00:00:00.000Z',
+          updated_at: '2026-09-04T00:00:01.000Z',
+          message_count: 1,
+          messages: [
+            {
+              id: 'message-1',
+              role: 'assistant' as const,
+              content: '继续处理',
+              created_at: '2026-09-04T00:00:00.000Z',
+            },
+          ],
+        })),
+      },
+    });
+
+    expect(useChatStore.getState()).toMatchObject({
+      taskStatus: 'running',
+      privacyDecision: undefined,
+      messages: [{ id: 'message-1', role: 'assistant', content: '继续处理' }],
+      isStreaming: true,
+    });
+  });
+
+  it('projects only contract fields and removes unknown categories', () => {
+    const summary = toPrivacyDecisionSummary({
+      egress_id: 'egress-1',
+      categories: ['secret', 'raw-value'] as never,
+      provider: 'provider',
+      model_id: 'model',
+      expires_at: '2026-09-04T01:00:00.000Z',
+      raw_payload: 'must-not-leak',
+    } as never);
+
+    expect(summary).toEqual({
+      egress_id: 'egress-1',
+      categories: ['secret'],
+      provider: 'provider',
+      model_id: 'model',
+      expires_at: '2026-09-04T01:00:00.000Z',
+    });
+    expect(summary).not.toHaveProperty('raw_payload');
+  });
+
+  it('maps a TaskStatus privacy summary during REST recovery', async () => {
+    await reconcileChatFromRest('task-1', undefined, {
+      queries: {
+        getTaskStatus: vi.fn(async () => ({
+          task_id: 'task-1',
+          state: 'waiting_privacy_decision' as const,
+          privacy_decision: {
+            egress_id: 'egress-rest',
+            categories: ['bank_card' as const],
+            provider: 'provider',
+            model_id: 'model',
+            expires_at: '2026-09-04T01:00:00.000Z',
+          },
+        })),
+        getChatSession: vi.fn(),
+      },
+    });
+
+    expect(useChatStore.getState().privacyDecision).toMatchObject({
+      egress_id: 'egress-rest',
+      categories: ['bank_card'],
+    });
   });
 });
 
