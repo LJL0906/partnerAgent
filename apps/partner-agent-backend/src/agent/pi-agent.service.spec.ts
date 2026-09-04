@@ -54,6 +54,21 @@ function createToolServices() {
   return { registry, execution };
 }
 
+function mockGateway(legacy: {
+  getModel?: (provider: string, modelId: string) => typeof fakeModel;
+  getModels: (provider?: string) => (typeof fakeModel)[];
+  streamSimple?: (...args: any[]) => AssistantMessageEventStream;
+}) {
+  return {
+    listModels: (provider: string) => legacy.getModels(provider),
+    resolveModel: (provider: string, modelId?: string) =>
+      modelId && legacy.getModel
+        ? legacy.getModel(provider, modelId)
+        : legacy.getModels(provider)[0],
+    createStreamFunction: () => legacy.streamSimple!,
+  };
+}
+
 describe('PiAgentService', () => {
   it('uses the configured model and maps Agent text deltas into backend events', async () => {
     let getModelCalls = 0;
@@ -68,7 +83,7 @@ describe('PiAgentService', () => {
         DEFAULT_MODEL: 'fake-model',
       }),
       {
-        getModels: () => ({
+        ...mockGateway({
           getModel: (provider: string, modelId: string) => {
             getModelCalls += 1;
             expect(provider).toBe('deepseek');
@@ -117,6 +132,44 @@ describe('PiAgentService', () => {
     ]);
   });
 
+  it('does not persist an accepted task prompt twice', async () => {
+    const sessions = new SessionManager(new ConfigService(), new MemorySessionStore());
+    await sessions.getOrCreate('task-session', 'user-a');
+    await sessions.saveMessage('task-session', 'user-a', 'user', '已受理输入');
+    const tools = createToolServices();
+    const gateway = mockGateway({
+      getModels: () => [fakeModel],
+      streamSimple: () => {
+        const stream = new AssistantMessageEventStream();
+        queueMicrotask(() => {
+          stream.push({ type: 'start', partial: assistantMessage });
+          stream.push({ type: 'done', reason: 'stop', message: assistantMessage });
+          stream.end(assistantMessage);
+        });
+        return stream;
+      },
+    });
+    const service = new PiAgentService(
+      new ConfigService({ DEFAULT_PROVIDER: 'deepseek' }),
+      gateway as never,
+      sessions,
+      tools.execution,
+      tools.registry,
+    );
+
+    for await (const _event of service.chat(
+      'task-session',
+      '已受理输入',
+      'user-a',
+      { taskId: 'task-a' },
+    )) {
+      // Consume the task turn.
+    }
+
+    const history = await sessions.getHistory('task-session', 'user-a');
+    expect(history.filter((item) => item.role === 'user')).toHaveLength(1);
+  });
+
   it('executes the current-time tool and returns its result to the model', async () => {
     let streamCalls = 0;
     let toolResultText = '';
@@ -131,7 +184,7 @@ describe('PiAgentService', () => {
         DEFAULT_MODEL: 'fake-model',
       }),
       {
-        getModels: () => ({
+        ...mockGateway({
           getModel: () => fakeModel,
           getModels: () => [fakeModel],
           streamSimple: (_model: unknown, context: Context) => {
@@ -235,7 +288,7 @@ describe('PiAgentService', () => {
           DEFAULT_MODEL: 'fake-model',
         }),
         {
-          getModels: () => ({
+          ...mockGateway({
             getModel: () => fakeModel,
             getModels: () => [fakeModel],
             streamSimple: (_model: unknown, context: Context) => {
@@ -330,7 +383,7 @@ describe('PiAgentService', () => {
         DEFAULT_MODEL: 'fake-model',
       }),
       {
-        getModels: () => ({
+        ...mockGateway({
           getModel: () => fakeModel,
           getModels: () => [fakeModel],
           streamSimple: (_model: unknown, context: Context) => {
@@ -385,7 +438,7 @@ describe('PiAgentService', () => {
         DEFAULT_MODEL: 'fake-model',
       }),
       {
-        getModels: () => ({
+        ...mockGateway({
           getModel: () => fakeModel,
           getModels: () => [fakeModel],
           streamSimple: () => {
@@ -462,7 +515,7 @@ describe('PiAgentService', () => {
     const tools = createToolServices();
     const service = new PiAgentService(
       new ConfigService(),
-      { getModels: () => ({ getModels: () => [fakeModel] }) } as never,
+      mockGateway({ getModels: () => [fakeModel] }) as never,
       sessions,
       tools.execution,
       tools.registry,

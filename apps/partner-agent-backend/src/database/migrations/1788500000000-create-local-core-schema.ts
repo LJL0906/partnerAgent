@@ -212,6 +212,7 @@ export class CreateLocalCoreSchema1788500000000 implements MigrationInterface {
           check (candidate_status in ('pending','confirmed','confirmed_after_edit','cancelled','expired')),
         risk text not null default 'normal' check (risk in ('normal','high')),
         payload jsonb not null,
+        editable_fields text[] not null default '{}',
         edited_payload jsonb,
         confidence numeric(4,3) check (confidence between 0 and 1),
         sensitive_marks text[] not null default '{}',

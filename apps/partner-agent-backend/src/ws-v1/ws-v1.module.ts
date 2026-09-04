@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
 import { DatabaseModule } from '../database/database.module.js';
+import { LocalCoreApiModule } from '../local-core-api/local-core-api.module.js';
 import { RedactionService } from '../tools/redaction.service.js';
 import {
   DefaultWsV1ChannelAuthorizer,
@@ -11,7 +12,7 @@ import { WsV1Gateway } from './ws-v1.gateway.js';
 import { WsV1Service } from './ws-v1.service.js';
 
 @Module({
-  imports: [AuthModule, DatabaseModule],
+  imports: [AuthModule, DatabaseModule, LocalCoreApiModule],
   providers: [
     WsV1EventStore,
     RedactionService,

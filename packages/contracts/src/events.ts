@@ -1,3 +1,5 @@
+import type { TaskStatus } from './local-core.js';
+
 /**
  * @deprecated 旧 Socket.IO request/response 事件名，仅供兼容层使用。
  * v1 客户端只能发送 WS_CONTROL_EVENTS 中的订阅控制事件，业务 Command 走 REST。
@@ -78,6 +80,7 @@ export type ServerPushEventTypeV1 =
   | "candidate"
   | "reminder"
   | "summary"
+  | "task_state"
   | "cancelled"
   | "done"
   | "error"
@@ -169,6 +172,10 @@ export type SummaryEventV1 = ServerPushEventBaseV1<
   "summary",
   { summary_id: string; summary_kind: "daily" | "weekly" }
 >;
+export type TaskStateEventV1 = ServerPushEventBaseV1<
+  "task_state",
+  { state: TaskStatus['state']; error_code?: string; message?: string }
+>;
 export type AgentCancelledEventV1 = ServerPushEventBaseV1<"cancelled", Record<string, never>>;
 export type AgentDoneEventV1 = ServerPushEventBaseV1<"done", Record<string, never>>;
 export type AgentErrorEventV1 = ServerPushEventBaseV1<
@@ -195,6 +202,7 @@ export type ServerPushEventV1 =
   | CandidateEventV1
   | ReminderEventV1
   | SummaryEventV1
+  | TaskStateEventV1
   | AgentCancelledEventV1
   | AgentDoneEventV1
   | AgentErrorEventV1

@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import {
   WS_EVENTS,
+  type ServerPushEventTypeV1,
   type ServerPushEventV1,
   type SubscribeRequestV1,
   type SubscriptionAckV1,
@@ -8,6 +9,10 @@ import {
   type UnsubscribeRequestV1,
 } from '@partner-agent/contracts';
 import type { Socket } from 'socket.io';
+import {
+  ChatTaskEventBus,
+  type ChatTaskEvent,
+} from '../local-core-api/chat-task-event.bus.js';
 import { RedactionService } from '../tools/redaction.service.js';
 import { WsV1ChannelAuthorizer } from './ws-v1-channel-authorizer.js';
 import {
@@ -21,18 +26,30 @@ export interface WsV1SubscriptionResult {
 }
 
 @Injectable()
-export class WsV1Service {
+export class WsV1Service implements OnModuleInit, OnModuleDestroy {
   private readonly sockets = new Map<string, Socket>();
   private readonly subscriptions = new Map<
     string,
     Set<SubscriptionChannel>
   >();
+  private unsubscribeTaskEvents?: () => void;
 
   constructor(
     private readonly authorizer: WsV1ChannelAuthorizer,
     private readonly eventStore: WsV1EventStore,
     private readonly redaction: RedactionService,
+    private readonly taskEvents: ChatTaskEventBus,
   ) {}
+
+  onModuleInit(): void {
+    this.unsubscribeTaskEvents = this.taskEvents.subscribe((event) =>
+      this.publishTaskEvent(event),
+    );
+  }
+
+  onModuleDestroy(): void {
+    this.unsubscribeTaskEvents?.();
+  }
 
   connect(socket: Socket): void {
     this.sockets.set(socket.id, socket);
@@ -168,6 +185,88 @@ export class WsV1Service {
 
   private sanitizePushData(value: unknown): unknown {
     return this.removeInternalDetails(this.redaction.sanitize(value));
+  }
+
+  private publishTaskEvent(event: ChatTaskEvent): void {
+    const mapped = this.mapTaskEvent(event);
+    if (!mapped) return;
+    const common = {
+      session_id: event.sessionId,
+      operation_id: event.operationId,
+      task_id: event.taskId,
+      event_type: mapped.eventType,
+      data: mapped.data,
+    } as const;
+    for (const channel of [
+      `task:${event.taskId}`,
+      `operation:${event.operationId}`,
+      `session:${event.sessionId}`,
+    ] as const) {
+      this.publish({ channel, ...common });
+    }
+  }
+
+  private mapTaskEvent(event: ChatTaskEvent):
+    | { eventType: ServerPushEventTypeV1; data: unknown }
+    | undefined {
+    if (event.type === 'state_changed') {
+      if (event.state === 'completed') return { eventType: 'done', data: {} };
+      if (event.state === 'cancelled') {
+        return { eventType: 'cancelled', data: {} };
+      }
+      if (event.state === 'failed') {
+        const details = this.toSnakeCase(event.data);
+        return {
+          eventType: 'error',
+          data:
+            details && typeof details === 'object'
+              ? details
+              : { code: 'INTERNAL_000', message: '聊天任务失败' },
+        };
+      }
+      return {
+        eventType: 'task_state',
+        data: { state: event.state },
+      };
+    }
+
+    if (!event.eventType || !this.isPushEventType(event.eventType)) {
+      return undefined;
+    }
+    return { eventType: event.eventType, data: this.toSnakeCase(event.data) };
+  }
+
+  private isPushEventType(value: string): value is ServerPushEventTypeV1 {
+    return [
+      'text_delta',
+      'thinking_delta',
+      'history',
+      'tool_execution_start',
+      'tool_execution_end',
+      'tool_confirmation_pending',
+      'tool_confirmation_confirmed',
+      'tool_confirmation_dismissed',
+      'tool_undo_available',
+      'tool_undo_completed',
+      'candidate',
+      'reminder',
+      'summary',
+      'task_state',
+      'cancelled',
+      'done',
+      'error',
+    ].includes(value);
+  }
+
+  private toSnakeCase(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((entry) => this.toSnakeCase(entry));
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
+        this.toSnakeCase(entry),
+      ]),
+    );
   }
 
   private removeInternalDetails(value: unknown): unknown {

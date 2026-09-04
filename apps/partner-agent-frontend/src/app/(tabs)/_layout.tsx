@@ -18,7 +18,7 @@ const tabScreenOptions = {
 export default function TabsLayout() {
   return (
     <Tabs screenOptions={tabScreenOptions}>
-      <Tabs.Screen name="index" options={{ title: '伙伴', tabBarLabel: '助手' }} />
+      <Tabs.Screen name="index" options={{ title: '紫灵AI', tabBarLabel: '助手' }} />
       <Tabs.Screen name="today" options={{ title: '今日', tabBarLabel: '今日' }} />
       <Tabs.Screen name="execute" options={{ title: '执行', tabBarLabel: '执行' }} />
       <Tabs.Screen name="memory" options={{ title: '记忆', tabBarLabel: '记忆' }} />

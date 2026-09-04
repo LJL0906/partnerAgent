@@ -59,6 +59,7 @@
 | `POST /api/v1/object-change-candidates/soft-delete` | `CreateSoftDeleteObjectCandidatePayload` | 生成软删除候选 |
 | `POST /api/v1/object-change-candidates/restore` | `CreateRestoreObjectCandidatePayload` | 生成恢复候选 |
 | `POST /api/v1/object-change-candidates/permanently-delete` | `CreatePermanentDeleteObjectCandidatePayload` | 生成二次确认候选；本路由不执行物理删除 |
+| `POST /api/v1/object-change-candidates/undo` | `CreateUndoObjectCandidatePayload` | 按原确认动作和批次生成整批撤销候选；本路由不直接撤销 |
 
 ## 3. Query 路由映射
 

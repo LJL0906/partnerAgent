@@ -7,7 +7,15 @@ import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { SignJWT } from 'jose';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { LocalCoreApiModule } from '../src/local-core-api/local-core-api.module.js';
 import { LocalCoreApplicationPort } from '../src/local-core-api/local-core-application.port.js';
 import type {
@@ -29,13 +37,17 @@ interface QueryRoute {
 }
 
 const commandRoutes: CommandRoute[] = [
-  { path: '/api/v1/inputs/text', handler: 'SubmitTextInput' },
+  {
+    path: '/api/v1/inputs/text',
+    handler: 'SubmitTextInput',
+    implemented: true,
+  },
   { path: '/api/v1/inputs/voice', handler: 'SubmitVoiceInput' },
   { path: '/api/v1/voice-drafts/upsert', handler: 'CreateOrUpdateVoiceDraft' },
   { path: '/api/v1/voice-drafts/cancel', handler: 'CancelVoiceDraft' },
   { path: '/api/v1/attachments/submit', handler: 'SubmitAttachmentInput' },
   { path: '/api/v1/analysis-runs/cancel', handler: 'CancelAnalysis' },
-  { path: '/api/v1/tasks/cancel', handler: 'CancelTask' },
+  { path: '/api/v1/tasks/cancel', handler: 'CancelTask', implemented: true },
   { path: '/api/v1/original-records/reanalyze', handler: 'RequestReanalysis' },
   {
     path: '/api/v1/attachments/supplement-analysis',
@@ -114,21 +126,58 @@ const queryRoutes: QueryRoute[] = [
     handler: 'GetChatSession',
     implemented: true,
   },
-  { method: 'get', path: '/api/v1/original-records/route-id', handler: 'GetOriginalRecord' },
-  { method: 'get', path: '/api/v1/attachments/route-id/status', handler: 'GetAttachmentStatus' },
-  { method: 'get', path: '/api/v1/analysis-runs/route-id', handler: 'GetAnalysisRun' },
-  { method: 'get', path: '/api/v1/tasks/route-id', handler: 'GetTaskStatus' },
+  {
+    method: 'get',
+    path: '/api/v1/original-records/route-id',
+    handler: 'GetOriginalRecord',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/attachments/route-id/status',
+    handler: 'GetAttachmentStatus',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/analysis-runs/route-id',
+    handler: 'GetAnalysisRun',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/tasks/route-id',
+    handler: 'GetTaskStatus',
+    implemented: true,
+  },
   {
     method: 'get',
     path: '/api/v1/core/health',
     handler: 'GetCoreHealth',
     implemented: true,
   },
-  { method: 'get', path: '/api/v1/confirmation-batches?status=pending', handler: 'ListPendingConfirmationBatches' },
-  { method: 'get', path: '/api/v1/confirmation-batches/route-id', handler: 'GetConfirmationBatch' },
-  { method: 'get', path: '/api/v1/candidates/route-id', handler: 'GetCandidateDetail' },
-  { method: 'get', path: '/api/v1/confirmation-history', handler: 'GetConfirmationHistory' },
-  { method: 'get', path: '/api/v1/objects/goal/route-id/undo-eligibility', handler: 'GetUndoEligibility' },
+  {
+    method: 'get',
+    path: '/api/v1/confirmation-batches?status=pending',
+    handler: 'ListPendingConfirmationBatches',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/confirmation-batches/route-id',
+    handler: 'GetConfirmationBatch',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/candidates/route-id',
+    handler: 'GetCandidateDetail',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/confirmation-history',
+    handler: 'GetConfirmationHistory',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/objects/goal/route-id/undo-eligibility',
+    handler: 'GetUndoEligibility',
+  },
   { method: 'get', path: '/api/v1/goals', handler: 'ListGoals' },
   { method: 'get', path: '/api/v1/goals/route-id', handler: 'GetGoal' },
   { method: 'get', path: '/api/v1/actions', handler: 'ListActions' },
@@ -139,21 +188,65 @@ const queryRoutes: QueryRoute[] = [
   { method: 'get', path: '/api/v1/memories/route-id', handler: 'GetMemory' },
   { method: 'get', path: '/api/v1/decisions', handler: 'ListDecisions' },
   { method: 'get', path: '/api/v1/decisions/route-id', handler: 'GetDecision' },
-  { method: 'get', path: '/api/v1/context-snapshot', handler: 'GetContextSnapshot' },
-  { method: 'get', path: '/api/v1/objects/goal/route-id/history', handler: 'GetChangeHistory' },
-  { method: 'post', path: '/api/v1/relevant-context/search', handler: 'SearchRelevantContext' },
-  { method: 'get', path: '/api/v1/suggestions/route-id/evidence', handler: 'GetSuggestionEvidence' },
+  {
+    method: 'get',
+    path: '/api/v1/context-snapshot',
+    handler: 'GetContextSnapshot',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/objects/goal/route-id/history',
+    handler: 'GetChangeHistory',
+  },
+  {
+    method: 'post',
+    path: '/api/v1/relevant-context/search',
+    handler: 'SearchRelevantContext',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/suggestions/route-id/evidence',
+    handler: 'GetSuggestionEvidence',
+  },
   { method: 'get', path: '/api/v1/indexes/health', handler: 'GetIndexHealth' },
-  { method: 'get', path: '/api/v1/indexes/rebuild-status', handler: 'GetIndexRebuildStatus' },
-  { method: 'get', path: '/api/v1/summaries/daily', handler: 'GetDailySummary' },
+  {
+    method: 'get',
+    path: '/api/v1/indexes/rebuild-status',
+    handler: 'GetIndexRebuildStatus',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/summaries/daily',
+    handler: 'GetDailySummary',
+  },
   { method: 'get', path: '/api/v1/reviews/weekly', handler: 'GetWeeklyReview' },
   { method: 'get', path: '/api/v1/reminders', handler: 'ListReminders' },
-  { method: 'get', path: '/api/v1/reminder-instances/route-id', handler: 'GetReminderInstance' },
-  { method: 'get', path: '/api/v1/reminder-candidates?status=pending', handler: 'ListPendingReminderCandidates' },
+  {
+    method: 'get',
+    path: '/api/v1/reminder-instances/route-id',
+    handler: 'GetReminderInstance',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/reminder-candidates?status=pending',
+    handler: 'ListPendingReminderCandidates',
+  },
   { method: 'get', path: '/api/v1/model-configs', handler: 'ListModelConfigs' },
-  { method: 'get', path: '/api/v1/model-runtime/status', handler: 'GetModelRuntimeStatus' },
-  { method: 'get', path: '/api/v1/privacy-policy/status', handler: 'GetPrivacyPolicyStatus' },
-  { method: 'get', path: '/api/v1/export-preview?preview_token=route-token', handler: 'GetExportPreview' },
+  {
+    method: 'get',
+    path: '/api/v1/model-runtime/status',
+    handler: 'GetModelRuntimeStatus',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/privacy-policy/status',
+    handler: 'GetPrivacyPolicyStatus',
+  },
+  {
+    method: 'get',
+    path: '/api/v1/export-preview?preview_token=route-token',
+    handler: 'GetExportPreview',
+  },
   { method: 'get', path: '/api/v1/exports/route-id', handler: 'GetExportTask' },
 ];
 
@@ -168,7 +261,11 @@ describe('Local Core registered route table (e2e)', () => {
   let token: string;
   const executeCommand = vi.fn(
     (handler: string, commandRequest: LocalCoreCommandRequest) => {
-      if (handler === 'SubmitConfirmationBatch') {
+      if (
+        handler === 'SubmitConfirmationBatch' ||
+        handler === 'SubmitTextInput' ||
+        handler === 'CancelTask'
+      ) {
         return Promise.resolve({
           operation_id: commandRequest.envelope.operation_id,
           status: 'completed',
@@ -191,21 +288,27 @@ describe('Local Core registered route table (e2e)', () => {
       );
     },
   );
-  const executeQuery = vi.fn((handler: string, queryRequest: LocalCoreRequest) => {
-    if (handler === 'GetCoreHealth' || handler === 'GetChatSession') {
-      return Promise.resolve({ handler, owner: queryRequest.userId });
-    }
-    return Promise.reject(
-      new HttpException(
-        {
-          code: 'NOT_IMPLEMENTED_001',
-          message: `${handler} 尚未实现`,
-          details: { handler_kind: 'query', handler },
-        },
-        HttpStatus.NOT_IMPLEMENTED,
-      ),
-    );
-  });
+  const executeQuery = vi.fn(
+    (handler: string, queryRequest: LocalCoreRequest) => {
+      if (
+        handler === 'GetCoreHealth' ||
+        handler === 'GetChatSession' ||
+        handler === 'GetTaskStatus'
+      ) {
+        return Promise.resolve({ handler, owner: queryRequest.userId });
+      }
+      return Promise.reject(
+        new HttpException(
+          {
+            code: 'NOT_IMPLEMENTED_001',
+            message: `${handler} 尚未实现`,
+            details: { handler_kind: 'query', handler },
+          },
+          HttpStatus.NOT_IMPLEMENTED,
+        ),
+      );
+    },
+  );
 
   beforeAll(async () => {
     process.env.AUTH_JWT_SECRET = secret;
@@ -232,94 +335,89 @@ describe('Local Core registered route table (e2e)', () => {
     delete process.env.SESSION_STORE;
   });
 
-  it.each(commandRoutes)('$handler is registered with the expected status', async ({
-    path,
-    handler,
-    implemented,
-  }) => {
-    const operationId = `operation-${handler}`;
-    const response = await request(app.getHttpServer())
-      .post(path)
-      .set('Authorization', `Bearer ${token}`)
-      .send({
-        operation_id: operationId,
-        client_source: 'web',
-        request_fingerprint: `fingerprint-${handler}`,
-        user_id: 'forged-envelope-user',
-        userId: 'forged-envelope-user',
-        payload: {
-          value: 'route-test',
-          user_id: 'forged-payload-user',
-          userId: 'forged-payload-user',
-        },
-      });
+  it.each(commandRoutes)(
+    '$handler is registered with the expected status',
+    async ({ path, handler, implemented }) => {
+      const operationId = `operation-${handler}`;
+      const response = await request(app.getHttpServer())
+        .post(path)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          operation_id: operationId,
+          client_source: 'web',
+          request_fingerprint: `fingerprint-${handler}`,
+          user_id: 'forged-envelope-user',
+          userId: 'forged-envelope-user',
+          payload: {
+            value: 'route-test',
+            user_id: 'forged-payload-user',
+            userId: 'forged-payload-user',
+          },
+        });
 
-    expect(response.status).not.toBe(404);
-    expect(response.status).toBe(implemented ? 200 : 501);
-    if (implemented) {
-      expect(response.body).toMatchObject({
-        status: 'completed',
-        handler,
-        operation_id: operationId,
-      });
-    } else {
-      expect(response.body).toMatchObject({
-        code: 'NOT_IMPLEMENTED_001',
-        details: {
-          handler_kind: 'command',
+      expect(response.status).not.toBe(404);
+      expect(response.status).toBe(implemented ? 200 : 501);
+      if (implemented) {
+        expect(response.body).toMatchObject({
+          status: 'completed',
           handler,
           operation_id: operationId,
-        },
-      });
-    }
-    expect(executeCommand).toHaveBeenCalledOnce();
-    const dispatched = executeCommand.mock.calls[0][1];
-    expect(dispatched.userId).toBe('trusted-route-owner');
-    expect(dispatched.envelope).not.toHaveProperty('user_id');
-    expect(dispatched.envelope).not.toHaveProperty('userId');
-    expect(dispatched.envelope.payload).not.toHaveProperty('user_id');
-    expect(dispatched.envelope.payload).not.toHaveProperty('userId');
-  });
+        });
+      } else {
+        expect(response.body).toMatchObject({
+          code: 'NOT_IMPLEMENTED_001',
+          details: {
+            handler_kind: 'command',
+            handler,
+            operation_id: operationId,
+          },
+        });
+      }
+      expect(executeCommand).toHaveBeenCalledOnce();
+      const dispatched = executeCommand.mock.calls[0][1];
+      expect(dispatched.userId).toBe('trusted-route-owner');
+      expect(dispatched.envelope).not.toHaveProperty('user_id');
+      expect(dispatched.envelope).not.toHaveProperty('userId');
+      expect(dispatched.envelope.payload).not.toHaveProperty('user_id');
+      expect(dispatched.envelope.payload).not.toHaveProperty('userId');
+    },
+  );
 
-  it.each(queryRoutes)('$handler is registered with the expected status', async ({
-    method,
-    path,
-    handler,
-    implemented,
-  }) => {
-    const separator = path.includes('?') ? '&' : '?';
-    const pathWithForgery = `${path}${separator}user_id=forged-query-user&userId=forged-query-user`;
-    const builder =
-      method === 'post'
-        ? request(app.getHttpServer())
-            .post(pathWithForgery)
-            .send({
+  it.each(queryRoutes)(
+    '$handler is registered with the expected status',
+    async ({ method, path, handler, implemented }) => {
+      const separator = path.includes('?') ? '&' : '?';
+      const pathWithForgery = `${path}${separator}user_id=forged-query-user&userId=forged-query-user`;
+      const builder =
+        method === 'post'
+          ? request(app.getHttpServer()).post(pathWithForgery).send({
               value: 'route-test',
               user_id: 'forged-body-user',
               userId: 'forged-body-user',
             })
-        : request(app.getHttpServer()).get(pathWithForgery);
-    const response = await builder.set('Authorization', `Bearer ${token}`);
+          : request(app.getHttpServer()).get(pathWithForgery);
+      const response = await builder.set('Authorization', `Bearer ${token}`);
 
-    expect(response.status).not.toBe(404);
-    expect(response.status).toBe(implemented ? 200 : 501);
-    if (implemented) {
-      expect(response.body).toMatchObject({
-        handler,
-        owner: 'trusted-route-owner',
-      });
-    } else {
-      expect(response.body).toMatchObject({
-        code: 'NOT_IMPLEMENTED_001',
-        details: { handler_kind: 'query', handler },
-      });
-    }
-    expect(executeQuery).toHaveBeenCalledOnce();
-    const dispatched = executeQuery.mock.calls[0][1];
-    expect(dispatched.userId).toBe('trusted-route-owner');
-    expect(dispatched.input).not.toHaveProperty('user_id');
-    expect(dispatched.input).not.toHaveProperty('userId');
-  });
+      expect(response.status).not.toBe(404);
+      expect(response.status).toBe(implemented ? 200 : 501);
+      if (implemented) {
+        expect(response.body).toMatchObject({
+          handler,
+          owner: 'trusted-route-owner',
+        });
+      } else {
+        expect(response.body).toMatchObject({
+          code: 'NOT_IMPLEMENTED_001',
+          details: { handler_kind: 'query', handler },
+        });
+      }
+      expect(executeQuery).toHaveBeenCalledOnce();
+      const dispatched = executeQuery.mock.calls[0][1];
+      expect(dispatched.userId).toBe('trusted-route-owner');
+      expect(dispatched.input).not.toHaveProperty('user_id');
+      expect(dispatched.input).not.toHaveProperty('userId');
+    },
+  );
 });
 
 async function createToken(subject: string): Promise<string> {

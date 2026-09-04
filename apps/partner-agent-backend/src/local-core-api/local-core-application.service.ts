@@ -11,12 +11,16 @@ import type {
   LocalCoreRequest,
 } from './local-core-api.types.js';
 import { ConfirmationTransactionService } from './confirmation-transaction.service.js';
+import { ChatTaskConflictError, ChatTaskStore } from './chat-task.store.js';
+import { ChatTaskScheduler } from './chat-task-scheduler.js';
 
 @Injectable()
 export class LocalCoreApplicationService extends LocalCoreApplicationPort {
   constructor(
     private readonly sessionStore: SessionStore,
     private readonly confirmationTransaction: ConfirmationTransactionService,
+    private readonly chatTasks: ChatTaskStore,
+    private readonly scheduler: ChatTaskScheduler,
   ) {
     super();
   }
@@ -25,6 +29,12 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     command: string,
     request: LocalCoreCommandRequest,
   ): Promise<unknown> {
+    if (command === 'SubmitTextInput') {
+      return this.submitTextInput(request);
+    }
+    if (command === 'CancelTask') {
+      return this.cancelTask(request);
+    }
     if (command === 'SubmitConfirmationBatch') {
       return this.confirmationTransaction.submit(request);
     }
@@ -49,6 +59,10 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
 
     if (query === 'GetChatSession') {
       return this.getChatSession(request);
+    }
+
+    if (query === 'GetTaskStatus') {
+      return this.getTaskStatus(request);
     }
 
     throw this.notImplemented('query', query);
@@ -81,10 +95,154 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
       created_at: session.createdAt.toISOString(),
       updated_at: session.lastActiveAt.toISOString(),
       message_count: session.messages.length,
+      messages: await this.chatTasks.listSessionMessages(
+        request.userId,
+        session.id,
+      ),
       ...(lastMessage
         ? { last_message_preview: lastMessage.content.slice(0, 120) }
         : {}),
     };
+  }
+
+  private async submitTextInput(
+    request: LocalCoreCommandRequest,
+  ): Promise<unknown> {
+    const payload = this.objectPayload(request);
+    const text = this.requiredString(payload, 'text');
+    const inputId = this.requiredString(payload, 'input_id');
+    const sessionId = this.optionalString(payload, 'session_id');
+    try {
+      const accepted = await this.chatTasks.submitText({
+        ownerId: request.userId,
+        operationId: this.requiredEnvelopeString(request, 'operation_id'),
+        requestFingerprint: this.requiredEnvelopeString(
+          request,
+          'request_fingerprint',
+        ),
+        clientSource: this.requiredEnvelopeString(request, 'client_source'),
+        text,
+        inputId,
+        ...(sessionId ? { sessionId } : {}),
+      });
+      if (accepted.task) this.scheduler.schedule(accepted.task);
+      return accepted.result;
+    } catch (error) {
+      this.mapTaskError(error);
+    }
+  }
+
+  private async cancelTask(request: LocalCoreCommandRequest): Promise<unknown> {
+    const payload = this.objectPayload(request);
+    this.requiredString(payload, 'task_id');
+    try {
+      const cancelled = await this.chatTasks.cancelTask(
+        request.userId,
+        request.envelope,
+      );
+      if (cancelled.task?.state === 'cancelled') {
+        await this.scheduler.cancel(cancelled.task);
+      }
+      return cancelled.result;
+    } catch (error) {
+      this.mapTaskError(error);
+    }
+  }
+
+  private async getTaskStatus(request: LocalCoreRequest): Promise<unknown> {
+    const taskId = this.requiredString(request.input, 'task_id');
+    const task = await this.chatTasks.getTask(request.userId, taskId);
+    if (!task) {
+      throw new NotFoundException({ code: 'AUTH_002', message: '任务不存在' });
+    }
+    return {
+      task_id: task.taskId,
+      state: task.state,
+      ...(task.errorMessage ? { error: task.errorMessage } : {}),
+      ...(task.errorCode ? { error_code: task.errorCode } : {}),
+      ...(task.resultMessageId
+        ? {
+            result_ref: {
+              kind: 'chat_message',
+              id: task.resultMessageId,
+            },
+          }
+        : {}),
+      created_at: task.createdAt.toISOString(),
+      updated_at: task.updatedAt.toISOString(),
+    };
+  }
+
+  private objectPayload(request: LocalCoreCommandRequest) {
+    const payload = request.envelope.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new HttpException(
+        { code: 'VALIDATION_001', message: 'payload 必须是对象' },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    return payload as Record<string, unknown>;
+  }
+
+  private requiredString(input: Record<string, unknown>, field: string) {
+    const value = input[field];
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new HttpException(
+        {
+          code: 'VALIDATION_002',
+          message: `缺少 ${field}`,
+          details: { field },
+        },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    return value;
+  }
+
+  private optionalString(input: Record<string, unknown>, field: string) {
+    const value = input[field];
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new HttpException(
+        {
+          code: 'VALIDATION_001',
+          message: `${field} 必须是非空字符串`,
+          details: { field },
+        },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    return value;
+  }
+
+  private requiredEnvelopeString(
+    request: LocalCoreCommandRequest,
+    field: string,
+  ) {
+    return this.requiredString(request.envelope, field);
+  }
+
+  private mapTaskError(error: unknown): never {
+    if (error instanceof ChatTaskConflictError) {
+      throw new HttpException(
+        { code: 'IDEMPOTENCY_001', message: '幂等标识对应的请求不一致' },
+        HttpStatus.CONFLICT,
+      );
+    }
+    if (error instanceof Error && error.message === 'AUTH_002') {
+      throw new NotFoundException({ code: 'AUTH_002', message: '资源不存在' });
+    }
+    if (
+      error instanceof Error &&
+      (error.message === 'RATE_001' ||
+        error.message.includes('会话数量已达到上限'))
+    ) {
+      throw new HttpException(
+        { code: 'RATE_001', message: '用户会话数量已达到上限' },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    throw error;
   }
 
   private notImplemented(

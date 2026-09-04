@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
+import { ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
 import { AuthService } from './auth/auth.service.js';
 import {
@@ -8,7 +9,7 @@ import {
 } from './websocket/secure-io.adapter.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, new ExpressAdapter());
   const configService = app.get(ConfigService);
   const allowedOrigins = getAllowedOrigins(configService);
   app.enableCors({

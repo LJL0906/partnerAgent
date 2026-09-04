@@ -8,20 +8,35 @@ import { LocalCoreApplicationPort } from './local-core-application.port.js';
 import { LocalCoreApplicationService } from './local-core-application.service.js';
 import { LocalCoreCommandController } from './local-core-command.controller.js';
 import { LocalCoreQueryController } from './local-core-query.controller.js';
+import { AgentModule } from '../agent/agent.module.js';
+import { ChatTaskEventBus } from './chat-task-event.bus.js';
+import { ChatTaskOwnershipService } from './chat-task-ownership.service.js';
+import {
+  ChatTaskScheduler,
+  PiChatTaskScheduler,
+} from './chat-task-scheduler.js';
 
 @Module({
-  imports: [AuthModule, DatabaseModule],
+  imports: [AuthModule, DatabaseModule, AgentModule],
   controllers: [LocalCoreCommandController, LocalCoreQueryController],
   providers: [
     CommandStatusInterceptor,
     ConfirmationTransactionService,
     HttpAuthGuard,
     LocalCoreApplicationService,
+    ChatTaskEventBus,
+    ChatTaskOwnershipService,
+    PiChatTaskScheduler,
+    { provide: ChatTaskScheduler, useExisting: PiChatTaskScheduler },
     {
       provide: LocalCoreApplicationPort,
       useExisting: LocalCoreApplicationService,
     },
   ],
-  exports: [LocalCoreApplicationPort],
+  exports: [
+    LocalCoreApplicationPort,
+    ChatTaskEventBus,
+    ChatTaskOwnershipService,
+  ],
 })
 export class LocalCoreApiModule {}

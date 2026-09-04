@@ -1,10 +1,10 @@
 import type { ApiError } from '@partner-agent/contracts';
 
+import { requireAccessToken } from './access-token';
 import { ApiClientError } from './api-error';
 import { apiConfig } from './config';
 
 export interface RequestOptions {
-  accessToken?: string;
   signal?: AbortSignal;
 }
 
@@ -18,17 +18,31 @@ export async function postJson<TRequest, TResponse>(
   body: TRequest,
   options: RequestOptions = {},
 ): Promise<TResponse> {
+  return requestJson<TResponse>(path, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+}
+
+export async function getJson<TResponse>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<TResponse> {
+  return requestJson<TResponse>(path, { method: 'GET', signal: options.signal });
+}
+
+async function requestJson<TResponse>(path: string, init: RequestInit): Promise<TResponse> {
   let response: Response;
+  const accessToken = await requireAccessToken();
 
   try {
     response = await fetch(`${apiConfig.serverUrl}${path}`, {
-      method: 'POST',
+      ...init,
       headers: {
         'Content-Type': 'application/json',
-        ...(options.accessToken ? { Authorization: `Bearer ${options.accessToken}` } : {}),
+        Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify(body),
-      signal: options.signal,
     });
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {

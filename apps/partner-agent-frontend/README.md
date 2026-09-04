@@ -1,4 +1,4 @@
-# 伙伴前端
+# 紫灵AI 前端
 
 Expo 57 + React Native + TypeScript + Expo Router 移动端应用。
 
@@ -34,7 +34,7 @@ npm run web --workspace @partner-agent/frontend
 - `src/api/agent-stream.ts`：Socket.IO 生命周期、会话过滤与流式事件订阅。
 - `src/features/chat/use-chat.ts`：把领域动作与流式事件映射到 Zustand 状态。
 
-正式方向是 REST 提交 Command、WebSocket 接收流。当前后端仍只有旧版 WS `chat/cancel/resume_session`，尚未实现这里默认使用的 `/api/v1` Command 路由，也尚未提供按 `operation_id` 的订阅协议；因此前端结构和失败态可运行，真实聊天闭环需后端完成对应端点后联调。
+前端通过 REST 提交 `SubmitTextInput` / `CancelTask`，通过 `/ws/v1` 订阅 task、operation 和 session 频道接收 `ServerPushEventV1`。断线后按频道携带水位续传；收到 `recovery_required` 时通过任务与会话 REST 查询恢复。HTTP 与 WS 共用 `setAccessTokenProvider` 注入的登录令牌，不把令牌写入 `EXPO_PUBLIC_*` 环境变量。
 
 ## 校验
 

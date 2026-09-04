@@ -385,20 +385,26 @@ export type ActionTimelinessStatus = (typeof ACTION_TIMELINESS_STATUSES)[number]
 
 export interface ConfirmationItem {
   candidate_id: string;
-  kind: BusinessObjectKind;
-  action: BusinessObjectAction;
-  expected_version?: string;
-  /** 高风险候选强制拆分单批，不能与普通候选同批提交。 */
-  risk?: 'normal' | 'high';
+  candidate_version: string;
+  decision: ConfirmationDecision;
+  modified_payload?: Record<string, unknown>;
+  target_object_id?: string;
+  expected_target_version?: string;
+  risk_acknowledged?: boolean;
 }
 
-export const CONFIRMATION_MODES = ['confirm', 'cancel', 'edit'] as const;
-export type ConfirmationMode = (typeof CONFIRMATION_MODES)[number];
+export const CONFIRMATION_DECISIONS = [
+  'confirm',
+  'modify_confirm',
+  'cancel',
+] as const;
+export type ConfirmationDecision = (typeof CONFIRMATION_DECISIONS)[number];
 
 /** 统一确认入口，负责所有正式对象和业务状态变更。禁止旁路写接口。 */
 export interface SubmitConfirmationBatchPayload {
+  confirmation_batch_id: string;
+  batch_version: string;
   items: ConfirmationItem[];
-  mode?: ConfirmationMode;
 }
 
 export interface SubmitConfirmationBatchResult {
@@ -583,6 +589,13 @@ export interface ChatSessionSummary {
   updated_at: string;
   message_count: number;
   last_message_preview?: string;
+  /** REST 恢复所需的已持久化消息，按 created_at 升序返回。 */
+  messages: Array<{
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    created_at: string;
+  }>;
 }
 
 export interface GetOriginalRecordQuery {
@@ -607,7 +620,13 @@ export interface GetTaskStatusQuery {
 }
 export interface TaskStatus {
   task_id: string;
-  state: 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'retrying';
+  state:
+    | 'queued'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'waiting_privacy_decision';
   progress?: number;
   error?: string;
   result_ref?: ResourceRef;

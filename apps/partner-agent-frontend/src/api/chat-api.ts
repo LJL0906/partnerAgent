@@ -1,20 +1,21 @@
 import type {
   CommandEnvelope,
   CommandResult,
+  ChatSessionSummary,
   SubmitTextInputPayload,
   SubmitTextInputResult,
+  TaskStatus,
 } from '@partner-agent/contracts';
 import * as Crypto from 'expo-crypto';
 
 import { apiConfig } from './config';
-import { postJson, type RequestOptions } from './http-client';
+import { getJson, postJson, type RequestOptions } from './http-client';
 
 export interface SubmitTextInputParams {
   text: string;
   sessionId: string;
   requestAnalysis?: boolean;
   analysisTypes?: SubmitTextInputPayload['analysis_types'];
-  accessToken?: string;
   signal?: AbortSignal;
 }
 
@@ -39,8 +40,26 @@ export async function submitTextInput(
   return postJson<CommandEnvelope<SubmitTextInputPayload>, CommandResult<SubmitTextInputResult>>(
     apiConfig.submitTextPath,
     envelope,
-    { accessToken: params.accessToken, signal: params.signal },
+    { signal: params.signal },
   );
+}
+
+export type RecoverableTaskStatus = TaskStatus;
+
+export type RecoverableChatSession = ChatSessionSummary;
+
+export function getTaskStatus(
+  taskId: string,
+  options: RequestOptions = {},
+): Promise<RecoverableTaskStatus> {
+  return getJson(`${apiConfig.taskPath}/${encodeURIComponent(taskId)}`, options);
+}
+
+export function getChatSession(
+  sessionId: string,
+  options: RequestOptions = {},
+): Promise<RecoverableChatSession> {
+  return getJson(`${apiConfig.chatSessionPath}/${encodeURIComponent(sessionId)}`, options);
 }
 
 export async function cancelTask(

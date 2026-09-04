@@ -16,6 +16,8 @@ import {
   SourceRelationEntity,
 } from './entities/core/object-history.entity.js';
 import { UserEntity } from './entities/core/user.entity.js';
+import { CHAT_TASK_ENTITIES } from './entities/chat-task.entity.js';
+import { EgressAuditEntity } from './entities/egress-audit.entity.js';
 
 export * from './entities/core/core.types.js';
 export * from './entities/core/user.entity.js';
@@ -38,4 +40,6 @@ export const CORE_ENTITIES = [
   ObjectVersionEntity,
   SourceRelationEntity,
   ObjectIndexJobEntity,
+  ...CHAT_TASK_ENTITIES,
+  EgressAuditEntity,
 ] as const;

@@ -12,6 +12,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { AuthService } from '../src/auth/auth.service.js';
 import { SessionStore } from '../src/database/session-store.js';
+import { ChatTaskEventBus } from '../src/local-core-api/chat-task-event.bus.js';
+import { ChatTaskStore } from '../src/local-core-api/chat-task.store.js';
 import { SecureIoAdapter } from '../src/websocket/secure-io.adapter.js';
 import { WsV1Service } from '../src/ws-v1/ws-v1.service.js';
 
@@ -22,6 +24,9 @@ describe('WS v1 subscriptions (e2e)', () => {
   let app: INestApplication;
   let url: string;
   let wsV1: WsV1Service;
+  let taskEvents: ChatTaskEventBus;
+  let ownedTaskId: string;
+  const ownedOperationId = 'ws-owned-operation';
   const clients: ClientSocket[] = [];
 
   beforeAll(async () => {
@@ -42,6 +47,17 @@ describe('WS v1 subscriptions (e2e)', () => {
     url = `http://127.0.0.1:${address.port}/ws/v1`;
     wsV1 = app.get(WsV1Service);
     await app.get(SessionStore).createIfAllowed('owned-session', 'owner', 10);
+    taskEvents = app.get(ChatTaskEventBus);
+    const accepted = await app.get(ChatTaskStore).submitText({
+      ownerId: 'owner',
+      operationId: ownedOperationId,
+      requestFingerprint: 'ws-owned-fingerprint',
+      clientSource: 'web',
+      text: '用于 WS 授权测试',
+      inputId: 'ws-owned-input',
+      sessionId: 'owned-session',
+    });
+    ownedTaskId = accepted.task!.taskId;
   });
 
   afterEach(() => {
@@ -55,20 +71,27 @@ describe('WS v1 subscriptions (e2e)', () => {
     delete process.env.SESSION_STORE;
   });
 
-  it('authorizes user:self and owned sessions while failing closed elsewhere', async () => {
+  it('authorizes user, session, task and operation channels from authoritative ownership', async () => {
     const owner = await connect('owner');
     const ack = await subscribe(owner, {
       request_id: 'subscribe-1',
       channels: [
         'user:self',
         'session:owned-session',
+        `task:${ownedTaskId}`,
+        `operation:${ownedOperationId}`,
         'task:unknown-task',
         'operation:unknown-operation',
         'user:someone-else',
       ],
     });
 
-    expect(ack.accepted).toEqual(['user:self', 'session:owned-session']);
+    expect(ack.accepted).toEqual([
+      'user:self',
+      'session:owned-session',
+      `task:${ownedTaskId}`,
+      `operation:${ownedOperationId}`,
+    ]);
     expect(ack.rejected).toEqual([
       expect.objectContaining({ channel: 'task:unknown-task', code: 'AUTH_002' }),
       expect.objectContaining({
@@ -84,15 +107,71 @@ describe('WS v1 subscriptions (e2e)', () => {
     const attacker = await connect('attacker');
     const attackerAck = await subscribe(attacker, {
       request_id: 'subscribe-2',
-      channels: ['session:owned-session'],
+      channels: [
+        'session:owned-session',
+        `task:${ownedTaskId}`,
+        `operation:${ownedOperationId}`,
+      ],
     });
     expect(attackerAck.accepted).toEqual([]);
-    expect(attackerAck.rejected).toEqual([
+    expect(attackerAck.rejected).toEqual(
+      expect.arrayContaining([
       expect.objectContaining({
         channel: 'session:owned-session',
         code: 'AUTH_002',
       }),
-    ]);
+        expect.objectContaining({
+          channel: `task:${ownedTaskId}`,
+          code: 'AUTH_002',
+        }),
+        expect.objectContaining({
+          channel: `operation:${ownedOperationId}`,
+          code: 'AUTH_002',
+        }),
+      ]),
+    );
+  });
+
+  it('maps persisted task lifecycle events onto task subscriptions', async () => {
+    const client = await connect('owner');
+    await subscribe(client, {
+      request_id: 'subscribe-task-state',
+      channels: [`task:${ownedTaskId}`],
+    });
+
+    const runningPromise = nextAgentEvent(client);
+    taskEvents.publish({
+      ownerId: 'owner',
+      taskId: ownedTaskId,
+      operationId: ownedOperationId,
+      sessionId: 'owned-session',
+      state: 'running',
+      type: 'state_changed',
+    });
+    await expect(runningPromise).resolves.toMatchObject({
+      channel: `task:${ownedTaskId}`,
+      task_id: ownedTaskId,
+      operation_id: ownedOperationId,
+      session_id: 'owned-session',
+      event_type: 'task_state',
+      data: { state: 'running' },
+    });
+
+    const deltaPromise = nextAgentEvent(client);
+    taskEvents.publish({
+      ownerId: 'owner',
+      taskId: ownedTaskId,
+      operationId: ownedOperationId,
+      sessionId: 'owned-session',
+      state: 'running',
+      type: 'agent_event',
+      eventType: 'tool_execution_start',
+      data: { tool: 'get_current_time', toolCallId: 'call-1' },
+    });
+    await expect(deltaPromise).resolves.toMatchObject({
+      event_type: 'tool_execution_start',
+      data: { tool: 'get_current_time', tool_call_id: 'call-1' },
+    });
   });
 
   it('orders live events and replays events after a known event id', async () => {

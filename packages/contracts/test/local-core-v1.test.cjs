@@ -4,7 +4,7 @@ const {
   ACTION_TIMELINESS_STATUSES,
   BUSINESS_OBJECT_ACTIONS,
   CANDIDATE_STATUSES,
-  CONFIRMATION_MODES,
+  CONFIRMATION_DECISIONS,
   ERRORS,
   GOAL_STATUSES,
   UNDO_BLOCKING_REASON_CODES,
@@ -48,7 +48,11 @@ describe("Local Core v1 contract constants", () => {
       "cancelled",
       "expired",
     ]);
-    expect(CONFIRMATION_MODES).toEqual(["confirm", "cancel", "edit"]);
+    expect(CONFIRMATION_DECISIONS).toEqual([
+      "confirm",
+      "modify_confirm",
+      "cancel",
+    ]);
     expect(BUSINESS_OBJECT_ACTIONS).toEqual([
       "create",
       "update",

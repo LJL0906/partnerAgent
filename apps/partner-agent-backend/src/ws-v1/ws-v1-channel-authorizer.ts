@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { SubscriptionChannel } from '@partner-agent/contracts';
 import { SessionStore } from '../database/session-store.js';
+import { ChatTaskOwnershipService } from '../local-core-api/chat-task-ownership.service.js';
 
 export interface WsV1AuthorizationRequest {
   userId: string;
@@ -14,7 +15,10 @@ export abstract class WsV1ChannelAuthorizer {
 
 @Injectable()
 export class DefaultWsV1ChannelAuthorizer extends WsV1ChannelAuthorizer {
-  constructor(private readonly sessionStore: SessionStore) {
+  constructor(
+    private readonly sessionStore: SessionStore,
+    private readonly taskOwnership: ChatTaskOwnershipService,
+  ) {
     super();
   }
 
@@ -30,8 +34,21 @@ export class DefaultWsV1ChannelAuthorizer extends WsV1ChannelAuthorizer {
       return Boolean(await this.sessionStore.find(sessionId, userId));
     }
 
-    // Task/operation ownership has no authoritative data source yet.
-    // Keep these channels fail-closed until a concrete authorizer is provided.
+    if (channel.startsWith('task:')) {
+      const taskId = channel.slice('task:'.length);
+      return Boolean(
+        taskId && (await this.taskOwnership.ownsTask(userId, taskId)),
+      );
+    }
+
+    if (channel.startsWith('operation:')) {
+      const operationId = channel.slice('operation:'.length);
+      return Boolean(
+        operationId &&
+          (await this.taskOwnership.ownsOperation(userId, operationId)),
+      );
+    }
+
     return false;
   }
 }

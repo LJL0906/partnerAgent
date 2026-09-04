@@ -166,6 +166,74 @@ describe('ConfirmationTransactionService', () => {
     );
   });
 
+  it('validates batch and candidate versions independently', async () => {
+    const batchConflict = fakeDatabase((sql) => {
+      if (sql.includes('where user_id=$1 and operation_id=$2')) return [];
+      if (
+        sql.includes('from confirmation_batches') &&
+        sql.includes('for update')
+      ) {
+        return [{ ...batch('normal'), version: '2' }];
+      }
+      return [];
+    });
+    await expect(
+      service(batchConflict).submit(command()),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({ code: 'VERSION_001' }),
+    });
+
+    const candidateConflict = fakeDatabase((sql) => {
+      if (sql.includes('where user_id=$1 and operation_id=$2')) return [];
+      if (
+        sql.includes('from confirmation_batches') &&
+        sql.includes('for update')
+      ) {
+        return [batch('normal')];
+      }
+      if (sql.includes('from candidate_items') && sql.includes('order by id')) {
+        return [{ ...candidate(), version: '2' }];
+      }
+      return [];
+    });
+    await expect(
+      service(candidateConflict).submit(command()),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({ code: 'VERSION_001' }),
+    });
+  });
+
+  it('rejects modify_confirm fields not declared by the candidate schema', async () => {
+    const database = fakeDatabase((sql) => {
+      if (sql.includes('where user_id=$1 and operation_id=$2')) return [];
+      if (
+        sql.includes('from confirmation_batches') &&
+        sql.includes('for update')
+      ) {
+        return [batch('normal')];
+      }
+      if (sql.includes('from candidate_items') && sql.includes('order by id')) {
+        return [candidate()];
+      }
+      return [];
+    });
+    const input = command();
+    input.envelope.payload.items[0] = {
+      ...input.envelope.payload.items[0],
+      decision: 'modify_confirm',
+      modified_payload: { private_field: 'forbidden' },
+    };
+
+    await expect(service(database).submit(input)).rejects.toMatchObject({
+      status: 422,
+    });
+    expect(database.sql.join('\n')).not.toContain(
+      'insert into business_objects',
+    );
+  });
+
   it('rolls back every write when a later transactional effect fails', async () => {
     const database = fakeDatabase((sql) => {
       if (sql.includes('where user_id=$1 and operation_id=$2')) return [];
@@ -213,13 +281,13 @@ function command() {
       client_source: 'web',
       request_fingerprint: 'fingerprint',
       payload: {
-        mode: 'confirm' as const,
+        confirmation_batch_id: batchId,
+        batch_version: '1',
         items: [
           {
             candidate_id: candidateId,
-            kind: 'goal' as const,
-            action: 'create' as const,
-            risk: 'normal' as const,
+            candidate_version: '1',
+            decision: 'confirm' as const,
           },
         ],
       },
@@ -252,6 +320,8 @@ function candidate(risk: 'normal' | 'high' = 'normal') {
     expected_version: null,
     source_refs: [],
     expires_at: new Date(now.getTime() + 86_400_000),
+    version: '1',
+    editable_fields: ['title'],
   };
 }
 

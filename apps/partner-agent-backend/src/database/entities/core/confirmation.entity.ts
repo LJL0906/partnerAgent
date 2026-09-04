@@ -95,6 +95,9 @@ export class CandidateItemEntity {
   candidateStatus: CandidateStatus;
   @Column({ type: 'text', default: 'normal' }) risk: 'normal' | 'high';
   @Column({ type: 'jsonb' }) payload: Record<string, unknown>;
+  /** modify_confirm 允许覆盖的候选 payload 顶层字段。 */
+  @Column({ name: 'editable_fields', type: 'text', array: true, default: '{}' })
+  editableFields: string[];
   @Column({ name: 'edited_payload', type: 'jsonb', nullable: true })
   editedPayload: Record<string, unknown> | null;
   @Column({ type: 'numeric', precision: 4, scale: 3, nullable: true })

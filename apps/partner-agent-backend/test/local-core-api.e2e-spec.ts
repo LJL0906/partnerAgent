@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { LocalCoreApiModule } from '../src/local-core-api/local-core-api.module.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { ConfirmationTransactionService } from '../src/local-core-api/confirmation-transaction.service.js';
+import { ChatTaskScheduler } from '../src/local-core-api/chat-task-scheduler.js';
 
 const secret = 'test-secret-that-is-at-least-32-bytes';
 
@@ -36,6 +37,8 @@ describe('Local Core REST API (e2e)', () => {
           },
         })),
       })
+      .overrideProvider(ChatTaskScheduler)
+      .useValue({ schedule: vi.fn(), cancel: vi.fn() })
       .compile();
     app = moduleFixture.createNestApplication();
     await app.init();
@@ -91,20 +94,23 @@ describe('Local Core REST API (e2e)', () => {
     expect(hidden.body).toMatchObject({ code: 'AUTH_002' });
   });
 
-  it('returns a structured 501 instead of fabricating command success', async () => {
+  it('accepts text input and exposes its persisted task', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/v1/inputs/text')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send(command('operation-1', { text: 'hello' }));
-    expect(response.status).toBe(501);
+      .send(command('operation-1', { text: 'hello', input_id: 'input-1' }));
+    expect(response.status).toBe(202);
     expect(response.body).toMatchObject({
-      code: 'NOT_IMPLEMENTED_001',
-      details: {
-        handler_kind: 'command',
-        handler: 'SubmitTextInput',
-        operation_id: 'operation-1',
-      },
+      operation_id: 'operation-1',
+      status: 'accepted',
+      data: { session_id: expect.any(String) },
     });
+    const taskId = response.body.data.chat_task.task_id;
+    const task = await request(app.getHttpServer())
+      .get(`/api/v1/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(task.status).toBe(200);
+    expect(task.body).toMatchObject({ task_id: taskId, state: 'queued' });
   });
 
   it('maps maintenance routes to candidate-only handlers', async () => {
@@ -117,15 +123,50 @@ describe('Local Core REST API (e2e)', () => {
   });
 
   it('maps task cancellation to CancelTask', async () => {
+    const submitted = await request(app.getHttpServer())
+      .post('/api/v1/inputs/text')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(
+        command('operation-before-cancel', {
+          text: 'cancel me',
+          input_id: 'input-cancel',
+        }),
+      );
+    const taskId = submitted.body.data.chat_task.task_id;
     const response = await request(app.getHttpServer())
       .post('/api/v1/tasks/cancel')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send(command('operation-3', { task_id: 'task-1' }));
-    expect(response.status).toBe(501);
+      .send(command('operation-3', { task_id: taskId }));
+    expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      code: 'NOT_IMPLEMENTED_001',
-      details: { handler: 'CancelTask' },
+      operation_id: 'operation-3',
+      status: 'completed',
+      data: { task_id: taskId, state: 'cancelled' },
     });
+  });
+
+  it('keeps command and input retries idempotent and hides cross-owner tasks', async () => {
+    const body = command('operation-idempotent', {
+      text: 'once',
+      input_id: 'input-idempotent',
+    });
+    const first = await request(app.getHttpServer())
+      .post('/api/v1/inputs/text')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(body);
+    const replay = await request(app.getHttpServer())
+      .post('/api/v1/inputs/text')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(body);
+    expect(replay.body.status).toBe('duplicate');
+    expect(replay.body.data.chat_task.task_id).toBe(
+      first.body.data.chat_task.task_id,
+    );
+    const hidden = await request(app.getHttpServer())
+      .get(`/api/v1/tasks/${first.body.data.chat_task.task_id}`)
+      .set('Authorization', `Bearer ${otherToken}`);
+    expect(hidden.status).toBe(404);
+    expect(hidden.body).toMatchObject({ code: 'AUTH_002' });
   });
 
   it('dispatches SubmitConfirmationBatch to the transactional service', async () => {

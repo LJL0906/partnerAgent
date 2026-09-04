@@ -5,7 +5,9 @@ import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Model } from '@earendil-works/pi-ai';
 import type { SessionMessage } from '@partner-agent/contracts';
 import { ModelGatewayService } from '../model-gateway/model-gateway.service.js';
+import { EgressDecisionError } from '../model-gateway/egress.types.js';
 import { SessionManager } from './session-manager.service.js';
+import type { StoredSessionMessage } from '../database/session-store.js';
 import { ToolExecutionService } from '../tools/tool-execution.service.js';
 import { ToolRegistryService } from '../tools/tool-registry.service.js';
 
@@ -14,6 +16,12 @@ type BackendAgentEvent = {
   data?: unknown;
   timestamp: number;
 };
+
+export interface PiChatContext {
+  taskId?: string;
+  operationId?: string;
+  source?: string;
+}
 
 @Injectable()
 export class PiAgentService implements OnModuleInit {
@@ -30,7 +38,7 @@ export class PiAgentService implements OnModuleInit {
   onModuleInit(): void {
     const provider =
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
-    const modelCount = this.modelGateway.getModels().getModels(provider).length;
+    const modelCount = this.availableModels(provider).length;
     this.logger.log(`Pi Agent 初始化完成: ${provider} (${modelCount} 个模型)`);
   }
 
@@ -38,18 +46,15 @@ export class PiAgentService implements OnModuleInit {
     sessionId: string,
     message: string,
     userId: string,
+    context: PiChatContext = {},
   ): AsyncGenerator<BackendAgentEvent> {
     const provider =
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
-    const models = this.modelGateway.getModels();
     const modelId = this.configService.get<string>('DEFAULT_MODEL');
-    const model = modelId
-      ? models.getModel(provider, modelId)
-      : models.getModels(provider)[0];
+    const model = this.resolveModel(provider, modelId);
 
     if (!model) {
-      const availableModels = models
-        .getModels(provider)
+      const availableModels = this.availableModels(provider)
         .map((entry) => entry.id)
         .join(', ');
       throw new Error(
@@ -58,7 +63,10 @@ export class PiAgentService implements OnModuleInit {
     }
 
     const session = await this.sessionManager.getOrCreate(sessionId, userId);
-    const persistedAfterSnapshot = session.messages.filter(
+    const persistedForContext = context.taskId
+      ? this.withoutAcceptedPrompt(session.messages, message)
+      : session.messages;
+    const persistedAfterSnapshot = persistedForContext.filter(
       (entry) => entry.sequence > session.contextRevision,
     );
     const contextMessages = session.contextMessages.length
@@ -66,17 +74,19 @@ export class PiAgentService implements OnModuleInit {
           ...session.contextMessages,
           ...this.toAgentMessages(persistedAfterSnapshot, model),
         ]
-      : this.toAgentMessages(session.messages, model);
+      : this.toAgentMessages(persistedForContext, model);
     const agent =
       session.agent ??
-      this.createAgent(sessionId, contextMessages, model, userId);
+      this.createAgent(sessionId, contextMessages, model, userId, context);
     if (agent.state.isStreaming) {
       throw new Error(`会话 ${sessionId} 已有请求正在处理中`);
     }
     if (!session.agent) {
       await this.sessionManager.setAgent(sessionId, userId, agent);
     }
-    await this.sessionManager.saveMessage(sessionId, userId, 'user', message);
+    if (!context.taskId) {
+      await this.sessionManager.saveMessage(sessionId, userId, 'user', message);
+    }
 
     const pending: BackendAgentEvent[] = [];
     let wake: (() => void) | undefined;
@@ -113,13 +123,24 @@ export class PiAgentService implements OnModuleInit {
         runError = error;
         failed = true;
         ended = true;
-        push({
-          type: 'error',
-          data: {
-            message: error instanceof Error ? error.message : String(error),
-          },
-          timestamp: Date.now(),
-        });
+        if (error instanceof EgressDecisionError && error.decision === 'pending_user_decision') {
+          push({
+            type: 'privacy_decision_required',
+            data: { result: error.decision, categories: error.categories },
+            timestamp: Date.now(),
+          });
+        } else {
+          push({
+            type: 'error',
+            data: {
+              message: error instanceof Error ? error.message : String(error),
+              ...(error instanceof EgressDecisionError
+                ? { result: error.decision, categories: error.categories }
+                : {}),
+            },
+            timestamp: Date.now(),
+          });
+        }
       });
 
       while (!ended || pending.length > 0) {
@@ -175,18 +196,36 @@ export class PiAgentService implements OnModuleInit {
     messages: AgentMessage[],
     model: Model<any>,
     ownerId: string,
+    context: PiChatContext,
   ): Agent {
-    const models = this.modelGateway.getModels();
     return new Agent({
       sessionId,
       initialState: {
         systemPrompt:
-          '你是一个友好的个人助手。请使用中文回答，回答清晰、准确、简洁。',
+          '你是紫灵AI，一个友好的个人智能助手。请使用中文回答，回答清晰、准确、简洁。',
         model,
         messages,
         tools: this.toolExecution.createAgentTools({ ownerId, sessionId }),
       },
-      streamFn: models.streamSimple.bind(models),
+      streamFn: this.approvedStream(ownerId, sessionId, context),
+    });
+  }
+
+  private availableModels(provider: string): readonly Model<any>[] {
+    return this.modelGateway.listModels(provider);
+  }
+
+  private resolveModel(provider: string, modelId?: string): Model<any> | undefined {
+    return this.modelGateway.resolveModel(provider, modelId);
+  }
+
+  private approvedStream(ownerId: string, sessionId: string, context: PiChatContext) {
+    return this.modelGateway.createStreamFunction({
+      ownerId,
+      sessionId,
+      taskId: context.taskId,
+      operationId: context.operationId,
+      source: context.source ?? 'pi_agent',
     });
   }
 
@@ -227,6 +266,16 @@ export class PiAgentService implements OnModuleInit {
         timestamp: message.timestamp,
       };
     });
+  }
+
+  private withoutAcceptedPrompt(
+    messages: StoredSessionMessage[],
+    prompt: string,
+  ): StoredSessionMessage[] {
+    const result = [...messages];
+    const last = result.at(-1);
+    if (last?.role === 'user' && last.content === prompt) result.pop();
+    return result;
   }
 
   /** 裁剪只从用户回合边界开始，避免留下孤立的 toolResult/toolCall。 */
@@ -274,7 +323,7 @@ export class PiAgentService implements OnModuleInit {
       }
       return {
         type: 'tool_execution_start',
-        data: { tool: event.toolName, toolCallId: event.toolCallId },
+        data: { tool: event.toolName, tool_call_id: event.toolCallId },
         timestamp,
       };
     }
@@ -298,7 +347,7 @@ export class PiAgentService implements OnModuleInit {
           data: {
             confirmationId: details.confirmationId,
             tool: event.toolName,
-            toolCallId: event.toolCallId,
+            tool_call_id: event.toolCallId,
             riskLevel: this.toolRegistry.get(event.toolName).riskLevel,
             requestSummary: details.requestSummary ?? '',
             expiresAt: new Date(details.expiresAt).getTime(),
@@ -310,7 +359,7 @@ export class PiAgentService implements OnModuleInit {
         type: 'tool_execution_end',
         data: {
           tool: event.toolName,
-          toolCallId: event.toolCallId,
+          tool_call_id: event.toolCallId,
           success: !event.isError,
         },
         timestamp,
