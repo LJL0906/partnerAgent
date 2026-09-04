@@ -10,6 +10,11 @@ import { ChatTaskStore } from '../local-core-api/chat-task.store.js';
 import { MemoryChatTaskStore } from '../local-core-api/memory-chat-task.store.js';
 import { TypeOrmChatTaskStore } from '../local-core-api/typeorm-chat-task.store.js';
 import {
+  ChatTaskNotifier,
+  NoopChatTaskNotifier,
+  PostgresChatTaskNotifier,
+} from '../local-core-api/chat-task-notifier.js';
+import {
   EgressAuditStore,
   MemoryEgressAuditStore,
   TypeOrmEgressAuditStore,
@@ -20,6 +25,11 @@ import {
 } from '../model-gateway/egress-decision.store.js';
 import { MemoryEgressDecisionStore } from '../model-gateway/memory-egress-decision.store.js';
 import { TypeOrmEgressDecisionStore } from '../model-gateway/typeorm-egress-decision.store.js';
+import {
+  MemoryWsV1EventStore,
+  WsV1EventStore,
+} from '../ws-v1/ws-v1-event.store.js';
+import { TypeOrmWsV1EventStore } from '../ws-v1/typeorm-ws-v1-event.store.js';
 
 @Module({
   providers: [
@@ -61,6 +71,24 @@ import { TypeOrmEgressDecisionStore } from '../model-gateway/typeorm-egress-deci
       },
     },
     {
+      provide: ChatTaskNotifier,
+      inject: [SessionStore, ConfigService],
+      useFactory: (
+        sessionStore: SessionStore,
+        configService: ConfigService,
+      ): ChatTaskNotifier => {
+        if (!(sessionStore instanceof TypeOrmSessionStore)) {
+          return new NoopChatTaskNotifier();
+        }
+        const databaseUrl = configService.get<string>('DATABASE_URL');
+        if (!databaseUrl) throw new Error('DATABASE_URL 未配置');
+        return new PostgresChatTaskNotifier(
+          sessionStore.getDataSource(),
+          databaseUrl,
+        );
+      },
+    },
+    {
       provide: EgressAuditStore,
       inject: [SessionStore],
       useFactory: (sessionStore: SessionStore): EgressAuditStore =>
@@ -76,13 +104,33 @@ import { TypeOrmEgressDecisionStore } from '../model-gateway/typeorm-egress-deci
           ? new TypeOrmEgressDecisionStore(sessionStore.getDataSource())
           : new MemoryEgressDecisionStore(),
     },
+    {
+      provide: WsV1EventStore,
+      inject: [SessionStore, ConfigService],
+      useFactory: (
+        sessionStore: SessionStore,
+        configService: ConfigService,
+      ): WsV1EventStore => {
+        if (!(sessionStore instanceof TypeOrmSessionStore)) {
+          return new MemoryWsV1EventStore();
+        }
+        const databaseUrl = configService.get<string>('DATABASE_URL');
+        if (!databaseUrl) throw new Error('DATABASE_URL 未配置');
+        return new TypeOrmWsV1EventStore(
+          sessionStore.getDataSource(),
+          databaseUrl,
+        );
+      },
+    },
   ],
   exports: [
     SessionStore,
     ToolOperationStore,
     ChatTaskStore,
+    ChatTaskNotifier,
     EgressAuditStore,
     EGRESS_DECISION_STORE,
+    WsV1EventStore,
   ],
 })
 export class DatabaseModule {}

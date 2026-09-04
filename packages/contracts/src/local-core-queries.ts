@@ -62,15 +62,19 @@ export type GetAnalysisRunResult = AnalysisRunResult;
 export interface GetTaskStatusQuery {
   task_id: string;
 }
+export const TASK_STATES = [
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+  'waiting_privacy_decision',
+  'waiting_tool_approval',
+] as const;
+export type TaskState = (typeof TASK_STATES)[number];
 export interface TaskStatus {
   task_id: string;
-  state:
-    | 'queued'
-    | 'running'
-    | 'completed'
-    | 'failed'
-    | 'cancelled'
-    | 'waiting_privacy_decision';
+  state: TaskState;
   progress?: number;
   error?: string;
   result_ref?: ResourceRef;

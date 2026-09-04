@@ -107,6 +107,12 @@ describe('MemoryEgressDecisionStore', () => {
     expect(
       (await store.findByIdForOwner(pending.id, binding.ownerId))?.state,
     ).toBe('expired');
+    await expect(
+      store.findLatestForTask(binding.taskId, binding.ownerId),
+    ).resolves.toMatchObject({ id: pending.id, state: 'expired' });
+    await expect(
+      store.findCurrentForTask(binding.taskId, binding.ownerId),
+    ).resolves.toBeUndefined();
   });
 
   it('lists recoverable decisions and cancels ready decisions with the task', async () => {

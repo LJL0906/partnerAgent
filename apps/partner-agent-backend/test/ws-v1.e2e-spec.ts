@@ -2,18 +2,33 @@ import type { AddressInfo } from 'node:net';
 import type { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { Type } from 'typebox';
 import type {
   ServerPushEventV1,
   SubscriptionAckV1,
+  ToolControlAckV1,
 } from '@partner-agent/contracts';
 import { SignJWT } from 'jose';
 import { io, type Socket as ClientSocket } from 'socket.io-client';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { AppModule } from '../src/app.module.js';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { AuthService } from '../src/auth/auth.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { ChatTaskEventBus } from '../src/local-core-api/chat-task-event.bus.js';
+import {
+  ChatTaskScheduler,
+  PiChatTaskScheduler,
+} from '../src/local-core-api/chat-task-scheduler.js';
 import { ChatTaskStore } from '../src/local-core-api/chat-task.store.js';
+import { ToolExecutionService } from '../src/tools/tool-execution.service.js';
+import { ToolRegistryService } from '../src/tools/tool-registry.service.js';
 import { SecureIoAdapter } from '../src/websocket/secure-io.adapter.js';
 import { WsV1Service } from '../src/ws-v1/ws-v1.service.js';
 
@@ -26,6 +41,23 @@ describe('WS v1 subscriptions (e2e)', () => {
   let wsV1: WsV1Service;
   let taskEvents: ChatTaskEventBus;
   let ownedTaskId: string;
+  let sessionStore: SessionStore;
+  let chatTasks: ChatTaskStore;
+  let toolExecution: ToolExecutionService;
+  const externalToolHandler = vi.fn(async () => ({
+    content: [{ type: 'text' as const, text: 'external result' }],
+    details: { changed: true },
+  }));
+  const externalToolUndo = vi.fn(async () => undefined);
+  const claimToolDecision = vi.fn(
+    async (_task: unknown, confirmationId: string) => ({
+      confirmationId,
+      leaseToken: `tool-lease-${confirmationId}`,
+    }),
+  );
+  const resumeClaimedToolDecision = vi.fn();
+  const failClaimedToolDecision = vi.fn(async () => undefined);
+  const expireToolDecision = vi.fn(async () => true);
   const ownedOperationId = 'ws-owned-operation';
   const clients: ClientSocket[] = [];
 
@@ -34,9 +66,24 @@ describe('WS v1 subscriptions (e2e)', () => {
     process.env.CORS_ALLOWED_ORIGINS = allowedOrigin;
     process.env.SESSION_STORE = 'memory';
 
+    const { AppModule } = await import('../src/app.module.js');
+    const schedulerStub = {
+      claimToolDecision,
+      resumeClaimedToolDecision,
+      failClaimedToolDecision,
+      expireToolDecision,
+      schedule: vi.fn(),
+      resumeAfterPrivacyDecision: vi.fn(),
+      cancel: vi.fn(),
+    };
     const moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(PiChatTaskScheduler)
+      .useValue(schedulerStub)
+      .overrideProvider(ChatTaskScheduler)
+      .useValue(schedulerStub)
+      .compile();
     app = moduleFixture.createNestApplication();
     app.useWebSocketAdapter(
       new SecureIoAdapter(app, app.get(AuthService), app.get(ConfigService)),
@@ -46,9 +93,28 @@ describe('WS v1 subscriptions (e2e)', () => {
     const address = app.getHttpServer().address() as AddressInfo;
     url = `http://127.0.0.1:${address.port}/ws/v1`;
     wsV1 = app.get(WsV1Service);
-    await app.get(SessionStore).createIfAllowed('owned-session', 'owner', 10);
+    sessionStore = app.get(SessionStore);
+    await sessionStore.createIfAllowed('owned-session', 'owner', 10);
     taskEvents = app.get(ChatTaskEventBus);
-    const accepted = await app.get(ChatTaskStore).submitText({
+    chatTasks = app.get(ChatTaskStore);
+    toolExecution = app.get(ToolExecutionService);
+    app.get(ToolRegistryService).register({
+      tool: {
+        name: 'ws_test_external_write',
+        label: 'WS 测试外部写入',
+        description: '仅用于测试正式 WS v1 工具控制闭环',
+        parameters: Type.Object({ value: Type.String() }),
+        execute: externalToolHandler,
+      },
+      riskLevel: 'high',
+      effect: 'external_side_effect',
+      capabilities: ['external_api'],
+      requiredPermissions: [],
+      requiresToolApproval: true,
+      createUndoPayload: () => ({ resourceId: 'resource-1' }),
+      undo: externalToolUndo,
+    });
+    const accepted = await chatTasks.submitText({
       ownerId: 'owner',
       operationId: ownedOperationId,
       requestFingerprint: 'ws-owned-fingerprint',
@@ -93,7 +159,10 @@ describe('WS v1 subscriptions (e2e)', () => {
       `operation:${ownedOperationId}`,
     ]);
     expect(ack.rejected).toEqual([
-      expect.objectContaining({ channel: 'task:unknown-task', code: 'AUTH_002' }),
+      expect.objectContaining({
+        channel: 'task:unknown-task',
+        code: 'AUTH_002',
+      }),
       expect.objectContaining({
         channel: 'operation:unknown-operation',
         code: 'AUTH_002',
@@ -116,10 +185,10 @@ describe('WS v1 subscriptions (e2e)', () => {
     expect(attackerAck.accepted).toEqual([]);
     expect(attackerAck.rejected).toEqual(
       expect.arrayContaining([
-      expect.objectContaining({
-        channel: 'session:owned-session',
-        code: 'AUTH_002',
-      }),
+        expect.objectContaining({
+          channel: 'session:owned-session',
+          code: 'AUTH_002',
+        }),
         expect.objectContaining({
           channel: `task:${ownedTaskId}`,
           code: 'AUTH_002',
@@ -238,7 +307,7 @@ describe('WS v1 subscriptions (e2e)', () => {
     });
 
     const firstPromise = nextAgentEvent(firstClient);
-    const firstPublished = wsV1.publish({
+    const firstPublished = await wsV1.publish({
       channel: 'session:owned-session',
       session_id: 'owned-session',
       event_type: 'text_delta',
@@ -250,7 +319,7 @@ describe('WS v1 subscriptions (e2e)', () => {
     expect(first.event_id).toMatch(/^[0-9a-f-]{36}$/);
 
     firstClient.disconnect();
-    const secondPublished = wsV1.publish({
+    const secondPublished = await wsV1.publish({
       channel: 'session:owned-session',
       session_id: 'owned-session',
       event_type: 'done',
@@ -312,7 +381,7 @@ describe('WS v1 subscriptions (e2e)', () => {
       leakedToOtherUser = true;
     });
     const privateEventPromise = nextAgentEvent(client);
-    wsV1.publish({
+    await wsV1.publish({
       channel: 'user:self',
       recipient_user_id: 'owner',
       event_type: 'error',
@@ -342,7 +411,7 @@ describe('WS v1 subscriptions (e2e)', () => {
     client.once('agent_event', () => {
       received = true;
     });
-    wsV1.publish({
+    await wsV1.publish({
       channel: 'user:self',
       recipient_user_id: 'owner',
       event_type: 'summary',
@@ -351,6 +420,173 @@ describe('WS v1 subscriptions (e2e)', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(received).toBe(false);
   });
+
+  it('authorizes and completes formal tool confirmation, continuation and undo controls', async () => {
+    const pending = await createPendingToolApproval('confirm');
+    const client = await connect('owner');
+    await subscribe(client, {
+      request_id: 'subscribe-tool-confirm',
+      channels: [`session:${pending.sessionId}`],
+    });
+
+    const lifecycle = collectAgentEvents(client, 4);
+    const confirmAck = nextToolControlAck(client);
+    client.emit('confirm_tool_execution', {
+      request_id: 'confirm-control-1',
+      session_id: pending.sessionId,
+      confirmation_id: pending.confirmationId,
+    });
+
+    await expect(confirmAck).resolves.toEqual({
+      request_id: 'confirm-control-1',
+      action: 'confirm',
+      status: 'completed',
+    });
+    const events = await lifecycle;
+    expect(events.map((event) => event.event_type)).toEqual([
+      'tool_confirmation_confirmed',
+      'tool_execution_start',
+      'tool_execution_end',
+      'tool_undo_available',
+    ]);
+    const ended = events.find(
+      (event) => event.event_type === 'tool_execution_end',
+    );
+    const executionId = (ended?.data as { execution_id?: string } | undefined)
+      ?.execution_id;
+    expect(executionId).toBeTruthy();
+    expect(claimToolDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: pending.taskId, ownerId: 'owner' }),
+      pending.confirmationId,
+      pending.toolCallId,
+      'ws_test_external_write',
+    );
+    expect(resumeClaimedToolDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: pending.taskId }),
+      {
+        confirmationId: pending.confirmationId,
+        leaseToken: `tool-lease-${pending.confirmationId}`,
+      },
+      expect.objectContaining({
+        toolName: 'ws_test_external_write',
+        toolCallId: pending.toolCallId,
+        isError: false,
+      }),
+    );
+
+    const undoEvent = nextAgentEvent(client);
+    const undoAck = nextToolControlAck(client);
+    client.emit('undo_tool_execution', {
+      request_id: 'undo-control-1',
+      session_id: pending.sessionId,
+      execution_id: executionId,
+    });
+    await expect(undoAck).resolves.toEqual({
+      request_id: 'undo-control-1',
+      action: 'undo',
+      status: 'completed',
+    });
+    await expect(undoEvent).resolves.toMatchObject({
+      event_type: 'tool_undo_completed',
+      data: { execution_id: executionId, success: true },
+    });
+    expect(externalToolUndo).toHaveBeenCalledOnce();
+  });
+
+  it('rejects cross-owner tool control without executing or leaking events', async () => {
+    const pending = await createPendingToolApproval('attacker');
+    const attacker = await connect('attacker');
+    const ack = nextToolControlAck(attacker);
+    attacker.emit('confirm_tool_execution', {
+      request_id: 'attacker-control-1',
+      session_id: pending.sessionId,
+      confirmation_id: pending.confirmationId,
+    });
+
+    await expect(ack).resolves.toMatchObject({
+      request_id: 'attacker-control-1',
+      action: 'confirm',
+      status: 'rejected',
+      error: { code: 'AUTH_002' },
+    });
+  });
+
+  it('dismisses an owned tool request and resumes with a rejection result', async () => {
+    const pending = await createPendingToolApproval('dismiss');
+    const client = await connect('owner');
+    await subscribe(client, {
+      request_id: 'subscribe-tool-dismiss',
+      channels: [`session:${pending.sessionId}`],
+    });
+    const dismissedEvent = nextAgentEvent(client);
+    const ack = nextToolControlAck(client);
+    client.emit('dismiss_tool_execution', {
+      request_id: 'dismiss-control-1',
+      session_id: pending.sessionId,
+      confirmation_id: pending.confirmationId,
+    });
+
+    await expect(ack).resolves.toEqual({
+      request_id: 'dismiss-control-1',
+      action: 'dismiss',
+      status: 'completed',
+    });
+    await expect(dismissedEvent).resolves.toMatchObject({
+      event_type: 'tool_confirmation_dismissed',
+      data: { reason: 'user_dismissed' },
+    });
+    expect(resumeClaimedToolDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: pending.taskId }),
+      {
+        confirmationId: pending.confirmationId,
+        leaseToken: `tool-lease-${pending.confirmationId}`,
+      },
+      expect.objectContaining({ isError: true }),
+    );
+  });
+
+  async function createPendingToolApproval(suffix: string) {
+    const operationId = `tool-operation-${suffix}`;
+    const sessionId = `tool-session-${suffix}`;
+    await sessionStore.createIfAllowed(sessionId, 'owner', 10);
+    const accepted = await chatTasks.submitText({
+      ownerId: 'owner',
+      operationId,
+      requestFingerprint: `tool-fingerprint-${suffix}`,
+      clientSource: 'web',
+      text: `工具控制测试 ${suffix}`,
+      inputId: `tool-input-${suffix}`,
+      sessionId,
+    });
+    const acceptedTask = accepted.task!;
+    expect(await chatTasks.markRunning(acceptedTask.taskId, 'owner')).toBe(
+      true,
+    );
+    const pending = await toolExecution
+      .createAgentTools({
+        ownerId: 'owner',
+        sessionId: acceptedTask.sessionId,
+        taskId: acceptedTask.taskId,
+        operationId: acceptedTask.operationId,
+      })
+      .find((tool) => tool.name === 'ws_test_external_write')!
+      .execute(`tool-call-${suffix}`, { value: suffix });
+    const confirmationId = (pending.details as { confirmationId: string })
+      .confirmationId;
+    expect(
+      await chatTasks.markWaitingToolApproval(
+        acceptedTask.taskId,
+        'owner',
+        confirmationId,
+      ),
+    ).toBe(true);
+    return {
+      taskId: acceptedTask.taskId,
+      sessionId: acceptedTask.sessionId,
+      toolCallId: `tool-call-${suffix}`,
+      confirmationId,
+    };
+  }
 
   async function connect(subject: string): Promise<ClientSocket> {
     const client = io(url, {
@@ -385,6 +621,32 @@ function emitAndWaitAck(
 
 function nextAgentEvent(client: ClientSocket): Promise<ServerPushEventV1> {
   return once(client, 'agent_event');
+}
+
+function nextToolControlAck(client: ClientSocket): Promise<ToolControlAckV1> {
+  return once(client, 'tool_control_ack');
+}
+
+function collectAgentEvents(
+  client: ClientSocket,
+  count: number,
+): Promise<ServerPushEventV1[]> {
+  return new Promise((resolve, reject) => {
+    const events: ServerPushEventV1[] = [];
+    const timer = setTimeout(() => {
+      client.off('agent_event', onEvent);
+      reject(new Error(`等待 ${count} 个 agent_event 超时`));
+    }, 3000);
+    const onEvent = (event: ServerPushEventV1) => {
+      events.push(event);
+      if (events.length === count) {
+        clearTimeout(timer);
+        client.off('agent_event', onEvent);
+        resolve(events);
+      }
+    };
+    client.on('agent_event', onEvent);
+  });
 }
 
 function once<T>(client: ClientSocket, eventName: string): Promise<T> {

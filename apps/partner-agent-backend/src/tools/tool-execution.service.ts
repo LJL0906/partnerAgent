@@ -99,6 +99,8 @@ export class ToolExecutionService {
         id: confirmationId,
         ownerId: context.ownerId,
         sessionId: context.sessionId,
+        ...(context.taskId ? { taskId: context.taskId } : {}),
+        ...(context.operationId ? { operationId: context.operationId } : {}),
         toolCallId,
         toolName: definition.tool.name,
         riskLevel: definition.riskLevel,

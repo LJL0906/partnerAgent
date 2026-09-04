@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "incremental": false,
+    "outDir": "./dist/migration-verify",
+    "rootDir": ".",
+    "sourceMap": false
+  },
+  "include": ["scripts/verify-migrations.ts"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
+}

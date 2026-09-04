@@ -5,13 +5,22 @@ import {
   ChatTaskStore,
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
-  type AcceptedChatTask,
   type RejectInputAnalysisCommand,
-  type SessionMessageView,
   type StoredChatTask,
   type SubmitTextCommand,
 } from './chat-task.store.js';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
+import {
+  copyStoredChatTask,
+  failWaitingPrivacyTask,
+  hasBlockingChatTask,
+  hasRunningChatTask,
+  memoryChatTaskResult,
+  memoryMessageId,
+  memorySessionMessageViews,
+  memoryTaskKey,
+  toolConfirmationIdFromLeaseOwner,
+} from './memory-chat-task-helpers.js';
 
 export class MemoryChatTaskStore extends ChatTaskStore {
   private readonly operations = new Map<
@@ -37,7 +46,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
   }
 
   async rejectInputAnalysis(command: RejectInputAnalysisCommand) {
-    const operationKey = this.key(command.ownerId, command.operationId);
+    const operationKey = memoryTaskKey(command.ownerId, command.operationId);
     const prior = this.operations.get(operationKey);
     if (prior) {
       if (
@@ -57,7 +66,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
   }
 
   async submitText(command: SubmitTextCommand) {
-    const operationKey = this.key(command.ownerId, command.operationId);
+    const operationKey = memoryTaskKey(command.ownerId, command.operationId);
     const priorOperation = this.operations.get(operationKey);
     if (priorOperation) {
       if (
@@ -68,13 +77,13 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       return { result: { ...priorOperation.result, status: 'duplicate' } };
     }
 
-    const inputKey = this.key(command.ownerId, command.inputId);
+    const inputKey = memoryTaskKey(command.ownerId, command.inputId);
     const priorInput = this.inputs.get(inputKey);
     if (priorInput) {
       if (priorInput.fingerprint !== command.requestFingerprint)
         throw new ChatTaskConflictError();
       const priorTask = this.tasks.get(priorInput.taskId)!;
-      const result = this.result(
+      const result = memoryChatTaskResult(
         command.operationId,
         priorTask,
         priorTask.userMessageId,
@@ -122,8 +131,9 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       userMessageId: messageId,
       createdAt: now,
       updatedAt: now,
+      attemptCount: 0,
     };
-    const result = this.result(
+    const result = memoryChatTaskResult(
       command.operationId,
       task,
       messageId,
@@ -140,13 +150,13 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       fingerprint: command.requestFingerprint,
       result,
     });
-    return { result, task: this.copy(task) };
+    return { result, task: copyStoredChatTask(task) };
   }
 
   async cancelTask(ownerId: string, envelope: CommandEnvelopeBody) {
     const operationId = String(envelope.operation_id);
     const fingerprint = String(envelope.request_fingerprint);
-    const operationKey = this.key(ownerId, operationId);
+    const operationKey = memoryTaskKey(ownerId, operationId);
     const prior = this.operations.get(operationKey);
     if (prior) {
       if (
@@ -163,6 +173,9 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (!task || task.ownerId !== ownerId) throw new Error('AUTH_002');
     if (!['completed', 'failed', 'cancelled'].includes(task.state)) {
       task.state = 'cancelled';
+      delete task.leaseOwner;
+      delete task.leaseExpiresAt;
+      delete task.waitingToolConfirmationId;
       task.completedAt = new Date();
       task.updatedAt = task.completedAt;
     }
@@ -177,139 +190,308 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       fingerprint,
       result,
     });
-    return { result, task: this.copy(task) };
+    return { result, task: copyStoredChatTask(task) };
   }
 
   async getTask(ownerId: string, taskId: string) {
     const task = this.tasks.get(taskId);
-    return task?.ownerId === ownerId ? this.copy(task) : undefined;
+    return task?.ownerId === ownerId ? copyStoredChatTask(task) : undefined;
   }
   async ownsTask(ownerId: string, taskId: string) {
     return Boolean(await this.getTask(ownerId, taskId));
   }
   async ownsOperation(ownerId: string, operationId: string) {
-    return this.operations.has(this.key(ownerId, operationId));
+    return this.operations.has(memoryTaskKey(ownerId, operationId));
+  }
+  async listWaitingPrivacyTasks() {
+    return [...this.tasks.values()]
+      .filter((task) => task.state === 'waiting_privacy_decision')
+      .sort(
+        (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+      )
+      .map((task) => copyStoredChatTask(task));
+  }
+  async failWaitingPrivacyDecision(
+    taskId: string,
+    ownerId: string,
+    code: string,
+    message: string,
+  ) {
+    return failWaitingPrivacyTask(this.tasks, taskId, ownerId, code, message);
   }
   async markRunning(taskId: string, ownerId: string) {
-    const task = this.tasks.get(taskId);
-    if (!task || task.ownerId !== ownerId || task.state !== 'queued')
-      return false;
-    task.state = 'running';
-    task.startedAt = new Date();
-    task.updatedAt = task.startedAt;
-    return true;
-  }
-  async claimPrivacyResume(taskId: string, ownerId: string) {
     const task = this.tasks.get(taskId);
     if (
       !task ||
       task.ownerId !== ownerId ||
-      task.state !== 'waiting_privacy_decision'
+      task.state !== 'queued' ||
+      hasBlockingChatTask(this.tasks.values(), task.sessionId)
     )
-      return undefined;
+      return false;
     task.state = 'running';
-    task.updatedAt = new Date();
-    return this.copy(task);
+    delete task.waitingToolConfirmationId;
+    task.leaseOwner = 'legacy-direct-claim';
+    task.leaseExpiresAt = new Date(Date.now() + 30_000);
+    task.attemptCount += 1;
+    task.startedAt = new Date();
+    task.updatedAt = task.startedAt;
+    return true;
   }
-  async markWaiting(taskId: string, ownerId: string) {
-    return this.transition(taskId, ownerId, 'waiting_privacy_decision');
+  async recoverExpiredLeases(now = new Date()) {
+    let recovered = 0;
+    for (const task of this.tasks.values()) {
+      if (
+        task.state === 'running' &&
+        (!task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= now.getTime())
+      ) {
+        task.state = task.leaseOwner?.startsWith('tool-decision:')
+          ? 'waiting_tool_approval'
+          : 'queued';
+        task.waitingToolConfirmationId = toolConfirmationIdFromLeaseOwner(
+          task.leaseOwner,
+        );
+        delete task.leaseOwner;
+        delete task.leaseExpiresAt;
+        task.updatedAt = new Date(now);
+        recovered += 1;
+      }
+    }
+    return recovered;
   }
-  async markCompleted(taskId: string, ownerId: string) {
+  async claimNextRunnable(leaseOwner: string, leaseDurationMs: number) {
+    await this.recoverExpiredLeases();
+    const task = [...this.tasks.values()]
+      .filter(
+        (candidate) =>
+          candidate.state === 'queued' &&
+          !hasBlockingChatTask(this.tasks.values(), candidate.sessionId),
+      )
+      .sort(
+        (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+      )[0];
+    if (!task) return undefined;
+    const now = new Date();
+    task.state = 'running';
+    delete task.waitingToolConfirmationId;
+    task.leaseOwner = leaseOwner;
+    task.leaseExpiresAt = new Date(now.getTime() + leaseDurationMs);
+    task.attemptCount += 1;
+    task.startedAt ??= now;
+    task.updatedAt = now;
+    return copyStoredChatTask(task);
+  }
+  async renewLease(
+    taskId: string,
+    ownerId: string,
+    leaseOwner: string,
+    leaseDurationMs: number,
+  ) {
     const task = this.tasks.get(taskId);
-    if (!task || task.ownerId !== ownerId || task.state === 'cancelled')
-      return task && this.copy(task);
+    if (
+      !task ||
+      task.ownerId !== ownerId ||
+      task.state !== 'running' ||
+      task.leaseOwner !== leaseOwner
+    ) {
+      return false;
+    }
+    task.leaseExpiresAt = new Date(Date.now() + leaseDurationMs);
+    task.updatedAt = new Date();
+    return true;
+  }
+
+  async releaseLeases(leaseOwner: string) {
+    let released = 0;
+    for (const task of this.tasks.values()) {
+      if (task.state !== 'running' || task.leaseOwner !== leaseOwner) continue;
+      task.state = leaseOwner.startsWith('tool-decision:')
+        ? 'waiting_tool_approval'
+        : 'queued';
+      task.waitingToolConfirmationId =
+        toolConfirmationIdFromLeaseOwner(leaseOwner);
+      delete task.leaseOwner;
+      delete task.leaseExpiresAt;
+      task.updatedAt = new Date();
+      released += 1;
+    }
+    return released;
+  }
+
+  async claimPrivacyResume(taskId: string, ownerId: string) {
+    return this.claimWaitingTask(taskId, ownerId, 'waiting_privacy_decision');
+  }
+
+  private claimWaitingTask(
+    taskId: string,
+    ownerId: string,
+    waitingState: 'waiting_privacy_decision' | 'waiting_tool_approval',
+  ) {
+    const task = this.tasks.get(taskId);
+    if (!task || task.ownerId !== ownerId || task.state !== waitingState) {
+      return undefined;
+    }
+    task.state = 'queued';
+    delete task.waitingToolConfirmationId;
+    task.updatedAt = new Date();
+    return copyStoredChatTask(task);
+  }
+
+  async claimToolResume(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    leaseOwner: string,
+    leaseDurationMs: number,
+  ) {
+    const task = this.tasks.get(taskId);
+    if (
+      !task ||
+      task.ownerId !== ownerId ||
+      task.state !== 'waiting_tool_approval' ||
+      task.waitingToolConfirmationId !== confirmationId ||
+      hasRunningChatTask(this.tasks.values(), task.sessionId)
+    ) {
+      return undefined;
+    }
+    const now = new Date();
+    task.state = 'running';
+    delete task.waitingToolConfirmationId;
+    task.leaseOwner = leaseOwner;
+    task.leaseExpiresAt = new Date(now.getTime() + leaseDurationMs);
+    task.attemptCount += 1;
+    task.startedAt ??= now;
+    task.updatedAt = now;
+    return copyStoredChatTask(task);
+  }
+
+  async markWaiting(taskId: string, ownerId: string, leaseOwner?: string) {
+    return this.markWaitingState(
+      taskId,
+      ownerId,
+      'waiting_privacy_decision',
+      undefined,
+      leaseOwner,
+    );
+  }
+
+  async markWaitingToolApproval(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    leaseOwner?: string,
+  ) {
+    return this.markWaitingState(
+      taskId,
+      ownerId,
+      'waiting_tool_approval',
+      confirmationId,
+      leaseOwner,
+    );
+  }
+
+  private markWaitingState(
+    taskId: string,
+    ownerId: string,
+    state: 'waiting_privacy_decision' | 'waiting_tool_approval',
+    confirmationId: string | undefined,
+    leaseOwner?: string,
+  ) {
+    const task = this.tasks.get(taskId);
+    if (
+      !task ||
+      task.ownerId !== ownerId ||
+      task.state !== 'running' ||
+      (leaseOwner !== undefined && task.leaseOwner !== leaseOwner)
+    ) {
+      return false;
+    }
+    task.state = state;
+    task.waitingToolConfirmationId = confirmationId;
+    delete task.leaseOwner;
+    delete task.leaseExpiresAt;
+    task.updatedAt = new Date();
+    return true;
+  }
+
+  async failWaitingToolApproval(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    code: string,
+    message: string,
+  ) {
+    const task = this.tasks.get(taskId);
+    if (
+      !task ||
+      task.ownerId !== ownerId ||
+      task.state !== 'waiting_tool_approval' ||
+      task.waitingToolConfirmationId !== confirmationId
+    ) {
+      return undefined;
+    }
+    task.state = 'failed';
+    delete task.waitingToolConfirmationId;
+    task.errorCode = code;
+    task.errorMessage = message;
+    task.completedAt = new Date();
+    task.updatedAt = task.completedAt;
+    return copyStoredChatTask(task);
+  }
+
+  async markCompleted(taskId: string, ownerId: string, leaseOwner?: string) {
+    const task = this.tasks.get(taskId);
+    if (!task || task.ownerId !== ownerId) return undefined;
+    if (
+      ['completed', 'failed', 'cancelled'].includes(task.state) ||
+      (leaseOwner !== undefined &&
+        (task.state !== 'running' || task.leaseOwner !== leaseOwner))
+    ) {
+      return copyStoredChatTask(task);
+    }
     const session = await this.sessions.find(task.sessionId, ownerId);
     const last = session?.messages.at(-1);
     if (last?.role === 'assistant')
-      task.resultMessageId = this.messageId(task.sessionId, last.sequence);
+      task.resultMessageId = memoryMessageId(
+        this.messageIds,
+        task.sessionId,
+        last.sequence,
+      );
     task.state = 'completed';
+    delete task.waitingToolConfirmationId;
+    delete task.leaseOwner;
+    delete task.leaseExpiresAt;
     task.completedAt = new Date();
     task.updatedAt = task.completedAt;
-    return this.copy(task);
+    return copyStoredChatTask(task);
   }
   async markFailed(
     taskId: string,
     ownerId: string,
     code: string,
     message: string,
+    leaseOwner?: string,
   ) {
     const task = this.tasks.get(taskId);
-    if (!task || task.ownerId !== ownerId || task.state === 'cancelled')
-      return task && this.copy(task);
+    if (!task || task.ownerId !== ownerId) return undefined;
+    if (
+      ['completed', 'failed', 'cancelled'].includes(task.state) ||
+      (leaseOwner !== undefined &&
+        (task.state !== 'running' || task.leaseOwner !== leaseOwner))
+    ) {
+      return copyStoredChatTask(task);
+    }
     task.state = 'failed';
+    delete task.waitingToolConfirmationId;
+    delete task.leaseOwner;
+    delete task.leaseExpiresAt;
     task.errorCode = code;
     task.errorMessage = message;
     task.completedAt = new Date();
     task.updatedAt = task.completedAt;
-    return this.copy(task);
+    return copyStoredChatTask(task);
   }
-  async listSessionMessages(
-    ownerId: string,
-    sessionId: string,
-  ): Promise<SessionMessageView[]> {
+  async listSessionMessages(ownerId: string, sessionId: string) {
     const session = await this.sessions.find(sessionId, ownerId);
-    return (
-      session?.messages.map((m) => ({
-        id: this.messageId(sessionId, m.sequence),
-        role: m.role,
-        content: m.content,
-        created_at: new Date(m.timestamp).toISOString(),
-      })) ?? []
-    );
-  }
-
-  private transition(
-    taskId: string,
-    ownerId: string,
-    state: StoredChatTask['state'],
-  ) {
-    const task = this.tasks.get(taskId);
-    if (!task || task.ownerId !== ownerId || task.state === 'cancelled')
-      return Promise.resolve(false);
-    task.state = state;
-    task.updatedAt = new Date();
-    return Promise.resolve(true);
-  }
-  private messageId(sessionId: string, sequence: number) {
-    const key = `${sessionId}:${sequence}`;
-    const id = this.messageIds.get(key) ?? randomUUID();
-    this.messageIds.set(key, id);
-    return id;
-  }
-  private key(ownerId: string, id: string) {
-    return `${ownerId}:${id}`;
-  }
-  private copy(task: StoredChatTask): StoredChatTask {
-    return {
-      ...task,
-      createdAt: new Date(task.createdAt),
-      updatedAt: new Date(task.updatedAt),
-      ...(task.startedAt ? { startedAt: new Date(task.startedAt) } : {}),
-      ...(task.completedAt ? { completedAt: new Date(task.completedAt) } : {}),
-    };
-  }
-  private result(
-    operationId: string,
-    task: AcceptedChatTask,
-    messageId: string,
-    recordId: string,
-    status: string,
-  ) {
-    return {
-      operation_id: operationId,
-      status,
-      resource_refs: [
-        { kind: 'session', id: task.sessionId },
-        { kind: 'chat_message', id: messageId },
-        { kind: 'original_record', id: recordId },
-      ],
-      task_refs: [{ task_id: task.taskId, kind: 'chat_response' }],
-      data: {
-        session_id: task.sessionId,
-        message_ref: { kind: 'chat_message', id: messageId },
-        original_record: { kind: 'original_record', id: recordId },
-        chat_task: { task_id: task.taskId, kind: 'chat_response' },
-      },
-    };
+    return memorySessionMessageViews(session, this.messageIds);
   }
 }

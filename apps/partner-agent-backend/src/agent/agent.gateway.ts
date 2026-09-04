@@ -25,7 +25,8 @@ import {
 } from '@nestjs/websockets';
 import { Socket } from 'socket.io';
 import { PiAgentService } from './pi-agent.service.js';
-import { Logger, UseGuards } from '@nestjs/common';
+import { Logger, Optional, UseGuards } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SessionManager } from './session-manager.service.js';
 import { WsAuthGuard } from '../auth/ws-auth.guard.js';
 import { ExternalToolApprovalService } from '../tools/confirmation-center.service.js';
@@ -45,9 +46,15 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly piAgentService: PiAgentService,
     private readonly sessionManager: SessionManager,
     private readonly externalToolApproval: ExternalToolApprovalService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   handleConnection(client: Socket) {
+    if (!this.legacyGatewayEnabled()) {
+      this.logger.warn('已拒绝旧 Agent WebSocket；请改用 /ws/v1');
+      client.disconnect(true);
+      return;
+    }
     this.logger.log(`Client connected: ${client.id}`);
   }
 
@@ -98,9 +105,8 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
         client.emit(WS_EVENTS.AGENT_EVENT, { ...event, sessionId });
       }
     } catch (error) {
-      const err = error as Error;
-      this.logger.error(`Error in chat handler: ${err.message}`, err.stack);
-      this.emitError(client, sessionId, err.message);
+      this.logger.error('旧 Agent WebSocket chat 请求失败');
+      this.emitError(client, sessionId, this.publicErrorMessage(error));
     } finally {
       if (request && this.activeRequests.get(sessionId) === request) {
         this.activeRequests.delete(sessionId);
@@ -128,8 +134,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
       client.emit(WS_EVENTS.AGENT_EVENT, event);
     } catch (error) {
-      const err = error as Error;
-      this.emitError(client, sessionId, err.message);
+      this.emitError(client, sessionId, this.publicErrorMessage(error));
     }
   }
 
@@ -152,8 +157,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
       client.emit(WS_EVENTS.AGENT_EVENT, event);
     } catch (error) {
-      const err = error as Error;
-      this.emitError(client, sessionId, err.message);
+      this.emitError(client, sessionId, this.publicErrorMessage(error));
     }
   }
 
@@ -217,7 +221,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
         client.emit(WS_EVENTS.AGENT_EVENT, undoAvailable);
       }
     } catch (error) {
-      this.emitError(client, sessionId, (error as Error).message);
+      this.emitError(client, sessionId, this.publicErrorMessage(error));
     }
   }
 
@@ -247,7 +251,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
       client.emit(WS_EVENTS.AGENT_EVENT, event);
     } catch (error) {
-      this.emitError(client, sessionId, (error as Error).message);
+      this.emitError(client, sessionId, this.publicErrorMessage(error));
     }
   }
 
@@ -276,7 +280,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
       client.emit(WS_EVENTS.AGENT_EVENT, event);
     } catch (error) {
-      this.emitError(client, sessionId, (error as Error).message);
+      this.emitError(client, sessionId, this.publicErrorMessage(error));
     }
   }
 
@@ -304,5 +308,25 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
       timestamp: Date.now(),
     };
     client.emit(WS_EVENTS.AGENT_EVENT, event);
+  }
+
+  private legacyGatewayEnabled(): boolean {
+    // 直接构造只用于单元测试；Nest 运行时始终注入 ConfigService。
+    if (!this.config) return true;
+    return this.config.get<string>('ENABLE_LEGACY_AGENT_WS') === 'true';
+  }
+
+  private publicErrorMessage(error: unknown): string {
+    const message = error instanceof Error ? error.message : '';
+    if (
+      /^(?:sessionId 不能为空|消息不能为空|未认证|会话不存在|确认请求不存在)$/u.test(
+        message,
+      ) ||
+      /^用户会话数量已达到上限 \d+$/u.test(message) ||
+      /^会话 [^\r\n]{1,100} 已有请求正在处理中$/u.test(message)
+    ) {
+      return message;
+    }
+    return '请求处理失败';
   }
 }

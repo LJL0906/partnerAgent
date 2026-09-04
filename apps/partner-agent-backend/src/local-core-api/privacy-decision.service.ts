@@ -27,6 +27,7 @@ import type { LocalCoreCommandRequest } from './local-core-api.types.js';
 @Injectable()
 export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
   private scanTimer?: ReturnType<typeof setInterval>;
+  private maintaining = false;
 
   constructor(
     @Inject(EGRESS_DECISION_STORE)
@@ -38,13 +39,12 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    await this.sweepExpired();
-    await this.recoverReady();
+    await this.maintain();
     const intervalMs = this.positiveInteger(
       this.config.get<string>('PRIVACY_DECISION_SCAN_INTERVAL_MS'),
       5_000,
     );
-    this.scanTimer = setInterval(() => void this.sweepExpired(), intervalMs);
+    this.scanTimer = setInterval(() => void this.maintain(), intervalMs);
     this.scanTimer.unref?.();
   }
 
@@ -59,7 +59,10 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
     const decision = payload.decision;
     if (!['allow', 'redact', 'block'].includes(String(decision))) {
       throw new HttpException(
-        { code: 'VALIDATION_001', message: 'decision 必须是 allow、redact 或 block' },
+        {
+          code: 'VALIDATION_001',
+          message: 'decision 必须是 allow、redact 或 block',
+        },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
@@ -68,17 +71,13 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
       ownerId: request.userId,
       egressId,
       decision: decision as PrivacyDecision,
-      commandOperationId: this.requiredString(
-        request.envelope,
-        'operation_id',
-      ),
+      commandOperationId: this.requiredString(request.envelope, 'operation_id'),
       commandRequestFingerprint: this.requiredString(
         request.envelope,
         'request_fingerprint',
       ),
     });
 
-    if (submitted.result.status === 'duplicate') return submitted.result;
     const task = await this.tasks.getTask(
       submitted.record.ownerId,
       submitted.record.taskId,
@@ -87,15 +86,10 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException({ code: 'AUTH_002', message: '资源不存在' });
     }
     if (submitted.record.state === 'blocked') {
-      const failed = await this.tasks.markFailed(
-        task.taskId,
-        task.ownerId,
-        'EGRESS_001',
-        '用户已阻止本次外发',
-      );
-      if (failed?.state === 'failed') this.publishTerminal(failed);
+      await this.failWaitingTask(task, '用户已阻止本次外发');
       return submitted.result;
     }
+    if (submitted.result.status === 'duplicate') return submitted.result;
     if (task.state === 'cancelled') {
       await this.decisions.cancelPendingForTask(task.taskId, task.ownerId);
       throw new HttpException(
@@ -136,25 +130,53 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
     await this.decisions.cancelPendingForTask(taskId, ownerId);
   }
 
-  private async recoverReady(): Promise<void> {
-    for (const record of await this.decisions.listRecoverableDecisions()) {
-      const task = await this.tasks.getTask(record.ownerId, record.taskId);
-      if (task?.state === 'waiting_privacy_decision') {
+  private async maintain(): Promise<void> {
+    if (this.maintaining) return;
+    this.maintaining = true;
+    try {
+      await this.sweepExpired();
+      await this.reconcileWaitingTasks();
+    } finally {
+      this.maintaining = false;
+    }
+  }
+
+  private async reconcileWaitingTasks(): Promise<void> {
+    for (const task of await this.tasks.listWaitingPrivacyTasks()) {
+      const record = await this.decisions.findLatestForTask(
+        task.taskId,
+        task.ownerId,
+      );
+      if (!record) continue;
+      if (record.state === 'ready_allow' || record.state === 'ready_redact') {
         this.scheduler.resumeAfterPrivacyDecision(task);
+      } else if (record.state === 'blocked') {
+        await this.failWaitingTask(task, '用户已阻止本次外发');
+      } else if (record.state === 'expired') {
+        await this.failWaitingTask(task, '隐私决定已过期');
       }
     }
   }
 
   private async sweepExpired(): Promise<void> {
     for (const record of await this.decisions.expireDue()) {
-      const failed = await this.tasks.markFailed(
-        record.taskId,
-        record.ownerId,
-        'EGRESS_001',
-        '隐私决定已过期',
-      );
-      if (failed?.state === 'failed') this.publishTerminal(failed);
+      const task = await this.tasks.getTask(record.ownerId, record.taskId);
+      if (task) await this.failWaitingTask(task, '隐私决定已过期');
     }
+  }
+
+  private async failWaitingTask(
+    task: StoredChatTask,
+    message: string,
+  ): Promise<void> {
+    if (task.state !== 'waiting_privacy_decision') return;
+    const failed = await this.tasks.failWaitingPrivacyDecision(
+      task.taskId,
+      task.ownerId,
+      'EGRESS_001',
+      message,
+    );
+    if (failed?.state === 'failed') this.publishTerminal(failed);
   }
 
   private publishTerminal(task: StoredChatTask): void {
@@ -196,13 +218,8 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
     if (error instanceof EgressDecisionExpiredError) {
       const record = await this.decisions.findByIdForOwner(egressId, ownerId);
       if (record) {
-        const failed = await this.tasks.markFailed(
-          record.taskId,
-          ownerId,
-          'EGRESS_001',
-          '隐私决定已过期',
-        );
-        if (failed?.state === 'failed') this.publishTerminal(failed);
+        const task = await this.tasks.getTask(ownerId, record.taskId);
+        if (task) await this.failWaitingTask(task, '隐私决定已过期');
       }
       throw new HttpException(
         { code: 'EGRESS_001', message: '隐私决定已过期' },
@@ -233,7 +250,11 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
     const value = input[field];
     if (typeof value !== 'string' || !value.trim()) {
       throw new HttpException(
-        { code: 'VALIDATION_002', message: `缺少 ${field}`, details: { field } },
+        {
+          code: 'VALIDATION_002',
+          message: `缺少 ${field}`,
+          details: { field },
+        },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }

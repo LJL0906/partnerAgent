@@ -21,17 +21,49 @@ export type WsV1ReplayResult =
   | { replayable: true; events: ServerPushEventV1[] }
   | { replayable: false; events: [] };
 
+export interface WsV1StoredEvent {
+  streamKey: string;
+  event: ServerPushEventV1;
+}
+
+export type WsV1StoredEventListener = (
+  record: WsV1StoredEvent,
+) => void | Promise<void>;
+
 const DEFAULT_CHANNEL_RETENTION = 100;
 
 @Injectable()
-export class WsV1EventStore {
+export abstract class WsV1EventStore {
+  abstract start(listener: WsV1StoredEventListener): Promise<void>;
+  abstract stop(): Promise<void>;
+  abstract append(
+    input: WsV1PublishInput,
+    streamKey?: string,
+  ): Promise<WsV1StoredEvent>;
+  abstract replayAfter(
+    channel: SubscriptionChannel,
+    after?: string,
+    streamKey?: string,
+  ): Promise<WsV1ReplayResult>;
+  abstract createRecoveryRequired(
+    channel: SubscriptionChannel,
+    streamKey?: string,
+  ): Promise<ServerPushEventV1>;
+}
+
+@Injectable()
+export class MemoryWsV1EventStore extends WsV1EventStore {
   private readonly records = new Map<string, ServerPushEventV1[]>();
   private readonly nextSequence = new Map<string, number>();
 
-  append(
+  async start(_listener: WsV1StoredEventListener): Promise<void> {}
+
+  async stop(): Promise<void> {}
+
+  async append(
     input: WsV1PublishInput,
     streamKey: string = input.channel,
-  ): ServerPushEventV1 {
+  ): Promise<WsV1StoredEvent> {
     const sequence = (this.nextSequence.get(streamKey) ?? 0) + 1;
     this.nextSequence.set(streamKey, sequence);
     const event = {
@@ -56,14 +88,14 @@ export class WsV1EventStore {
       );
     }
     this.records.set(streamKey, channelRecords);
-    return event;
+    return { streamKey, event };
   }
 
-  replayAfter(
+  async replayAfter(
     channel: SubscriptionChannel,
     after?: string,
     streamKey: string = channel,
-  ): WsV1ReplayResult {
+  ): Promise<WsV1ReplayResult> {
     if (after === undefined) return { replayable: true, events: [] };
     const channelRecords = this.records.get(streamKey) ?? [];
     const position = channelRecords.findIndex(
@@ -76,10 +108,10 @@ export class WsV1EventStore {
     };
   }
 
-  createRecoveryRequired(
+  async createRecoveryRequired(
     channel: SubscriptionChannel,
     streamKey: string = channel,
-  ): ServerPushEventV1 {
+  ): Promise<ServerPushEventV1> {
     return {
       schema_version: 1,
       event_id: randomUUID(),

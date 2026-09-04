@@ -1,0 +1,64 @@
+x-backend-build: &backend-build
+  context: ..
+  dockerfile: infra/backend.Dockerfile
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: partner_agent
+      POSTGRES_USER: partner_agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U partner_agent -d partner_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    image: partner-agent-backend:local
+    build: *backend-build
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    command:
+      - npm
+      - run
+      - migration:run:prod
+      - --workspace
+      - "@partner-agent/backend"
+
+  backend:
+    image: partner-agent-backend:local
+    build: *backend-build
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      SESSION_STORE: postgres
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS is required}
+      DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-deepseek}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ENABLE_LEGACY_AGENT_WS: ${ENABLE_LEGACY_AGENT_WS:-false}
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+
+volumes:
+  postgres-data:

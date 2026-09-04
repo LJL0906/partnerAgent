@@ -1,4 +1,9 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import {
   SENSITIVE_CATEGORIES,
   WS_EVENTS,
@@ -20,6 +25,7 @@ import { WsV1ChannelAuthorizer } from './ws-v1-channel-authorizer.js';
 import {
   WsV1EventStore,
   type WsV1PublishInput,
+  type WsV1StoredEvent,
 } from './ws-v1-event.store.js';
 
 export interface WsV1SubscriptionResult {
@@ -27,14 +33,26 @@ export interface WsV1SubscriptionResult {
   replay: ServerPushEventV1[];
 }
 
+interface PendingSubscription {
+  streamKey: string;
+  buffered: Map<string, WsV1StoredEvent>;
+  returnedEventIds: Set<string>;
+}
+
 @Injectable()
 export class WsV1Service implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(WsV1Service.name);
   private readonly sockets = new Map<string, Socket>();
   private readonly subscriptions = new Map<
     string,
     Set<SubscriptionChannel>
   >();
+  private readonly pendingSubscriptions = new Map<
+    string,
+    Map<SubscriptionChannel, PendingSubscription>
+  >();
   private unsubscribeTaskEvents?: () => void;
+  private taskPublishQueue = Promise.resolve();
 
   constructor(
     private readonly authorizer: WsV1ChannelAuthorizer,
@@ -43,24 +61,33 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     private readonly taskEvents: ChatTaskEventBus,
   ) {}
 
-  onModuleInit(): void {
-    this.unsubscribeTaskEvents = this.taskEvents.subscribe((event) =>
-      this.publishTaskEvent(event),
-    );
+  async onModuleInit(): Promise<void> {
+    await this.eventStore.start((record) => this.deliver(record));
+    this.unsubscribeTaskEvents = this.taskEvents.subscribe((event) => {
+      this.taskPublishQueue = this.taskPublishQueue
+        .then(() => this.publishTaskEvent(event))
+        .catch(() => {
+          this.logger.warn('WS v1 task event persistence failed');
+        });
+    });
   }
 
-  onModuleDestroy(): void {
+  async onModuleDestroy(): Promise<void> {
     this.unsubscribeTaskEvents?.();
+    await this.taskPublishQueue.catch(() => undefined);
+    await this.eventStore.stop();
   }
 
   connect(socket: Socket): void {
     this.sockets.set(socket.id, socket);
     this.subscriptions.set(socket.id, new Set());
+    this.pendingSubscriptions.set(socket.id, new Map());
   }
 
   disconnect(socket: Socket): void {
     this.sockets.delete(socket.id);
     this.subscriptions.delete(socket.id);
+    this.pendingSubscriptions.delete(socket.id);
   }
 
   async subscribe(
@@ -73,6 +100,8 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     const replay: ServerPushEventV1[] = [];
     const subscriptions = this.subscriptions.get(socket.id) ?? new Set();
     this.subscriptions.set(socket.id, subscriptions);
+    const pending = this.pendingSubscriptions.get(socket.id) ?? new Map();
+    this.pendingSubscriptions.set(socket.id, pending);
 
     for (const rawChannel of request.channels ?? []) {
       if (!this.isSubscriptionChannel(rawChannel)) {
@@ -93,20 +122,33 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      subscriptions.add(rawChannel);
+      subscriptions.delete(rawChannel);
+      const pendingChannel: PendingSubscription = {
+        streamKey: this.streamKey(rawChannel, userId),
+        buffered: new Map(),
+        returnedEventIds: new Set(),
+      };
+      pending.set(rawChannel, pendingChannel);
       accepted.push(rawChannel);
-      const replayResult = this.eventStore.replayAfter(
+      const replayResult = await this.eventStore.replayAfter(
         rawChannel,
         request.after?.[rawChannel],
-        this.streamKey(rawChannel, userId),
+        pendingChannel.streamKey,
       );
       if (replayResult.replayable) {
-        replay.push(...replayResult.events);
+        const channelReplay = this.mergeReplay(
+          replayResult.events,
+          pendingChannel.buffered,
+        );
+        for (const event of channelReplay) {
+          pendingChannel.returnedEventIds.add(event.event_id);
+        }
+        replay.push(...channelReplay);
       } else {
         replay.push(
-          this.eventStore.createRecoveryRequired(
+          await this.eventStore.createRecoveryRequired(
             rawChannel,
-            this.streamKey(rawChannel, userId),
+            pendingChannel.streamKey,
           ),
         );
       }
@@ -116,6 +158,28 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
       ack: { request_id: request.request_id, accepted, rejected },
       replay,
     };
+  }
+
+  activateSubscriptions(
+    socket: Socket,
+    channels: SubscriptionChannel[],
+  ): void {
+    const subscriptions = this.subscriptions.get(socket.id);
+    const pending = this.pendingSubscriptions.get(socket.id);
+    if (!subscriptions || !pending) return;
+    for (const channel of channels) {
+      const pendingChannel = pending.get(channel);
+      if (!pendingChannel) continue;
+      pending.delete(channel);
+      subscriptions.add(channel);
+      for (const record of [...pendingChannel.buffered.values()].sort(
+        (left, right) => left.event.sequence - right.event.sequence,
+      )) {
+        if (!pendingChannel.returnedEventIds.has(record.event.event_id)) {
+          socket.emit(WS_EVENTS.AGENT_EVENT, record.event);
+        }
+      }
+    }
   }
 
   unsubscribe(
@@ -137,31 +201,61 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         continue;
       }
       subscriptions.delete(rawChannel);
+      this.pendingSubscriptions.get(socket.id)?.delete(rawChannel);
       accepted.push(rawChannel);
     }
     return { request_id: request.request_id, accepted, rejected };
   }
 
-  publish(input: WsV1PublishInput): ServerPushEventV1 {
+  async publish(input: WsV1PublishInput): Promise<ServerPushEventV1> {
     if (input.channel === 'user:self' && !input.recipient_user_id) {
       throw new Error('user:self 推送必须指定 recipient_user_id');
     }
-    const event = this.eventStore.append(
+    const record = await this.eventStore.append(
       { ...input, data: this.sanitizePushData(input.data) },
       this.streamKey(input.channel, input.recipient_user_id),
     );
+    this.deliver(record);
+    return record.event;
+  }
+
+  private deliver(record: WsV1StoredEvent): void {
     for (const [socketId, channels] of this.subscriptions) {
       const socket = this.sockets.get(socketId);
+      if (!socket) continue;
+      const expectedStreamKey = this.streamKey(
+        record.event.channel,
+        socket.data.userId,
+      );
       if (
-        channels.has(input.channel) &&
-        socket &&
-        (input.channel !== 'user:self' ||
-          socket.data.userId === input.recipient_user_id)
+        channels.has(record.event.channel) &&
+        record.streamKey === expectedStreamKey
       ) {
-        socket.emit(WS_EVENTS.AGENT_EVENT, event);
+        socket.emit(WS_EVENTS.AGENT_EVENT, record.event);
+        continue;
+      }
+      const pending = this.pendingSubscriptions
+        .get(socketId)
+        ?.get(record.event.channel);
+      if (pending?.streamKey === record.streamKey) {
+        pending.buffered.set(record.event.event_id, record);
       }
     }
-    return event;
+  }
+
+  private mergeReplay(
+    replay: ServerPushEventV1[],
+    buffered: Map<string, WsV1StoredEvent>,
+  ): ServerPushEventV1[] {
+    const merged = new Map(
+      replay.map((event) => [event.event_id, event] as const),
+    );
+    for (const record of buffered.values()) {
+      merged.set(record.event.event_id, record.event);
+    }
+    return [...merged.values()].sort(
+      (left, right) => left.sequence - right.sequence,
+    );
   }
 
   private requireAuthenticated(socket: Socket): string {
@@ -189,7 +283,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     return this.removeInternalDetails(this.redaction.sanitize(value));
   }
 
-  private publishTaskEvent(event: ChatTaskEvent): void {
+  private async publishTaskEvent(event: ChatTaskEvent): Promise<void> {
     const mapped = this.mapTaskEvent(event);
     if (!mapped) return;
     const common = {
@@ -204,7 +298,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
       `operation:${event.operationId}`,
       `session:${event.sessionId}`,
     ] as const) {
-      this.publish({ channel, ...common });
+      await this.publish({ channel, ...common });
     }
   }
 

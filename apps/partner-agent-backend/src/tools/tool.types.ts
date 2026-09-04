@@ -42,6 +42,10 @@ export interface RegisteredTool {
 export interface ToolExecutionContext {
   ownerId: string;
   sessionId: string;
+  /** 正式 ChatTask 入口提供；旧 Agent Gateway 可为空。 */
+  taskId?: string;
+  /** 与 taskId 同源的幂等操作标识，用于 WS v1 精确路由。 */
+  operationId?: string;
   permissions?: readonly string[];
 }
 

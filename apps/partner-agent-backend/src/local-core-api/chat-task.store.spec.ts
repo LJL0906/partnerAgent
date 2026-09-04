@@ -154,10 +154,109 @@ describe('ChatTaskStore', () => {
     expect(await store.claimPrivacyResume(taskId, 'other')).toBeUndefined();
     expect(await store.claimPrivacyResume(taskId, base.ownerId)).toMatchObject({
       taskId,
-      state: 'running',
+      state: 'queued',
     });
     expect(
       await store.claimPrivacyResume(taskId, base.ownerId),
     ).toBeUndefined();
+  });
+
+  it('leases at most one runnable task per session while other sessions proceed', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    const first = await store.submitText({
+      ...base,
+      sessionId: 'shared-session',
+    });
+    const second = await store.submitText({
+      ...base,
+      operationId: 'operation-2',
+      inputId: 'input-2',
+      requestFingerprint: 'fingerprint-2',
+      sessionId: 'shared-session',
+    });
+    const claimed = await store.claimNextRunnable('worker-1', 30_000);
+    expect([first.task!.taskId, second.task!.taskId]).toContain(
+      claimed?.taskId,
+    );
+
+    const other = await store.submitText({
+      ...base,
+      operationId: 'operation-3',
+      inputId: 'input-3',
+      requestFingerprint: 'fingerprint-3',
+      sessionId: 'other-session',
+    });
+    expect(await store.claimNextRunnable('worker-2', 30_000)).toMatchObject({
+      taskId: other.task!.taskId,
+    });
+
+    await store.markCompleted(claimed!.taskId, claimed!.ownerId, 'worker-1');
+    expect(await store.claimNextRunnable('worker-1', 30_000)).toMatchObject({
+      sessionId: 'shared-session',
+    });
+  });
+
+  it('recovers expired normal leases but leaves expired tool decisions waiting', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    const accepted = await store.submitText(base);
+    const claimed = await store.claimNextRunnable('worker-1', 1_000);
+    expect(claimed).toMatchObject({ attemptCount: 1, state: 'running' });
+    await store.recoverExpiredLeases(new Date(Date.now() + 2_000));
+    expect(
+      await store.getTask(base.ownerId, accepted.task!.taskId),
+    ).toMatchObject({
+      state: 'queued',
+    });
+
+    const reclaimed = await store.claimNextRunnable('worker-2', 1_000);
+    await store.markWaitingToolApproval(
+      reclaimed!.taskId,
+      reclaimed!.ownerId,
+      '00000000-0000-4000-8000-000000000001',
+      'worker-2',
+    );
+    const toolClaim = await store.claimToolResume(
+      reclaimed!.taskId,
+      reclaimed!.ownerId,
+      '00000000-0000-4000-8000-000000000001',
+      'tool-decision:worker-2:00000000-0000-4000-8000-000000000001',
+      1_000,
+    );
+    expect(toolClaim).toMatchObject({ state: 'running', attemptCount: 3 });
+    await store.recoverExpiredLeases(new Date(Date.now() + 2_000));
+    expect(
+      await store.getTask(base.ownerId, accepted.task!.taskId),
+    ).toMatchObject({
+      state: 'waiting_tool_approval',
+      waitingToolConfirmationId: '00000000-0000-4000-8000-000000000001',
+    });
+    await expect(
+      store.claimNextRunnable('worker-3', 1_000),
+    ).resolves.toBeUndefined();
+  });
+
+  it('keeps cancellation terminal against stale worker completion and failure', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    const accepted = await store.submitText(base);
+    await store.claimNextRunnable('worker-1', 30_000);
+    await store.cancelTask(base.ownerId, {
+      operation_id: 'cancel-terminal',
+      request_fingerprint: 'cancel-terminal-fingerprint',
+      payload: { task_id: accepted.task!.taskId },
+    });
+
+    await store.markCompleted(accepted.task!.taskId, base.ownerId, 'worker-1');
+    await store.markFailed(
+      accepted.task!.taskId,
+      base.ownerId,
+      'INTERNAL_000',
+      'stale',
+      'worker-1',
+    );
+    expect(
+      await store.getTask(base.ownerId, accepted.task!.taskId),
+    ).toMatchObject({
+      state: 'cancelled',
+    });
   });
 });

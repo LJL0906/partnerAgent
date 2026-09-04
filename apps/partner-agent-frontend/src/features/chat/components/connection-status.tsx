@@ -19,6 +19,7 @@ const taskStatusCopy = {
   running: '任务执行中',
   cancelling: '正在取消',
   waiting_privacy_decision: '等待隐私决定',
+  waiting_tool_approval: '等待工具审批',
   recovering: '正在恢复状态',
   completed: '任务已完成',
   cancelled: '任务已取消',
@@ -34,7 +35,7 @@ export function ConnectionStatus() {
   const taskTone =
     taskStatus === 'failed'
       ? 'danger'
-      : taskStatus === 'waiting_privacy_decision'
+      : taskStatus === 'waiting_privacy_decision' || taskStatus === 'waiting_tool_approval'
         ? 'warning'
         : taskStatus === 'completed'
           ? 'success'

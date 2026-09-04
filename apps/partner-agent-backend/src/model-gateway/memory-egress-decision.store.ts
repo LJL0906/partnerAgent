@@ -67,6 +67,17 @@ export class MemoryEgressDecisionStore implements EgressDecisionStore {
     return current ? this.copy(current) : undefined;
   }
 
+  async findLatestForTask(taskId: string, ownerId: string) {
+    const latest = [...this.records.values()]
+      .filter(
+        (record) => record.taskId === taskId && record.ownerId === ownerId,
+      )
+      .sort(
+        (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+      )[0];
+    return latest ? this.copy(latest) : undefined;
+  }
+
   async findByIdForOwner(id: string, ownerId: string) {
     const record = this.records.get(id);
     return record?.ownerId === ownerId ? this.copy(record) : undefined;

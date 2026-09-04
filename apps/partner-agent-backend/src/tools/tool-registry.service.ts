@@ -49,6 +49,9 @@ export class ToolRegistryService {
       label: definition.tool.label,
       description: definition.tool.description,
       parameters: definition.tool.parameters,
+      ...(definition.tool.executionMode
+        ? { executionMode: definition.tool.executionMode }
+        : {}),
       execute,
     };
   }

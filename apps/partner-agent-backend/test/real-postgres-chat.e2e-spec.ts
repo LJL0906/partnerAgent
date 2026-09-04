@@ -8,7 +8,6 @@ import { io, type Socket as ClientSocket } from 'socket.io-client';
 import request from 'supertest';
 import type { DataSource } from 'typeorm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AppModule } from '../src/app.module.js';
 import { PiAgentService } from '../src/agent/pi-agent.service.js';
 import { SessionManager } from '../src/agent/session-manager.service.js';
 import { AuthService } from '../src/auth/auth.service.js';
@@ -35,13 +34,29 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
     process.env.AUTH_JWT_SECRET = secret;
     process.env.CORS_ALLOWED_ORIGINS = origin;
 
+    const { AppModule } = await import('../src/app.module.js');
+    const fakeChat = async function* (
+      sessionId: string,
+      text: string,
+      ownerId: string,
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      yield {
+        type: 'text_delta',
+        data: `已收到：${text}`,
+        timestamp: Date.now(),
+      };
+      await sessions.saveMessage(
+        sessionId,
+        ownerId,
+        'assistant',
+        `已收到：${text}`,
+      );
+      yield { type: 'done', timestamp: Date.now() };
+    };
     const fakeAgent = {
-      async *chat(sessionId: string, text: string, ownerId: string) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        yield { type: 'text_delta', data: `已收到：${text}`, timestamp: Date.now() };
-        await sessions.saveMessage(sessionId, ownerId, 'assistant', `已收到：${text}`);
-        yield { type: 'done', timestamp: Date.now() };
-      },
+      chat: fakeChat,
+      resumeTask: fakeChat,
       async cancel() {
         return true;
       },
@@ -105,6 +120,7 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
     });
     await once(socket, 'connect');
     const ackPromise = once<{ accepted: string[] }>(socket, 'subscription_ack');
+    const donePromise = untilEvent(socket, 'done');
     socket.emit('subscribe', {
       request_id: 'real-pg-subscribe',
       channels: [`task:${taskId}`, `operation:${operationId}`],
@@ -113,7 +129,7 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
       accepted: [`task:${taskId}`, `operation:${operationId}`],
     });
 
-    const pushed = await untilEvent(socket, 'done');
+    const pushed = await donePromise;
     expect(pushed).toMatchObject({
       task_id: taskId,
       operation_id: operationId,
@@ -132,17 +148,19 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
       .get(`/api/v1/chat-sessions/${sessionId}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(session.body.messages.map((message: { role: string }) => message.role)).toEqual([
-      'user',
-      'assistant',
-    ]);
+    expect(
+      session.body.messages.map((message: { role: string }) => message.role),
+    ).toEqual(['user', 'assistant']);
 
     const replay = await request(app.getHttpServer())
       .post('/api/v1/inputs/text')
       .set('Authorization', `Bearer ${token}`)
       .send(envelope)
       .expect(200);
-    expect(replay.body).toMatchObject({ operation_id: operationId, status: 'duplicate' });
+    expect(replay.body).toMatchObject({
+      operation_id: operationId,
+      status: 'duplicate',
+    });
 
     await request(app.getHttpServer())
       .get(`/api/v1/tasks/${taskId}`)
@@ -186,7 +204,9 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
       '75000000-0000-4000-8000-000000000002',
     );
     wrongVersion.envelope.payload.batch_version = '99';
-    await expect(service.submit(wrongVersion)).rejects.toMatchObject({ status: 409 });
+    await expect(service.submit(wrongVersion)).rejects.toMatchObject({
+      status: 409,
+    });
     expect(
       Number(
         (
@@ -217,8 +237,12 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
         ),
       ),
     ]);
-    expect(concurrentResults.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    expect(concurrentResults.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(
+      concurrentResults.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      concurrentResults.filter((result) => result.status === 'rejected'),
+    ).toHaveLength(1);
   });
 
   function tokenFor(subject: string) {
@@ -272,7 +296,10 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
 
 function once<T>(socket: ClientSocket, event: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`等待 ${event} 超时`)), 5000);
+    const timer = setTimeout(
+      () => reject(new Error(`等待 ${event} 超时`)),
+      5000,
+    );
     socket.once(event, (value: T) => {
       clearTimeout(timer);
       resolve(value);
@@ -286,7 +313,10 @@ function untilEvent(
   eventType: ServerPushEventV1['event_type'],
 ): Promise<ServerPushEventV1> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`等待 ${eventType} 超时`)), 5000);
+    const timer = setTimeout(
+      () => reject(new Error(`等待 ${eventType} 超时`)),
+      5000,
+    );
     const listener = (event: ServerPushEventV1) => {
       if (event.event_type !== eventType) return;
       clearTimeout(timer);

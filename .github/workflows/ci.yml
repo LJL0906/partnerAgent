@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application:
+    name: Build, lint, unit and memory e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build contracts, backend and frontend
+        run: |
+          npm run build --workspace @partner-agent/contracts
+          npm run build --workspace @partner-agent/backend
+          npm run build --workspace @partner-agent/frontend
+      - name: Lint applications
+        run: |
+          npm run lint --workspace @partner-agent/backend
+          npm run lint --workspace @partner-agent/frontend
+      - name: Run unit tests
+        run: |
+          npm run test --workspace @partner-agent/contracts
+          npm run test --workspace @partner-agent/backend
+          npm run test --workspace @partner-agent/frontend
+      - name: Run memory e2e tests
+        run: npm run test:e2e --workspace @partner-agent/backend -- --exclude "test/real-postgres*.e2e-spec.ts"
+
+  postgres:
+    name: PostgreSQL 16 migrations and e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: partner_agent_migration_verify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d partner_agent_migration_verify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      MIGRATION_VERIFY_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/partner_agent_migration_verify
+      MIGRATION_VERIFY_CONFIRM: I_ACKNOWLEDGE_EMPTY_MIGRATION_VERIFY_DATABASE
+      REAL_POSTGRES_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/partner_agent_migration_verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build contracts and backend
+        run: |
+          npm run build --workspace @partner-agent/contracts
+          npm run build --workspace @partner-agent/backend
+      - name: Verify all migrations up, down and up
+        run: npm run migration:verify --workspace @partner-agent/backend
+      - name: Create the restart-recovery fixture
+        run: npm run test:e2e --workspace @partner-agent/backend -- --run test/real-postgres-chat.e2e-spec.ts
+      - name: Verify restart recovery against the persisted fixture
+        run: npm run test:e2e --workspace @partner-agent/backend -- --run test/real-postgres-restart.e2e-spec.ts
+      - name: Run remaining real PostgreSQL tests serially
+        run: >-
+          npm run test:e2e --workspace @partner-agent/backend -- --run
+          --no-file-parallelism
+          test/real-postgres-analysis-schema.e2e-spec.ts
+          test/real-postgres-chat-task-worker.e2e-spec.ts
+          test/real-postgres-egress.e2e-spec.ts
+          test/real-postgres-input-analysis.e2e-spec.ts
+          test/real-postgres-privacy.e2e-spec.ts

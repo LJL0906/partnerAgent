@@ -43,11 +43,8 @@ describe('PrivacyDecisionService', () => {
       fixture.service.submit({
         userId: 'other',
         input: {},
-        envelope: request(
-          'other-operation',
-          fixture.decision.id,
-          'allow',
-        ).envelope,
+        envelope: request('other-operation', fixture.decision.id, 'allow')
+          .envelope,
       }),
     ).rejects.toMatchObject({ status: 404 });
     fixture.clock.setTime(fixture.decision.expiresAt.getTime());
@@ -79,12 +76,53 @@ describe('PrivacyDecisionService', () => {
   it('fails an expired waiting task during the startup sweep', async () => {
     const fixture = await createFixture();
     fixture.clock.setTime(fixture.decision.expiresAt.getTime());
+    await fixture.decisions.expireDue();
     await fixture.service.onModuleInit();
     expect(
       (await fixture.tasks.getTask(ownerId, fixture.task.taskId))?.state,
     ).toBe('failed');
     expect(fixture.scheduler.resumeAfterPrivacyDecision).not.toHaveBeenCalled();
     fixture.service.onModuleDestroy();
+  });
+
+  it('reconciles a persisted block after the decision/task write gap', async () => {
+    const fixture = await createFixture();
+    await fixture.decisions.submitDecision({
+      ownerId,
+      egressId: fixture.decision.id,
+      decision: 'block',
+      commandOperationId: 'persisted-block-operation',
+      commandRequestFingerprint: 'persisted-block-fingerprint',
+    });
+
+    await fixture.service.onModuleInit();
+    await expect(
+      fixture.tasks.getTask(ownerId, fixture.task.taskId),
+    ).resolves.toMatchObject({ state: 'failed', errorCode: 'EGRESS_001' });
+    fixture.service.onModuleDestroy();
+  });
+
+  it('repairs a persisted block when the idempotent command is retried', async () => {
+    const fixture = await createFixture();
+    const command = request(
+      'duplicate-block-operation',
+      fixture.decision.id,
+      'block',
+    );
+    await fixture.decisions.submitDecision({
+      ownerId,
+      egressId: fixture.decision.id,
+      decision: 'block',
+      commandOperationId: 'duplicate-block-operation',
+      commandRequestFingerprint: 'fingerprint-duplicate-block-operation',
+    });
+
+    await expect(fixture.service.submit(command)).resolves.toMatchObject({
+      status: 'duplicate',
+    });
+    await expect(
+      fixture.tasks.getTask(ownerId, fixture.task.taskId),
+    ).resolves.toMatchObject({ state: 'failed' });
   });
 });
 

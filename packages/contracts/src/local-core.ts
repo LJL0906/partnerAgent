@@ -111,6 +111,9 @@ export const ERRORS = {
   RATE_002: 'RATE_002', // 单会话并发请求冲突
   TASK_001: 'TASK_001', // 任务已取消
   TASK_002: 'TASK_002', // 任务不可重试
+  TOOL_001: 'TOOL_001', // 工具执行或恢复失败
+  TOOL_002: 'TOOL_002', // 工具审批已过期
+  TOOL_003: 'TOOL_003', // 外部工具结果不确定，需人工核对
   MODEL_001: 'MODEL_001', // 模型未配置
   MODEL_002: 'MODEL_002', // 模型连接失败
   MODEL_003: 'MODEL_003', // 模型切换失败

@@ -14,7 +14,6 @@ import {
   vi,
 } from 'vitest';
 import type { AgentEvent } from '@partner-agent/contracts';
-import { AppModule } from '../src/app.module.js';
 import { AuthService } from '../src/auth/auth.service.js';
 import { PiAgentService } from '../src/agent/pi-agent.service.js';
 import { SecureIoAdapter } from '../src/websocket/secure-io.adapter.js';
@@ -39,7 +38,9 @@ describe('Agent WebSocket authentication (e2e)', () => {
     );
     process.env.MAX_SESSIONS_PER_USER = '1';
     process.env.SESSION_STORE = 'memory';
+    process.env.ENABLE_LEGACY_AGENT_WS = 'true';
 
+    const { AppModule } = await import('../src/app.module.js');
     const moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -73,6 +74,7 @@ describe('Agent WebSocket authentication (e2e)', () => {
     delete process.env.CORS_ALLOWED_ORIGINS;
     delete process.env.MAX_SESSIONS_PER_USER;
     delete process.env.SESSION_STORE;
+    delete process.env.ENABLE_LEGACY_AGENT_WS;
   });
 
   it('rejects connections without a token or from a non-allowed origin', async () => {

@@ -25,6 +25,7 @@ export type ChatTaskStatus =
   | 'running'
   | 'cancelling'
   | 'waiting_privacy_decision'
+  | 'waiting_tool_approval'
   | 'recovering'
   | 'completed'
   | 'cancelled'

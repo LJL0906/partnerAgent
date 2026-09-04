@@ -94,6 +94,10 @@ export interface EgressDecisionStore {
     taskId: string,
     ownerId: string,
   ): Promise<StoredEgressDecision | undefined>;
+  findLatestForTask(
+    taskId: string,
+    ownerId: string,
+  ): Promise<StoredEgressDecision | undefined>;
   findByIdForOwner(
     id: string,
     ownerId: string,

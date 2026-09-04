@@ -10,6 +10,7 @@ import type { ConfirmationStatus } from '../../tools/tool-operation.store.js';
   'status',
 ])
 @Index('tool_confirmations_expires_idx', ['expiresAt'])
+@Index('tool_confirmations_owner_task_idx', ['ownerId', 'taskId'])
 export class ToolConfirmationEntity {
   @PrimaryColumn({ type: 'uuid' })
   id: string;
@@ -17,6 +18,10 @@ export class ToolConfirmationEntity {
   ownerId: string;
   @Column({ name: 'session_id', type: 'text' })
   sessionId: string;
+  @Column({ name: 'task_id', type: 'uuid', nullable: true })
+  taskId: string | null;
+  @Column({ name: 'operation_id', type: 'text', nullable: true })
+  operationId: string | null;
   @Column({ name: 'tool_call_id', type: 'text' })
   toolCallId: string;
   @Column({ name: 'tool_name', type: 'text' })
@@ -31,6 +36,8 @@ export class ToolConfirmationEntity {
   requestSummary: string;
   @Column({ name: 'result_summary', type: 'text', nullable: true })
   resultSummary: string | null;
+  @Column({ name: 'result_json', type: 'jsonb', nullable: true })
+  resultJson: object | null;
   @Column({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
   @Column({ name: 'expires_at', type: 'timestamptz' })

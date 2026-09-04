@@ -9,6 +9,7 @@ import { ToolRegistryService } from '../tools/tool-registry.service.js';
 import { RedactionService } from '../tools/redaction.service.js';
 import { ToolExecutionService } from '../tools/tool-execution.service.js';
 import { ExternalToolApprovalService } from '../tools/confirmation-center.service.js';
+import { AgentRuntimeTelemetry } from './agent-runtime-telemetry.js';
 
 @Module({
   imports: [ConfigModule, DatabaseModule, ModelGatewayModule],
@@ -18,9 +19,10 @@ import { ExternalToolApprovalService } from '../tools/confirmation-center.servic
     RedactionService,
     ToolExecutionService,
     ExternalToolApprovalService,
+    AgentRuntimeTelemetry,
     PiAgentService,
     AgentGateway,
   ],
-  exports: [SessionManager, PiAgentService],
+  exports: [SessionManager, PiAgentService, ExternalToolApprovalService],
 })
 export class AgentModule {}

@@ -57,8 +57,9 @@ export class TypeOrmEgressDecisionStore implements EgressDecisionStore {
            and state in ('pending','ready_allow','ready_redact')`,
         [input.ownerId, input.taskId],
       );
-      const rows = this.returnedRows(await manager.query(
-        `insert into egress_decision_requests (
+      const rows = this.returnedRows(
+        await manager.query(
+          `insert into egress_decision_requests (
            id, owner_id, task_id, session_id, operation_id,
            request_fingerprint, provider, model_id, source, categories,
            state, decision, version, created_at, updated_at, expires_at,
@@ -68,20 +69,21 @@ export class TypeOrmEgressDecisionStore implements EgressDecisionStore {
            'pending',null,1,transaction_timestamp(),transaction_timestamp(),
            transaction_timestamp() + ($11 * interval '1 millisecond'),null,null
          ) returning *`,
-        [
-          randomUUID(),
-          input.ownerId,
-          input.taskId,
-          input.sessionId,
-          input.operationId,
-          input.requestFingerprint,
-          input.provider,
-          input.modelId,
-          input.source,
-          [...input.categories],
-          input.ttlMs,
-        ],
-      ));
+          [
+            randomUUID(),
+            input.ownerId,
+            input.taskId,
+            input.sessionId,
+            input.operationId,
+            input.requestFingerprint,
+            input.provider,
+            input.modelId,
+            input.source,
+            [...input.categories],
+            input.ttlMs,
+          ],
+        ),
+      );
       return this.toStored(rows[0]);
     });
   }
@@ -91,6 +93,16 @@ export class TypeOrmEgressDecisionStore implements EgressDecisionStore {
       `select * from egress_decision_requests
        where task_id = $1 and owner_id = $2
          and state in ('pending','ready_allow','ready_redact')
+       order by created_at desc limit 1`,
+      [taskId, ownerId],
+    );
+    return rows[0] ? this.toStored(rows[0]) : undefined;
+  }
+
+  async findLatestForTask(taskId: string, ownerId: string) {
+    const rows = await this.dataSource.query(
+      `select * from egress_decision_requests
+       where task_id = $1 and owner_id = $2
        order by created_at desc limit 1`,
       [taskId, ownerId],
     );
@@ -134,25 +146,29 @@ export class TypeOrmEgressDecisionStore implements EgressDecisionStore {
       if (
         new Date(String(row.expires_at)) <= new Date(String(row.database_now))
       ) {
-        const expired = this.returnedRows(await manager.query(
-          `update egress_decision_requests
+        const expired = this.returnedRows(
+          await manager.query(
+            `update egress_decision_requests
            set state = 'expired', version = version + 1,
                updated_at = transaction_timestamp()
            where id = $1 returning *`,
-          [input.egressId],
-        ));
+            [input.egressId],
+          ),
+        );
         return { expired: this.toStored(expired[0]) };
       }
 
       const state = this.stateForDecision(input.decision);
-      const updated = this.returnedRows(await manager.query(
-        `update egress_decision_requests
+      const updated = this.returnedRows(
+        await manager.query(
+          `update egress_decision_requests
          set state = $2, decision = $3, version = version + 1,
              decided_at = transaction_timestamp(),
              updated_at = transaction_timestamp()
          where id = $1 returning *`,
-        [input.egressId, state, input.decision],
-      ));
+          [input.egressId, state, input.decision],
+        ),
+      );
       const record = this.toStored(updated[0]);
       const result = this.commandResult(input.commandOperationId, record);
       await manager.query(
@@ -205,35 +221,40 @@ export class TypeOrmEgressDecisionStore implements EgressDecisionStore {
       }
       if (row.state === 'pending')
         return { status: 'pending', record: this.toStored(row) };
-      const consumed = this.returnedRows(await manager.query(
-        `update egress_decision_requests
+      const consumed = this.returnedRows(
+        await manager.query(
+          `update egress_decision_requests
          set state = 'consumed', version = version + 1,
              consumed_at = transaction_timestamp(),
              updated_at = transaction_timestamp()
          where id = $1 returning *`,
-        [row.id],
-      ));
+          [row.id],
+        ),
+      );
       return { status: 'consumed', record: this.toStored(consumed[0]) };
     });
   }
 
   async cancelPendingForTask(taskId: string, ownerId: string) {
-    const rows = this.returnedRows(await this.dataSource.query(
-      `update egress_decision_requests
+    const rows = this.returnedRows(
+      await this.dataSource.query(
+        `update egress_decision_requests
        set state = 'cancelled', version = version + 1,
            updated_at = transaction_timestamp()
        where task_id = $1 and owner_id = $2
          and state in ('pending','ready_allow','ready_redact')
        returning *`,
-      [taskId, ownerId],
-    ));
+        [taskId, ownerId],
+      ),
+    );
     return rows.map((row: DatabaseRow) => this.toStored(row));
   }
 
   async expireDue(limit = 100) {
     this.validateLimit(limit);
-    const rows = this.returnedRows(await this.dataSource.query(
-      `with due as (
+    const rows = this.returnedRows(
+      await this.dataSource.query(
+        `with due as (
          select id from egress_decision_requests
          where state = 'pending' and expires_at <= transaction_timestamp()
          order by expires_at, id limit $1 for update skip locked
@@ -242,8 +263,9 @@ export class TypeOrmEgressDecisionStore implements EgressDecisionStore {
        set state = 'expired', version = request.version + 1,
            updated_at = transaction_timestamp()
        from due where request.id = due.id returning request.*`,
-      [limit],
-    ));
+        [limit],
+      ),
+    );
     return rows.map((row: DatabaseRow) => this.toStored(row));
   }
 
@@ -308,13 +330,15 @@ export class TypeOrmEgressDecisionStore implements EgressDecisionStore {
     state: EgressDecisionRequestState,
     status: 'expired' | 'invalidated',
   ): Promise<ConsumeEgressDecisionResult> {
-    const rows = this.returnedRows(await manager.query(
-      `update egress_decision_requests
+    const rows = this.returnedRows(
+      await manager.query(
+        `update egress_decision_requests
        set state = $2, version = version + 1,
            updated_at = transaction_timestamp()
        where id = $1 returning *`,
-      [row.id, state],
-    ));
+        [row.id, state],
+      ),
+    );
     return { status, record: this.toStored(rows[0]) };
   }
 

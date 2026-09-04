@@ -24,6 +24,10 @@ export const WS_CONTROL_EVENTS = {
   SUBSCRIBE: "subscribe",
   UNSUBSCRIBE: "unsubscribe",
   SUBSCRIPTION_ACK: "subscription_ack",
+  CONFIRM_TOOL_EXECUTION: "confirm_tool_execution",
+  DISMISS_TOOL_EXECUTION: "dismiss_tool_execution",
+  UNDO_TOOL_EXECUTION: "undo_tool_execution",
+  TOOL_CONTROL_ACK: "tool_control_ack",
   PING: "ping",
   PONG: "pong",
 } as const;
@@ -64,6 +68,34 @@ export interface PingRequestV1 {
 }
 
 export interface PongResponseV1 extends PingRequestV1 {}
+
+/**
+ * v1 外部工具副作用控制命令。它们只处理 Tool Approval，不得用于正式业务对象确认。
+ * 所有资源标识均由服务端结合 JWT owner 与 session 所有权重新校验。
+ */
+export interface ToolConfirmationControlRequestV1 {
+  request_id: string;
+  session_id: string;
+  confirmation_id: string;
+}
+
+export interface ToolUndoControlRequestV1 {
+  request_id: string;
+  session_id: string;
+  execution_id: string;
+}
+
+export type ToolControlActionV1 = "confirm" | "dismiss" | "undo";
+
+export interface ToolControlAckV1 {
+  request_id: string;
+  action: ToolControlActionV1;
+  status: "completed" | "rejected";
+  error?: {
+    code: string;
+    message: string;
+  };
+}
 
 export interface SessionMessageV1 {
   role: "user" | "assistant";

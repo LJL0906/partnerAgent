@@ -5,7 +5,6 @@ import {
   ChatTaskEntity,
   LocalCoreOperationEntity,
   OriginalRecordEntity,
-  type ChatTaskState,
 } from '../database/entities/chat-task.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import { UserEntity } from '../database/entities/core/user.entity.js';
@@ -19,13 +18,20 @@ import {
   type SubmitTextCommand,
 } from './chat-task.store.js';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
+import { TypeOrmChatTaskRuntime } from './typeorm-chat-task-runtime.js';
+import { toStoredChatTask } from './typeorm-chat-task-mapper.js';
 
 export class TypeOrmChatTaskStore extends ChatTaskStore {
+  private readonly runtime: TypeOrmChatTaskRuntime;
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly maxSessionsPerUser = 100,
   ) {
     super();
+    this.runtime = new TypeOrmChatTaskRuntime(dataSource, (manager, task) =>
+      this.loadStored(manager, task),
+    );
   }
 
   async rejectInputAnalysis(command: RejectInputAnalysisCommand) {
@@ -200,6 +206,10 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         updatedAt: now,
         startedAt: null,
         completedAt: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        attemptCount: 0,
+        waitingToolConfirmationId: null,
       });
       const result = this.commandResult(command.operationId, task, 'accepted');
       await this.saveOperation(manager, command, result);
@@ -210,7 +220,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
           { id: sessionId, ownerId: command.ownerId },
           { lastActiveAt: now, updatedAt: now },
         );
-      return { result, task: this.toStored(task, command.text) };
+      return { result, task: toStoredChatTask(task, command.text) };
     });
   }
 
@@ -232,6 +242,9 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       if (!task) throw new Error('AUTH_002');
       if (!['completed', 'failed', 'cancelled'].includes(task.state)) {
         task.state = 'cancelled';
+        task.leaseOwner = null;
+        task.leaseExpiresAt = null;
+        task.waitingToolConfirmationId = null;
         task.completedAt = new Date();
         task.updatedAt = task.completedAt;
         await manager.getRepository(ChatTaskEntity).save(task);
@@ -275,53 +288,107 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         .countBy({ ownerId, operationId })) > 0
     );
   }
+  async listWaitingPrivacyTasks() {
+    return this.runtime.listWaitingPrivacyTasks();
+  }
+  async failWaitingPrivacyDecision(
+    taskId: string,
+    ownerId: string,
+    code: string,
+    message: string,
+  ) {
+    return this.runtime.failWaitingPrivacyDecision(
+      taskId,
+      ownerId,
+      code,
+      message,
+    );
+  }
   async markRunning(taskId: string, ownerId: string) {
-    const now = new Date();
-    const result = await this.dataSource
-      .getRepository(ChatTaskEntity)
-      .update(
-        { id: taskId, ownerId, state: 'queued' },
-        { state: 'running', startedAt: now, updatedAt: now },
-      );
-    return Boolean(result.affected);
+    return this.runtime.markRunning(taskId, ownerId);
+  }
+  async recoverExpiredLeases(now = new Date()) {
+    return this.runtime.recoverExpiredLeases(now);
+  }
+  async claimNextRunnable(leaseOwner: string, leaseDurationMs: number) {
+    return this.runtime.claimNextRunnable(leaseOwner, leaseDurationMs);
+  }
+  async renewLease(
+    taskId: string,
+    ownerId: string,
+    leaseOwner: string,
+    leaseDurationMs: number,
+  ) {
+    return this.runtime.renewLease(
+      taskId,
+      ownerId,
+      leaseOwner,
+      leaseDurationMs,
+    );
+  }
+  async releaseLeases(leaseOwner: string) {
+    return this.runtime.releaseLeases(leaseOwner);
   }
   async claimPrivacyResume(taskId: string, ownerId: string) {
-    const claimed = await this.dataSource.transaction(async (manager) => {
-      const result = await manager
-        .createQueryBuilder()
-        .update(ChatTaskEntity)
-        .set({ state: 'running', updatedAt: () => 'CURRENT_TIMESTAMP' })
-        .where(
-          'id = :taskId and owner_id = :ownerId and state = :waitingState',
-          {
-            taskId,
-            ownerId,
-            waitingState: 'waiting_privacy_decision',
-          },
-        )
-        .returning('*')
-        .execute();
-      return result.raw[0] as ChatTaskEntity | undefined;
-    });
-    if (!claimed) return undefined;
-    const task = await this.dataSource
-      .getRepository(ChatTaskEntity)
-      .findOneBy({ id: taskId, ownerId });
-    return task ? this.loadStored(this.dataSource.manager, task) : undefined;
+    return this.runtime.claimPrivacyResume(taskId, ownerId);
   }
-  async markWaiting(taskId: string, ownerId: string) {
-    return this.updateState(taskId, ownerId, 'waiting_privacy_decision');
+  async claimToolResume(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    leaseOwner: string,
+    leaseDurationMs: number,
+  ) {
+    return this.runtime.claimToolResume(
+      taskId,
+      ownerId,
+      confirmationId,
+      leaseOwner,
+      leaseDurationMs,
+    );
   }
-  async markCompleted(taskId: string, ownerId: string) {
-    return this.finish(taskId, ownerId, 'completed');
+  async markWaiting(taskId: string, ownerId: string, leaseOwner?: string) {
+    return this.runtime.markWaiting(taskId, ownerId, leaseOwner);
+  }
+  async markWaitingToolApproval(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    leaseOwner?: string,
+  ) {
+    return this.runtime.markWaitingToolApproval(
+      taskId,
+      ownerId,
+      confirmationId,
+      leaseOwner,
+    );
+  }
+  async failWaitingToolApproval(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    code: string,
+    message: string,
+  ) {
+    return this.runtime.failWaitingToolApproval(
+      taskId,
+      ownerId,
+      confirmationId,
+      code,
+      message,
+    );
+  }
+  async markCompleted(taskId: string, ownerId: string, leaseOwner?: string) {
+    return this.runtime.markCompleted(taskId, ownerId, leaseOwner);
   }
   async markFailed(
     taskId: string,
     ownerId: string,
     code: string,
     message: string,
+    leaseOwner?: string,
   ) {
-    return this.finish(taskId, ownerId, 'failed', code, message);
+    return this.runtime.markFailed(taskId, ownerId, code, message, leaseOwner);
   }
   async listSessionMessages(ownerId: string, sessionId: string) {
     const rows = await this.dataSource
@@ -343,65 +410,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       }));
   }
 
-  private async finish(
-    taskId: string,
-    ownerId: string,
-    state: 'completed' | 'failed',
-    errorCode?: string,
-    errorMessage?: string,
-  ) {
-    return this.dataSource.transaction(async (manager) => {
-      const task = await manager.getRepository(ChatTaskEntity).findOne({
-        where: { id: taskId, ownerId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!task) return undefined;
-      if (task.state === 'cancelled') return this.loadStored(manager, task);
-      if (state === 'completed') {
-        const message = await manager
-          .getRepository(SessionMessageEntity)
-          .findOne({
-            where: {
-              ownerId,
-              sessionId: task.sessionId,
-              role: 'assistant',
-              taskId: IsNull(),
-            },
-            order: { sequence: 'DESC' },
-          });
-        if (message) {
-          message.taskId = task.id;
-          await manager.getRepository(SessionMessageEntity).save(message);
-          task.resultMessageId = message.id;
-        }
-      }
-      task.state = state;
-      task.errorCode = errorCode ?? null;
-      task.errorMessage = errorMessage ?? null;
-      task.completedAt = new Date();
-      task.updatedAt = task.completedAt;
-      await manager.getRepository(ChatTaskEntity).save(task);
-      return this.loadStored(manager, task);
-    });
-  }
-
-  private async updateState(
-    taskId: string,
-    ownerId: string,
-    state: ChatTaskState,
-  ) {
-    const result = await this.dataSource
-      .createQueryBuilder()
-      .update(ChatTaskEntity)
-      .set({ state, updatedAt: new Date() })
-      .where('id = :taskId and owner_id = :ownerId and state <> :cancelled', {
-        taskId,
-        ownerId,
-        cancelled: 'cancelled',
-      })
-      .execute();
-    return Boolean(result.affected);
-  }
   private async loadStored(
     manager: EntityManager,
     task: ChatTaskEntity,
@@ -409,29 +417,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
     const record = await manager
       .getRepository(OriginalRecordEntity)
       .findOneByOrFail({ id: task.originalRecordId, ownerId: task.ownerId });
-    return this.toStored(task, record.content);
-  }
-  private toStored(task: ChatTaskEntity, text: string): StoredChatTask {
-    return {
-      taskId: task.id,
-      ownerId: task.ownerId,
-      sessionId: task.sessionId,
-      operationId: task.operationId,
-      inputId: task.inputId,
-      text,
-      state: task.state,
-      originalRecordId: task.originalRecordId,
-      userMessageId: task.userMessageId,
-      ...(task.resultMessageId
-        ? { resultMessageId: task.resultMessageId }
-        : {}),
-      ...(task.errorCode ? { errorCode: task.errorCode } : {}),
-      ...(task.errorMessage ? { errorMessage: task.errorMessage } : {}),
-      createdAt: task.createdAt,
-      updatedAt: task.updatedAt,
-      ...(task.startedAt ? { startedAt: task.startedAt } : {}),
-      ...(task.completedAt ? { completedAt: task.completedAt } : {}),
-    };
+    return toStoredChatTask(task, record.content);
   }
   private async findOperation(
     manager: EntityManager,

@@ -4,6 +4,7 @@ export type ChatTaskState =
   | 'queued'
   | 'running'
   | 'waiting_privacy_decision'
+  | 'waiting_tool_approval'
   | 'completed'
   | 'failed'
   | 'cancelled';
@@ -63,6 +64,22 @@ export class ChatTaskEntity {
   startedAt: Date | null;
   @Column({ name: 'completed_at', type: 'timestamptz', nullable: true })
   completedAt: Date | null;
+
+  @Column({ name: 'lease_owner', type: 'text', nullable: true })
+  leaseOwner: string | null;
+
+  @Column({ name: 'lease_expires_at', type: 'timestamptz', nullable: true })
+  leaseExpiresAt: Date | null;
+
+  @Column({ name: 'attempt_count', type: 'integer', default: 0 })
+  attemptCount: number;
+
+  @Column({
+    name: 'waiting_tool_confirmation_id',
+    type: 'uuid',
+    nullable: true,
+  })
+  waitingToolConfirmationId: string | null;
 }
 
 export const CHAT_TASK_ENTITIES = [

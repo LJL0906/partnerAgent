@@ -39,6 +39,7 @@ import { PrivacyDecisionService } from './privacy-decision.service.js';
     LocalCoreApplicationPort,
     ChatTaskEventBus,
     ChatTaskOwnershipService,
+    ChatTaskScheduler,
   ],
 })
 export class LocalCoreApiModule {}

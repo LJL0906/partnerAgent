@@ -170,4 +170,30 @@ describe('AgentGateway', () => {
       }),
     );
   });
+
+  it('does not expose unexpected internal error details', async () => {
+    const chat = vi.fn(async function* () {
+      yield* [];
+      throw new Error('provider secret-key-123 failed at C:\\private\\file');
+    });
+    const gateway = new AgentGateway(
+      { chat, cancel: vi.fn() } as never,
+      createManager(),
+      {} as never,
+    );
+    const socket = createSocket('socket-safe-error', 'user-safe');
+
+    await gateway.handleChat(socket, {
+      sessionId: 'safe-error-session',
+      message: '触发失败',
+    });
+
+    expect(socket.emit).toHaveBeenCalledWith(
+      'agent_event',
+      expect.objectContaining({
+        type: 'error',
+        data: { message: '请求处理失败' },
+      }),
+    );
+  });
 });

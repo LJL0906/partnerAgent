@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.vscode
+**/.env
+**/.env.*
+**/node_modules
+**/dist
+**/coverage
+**/.expo
+**/*.log
+docs
+apps/partner-agent-frontend
+services
+pi

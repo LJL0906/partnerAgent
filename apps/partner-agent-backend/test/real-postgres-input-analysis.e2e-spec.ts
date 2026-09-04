@@ -3,7 +3,6 @@ import { Test } from '@nestjs/testing';
 import { SignJWT } from 'jose';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { AppModule } from '../src/app.module.js';
 import { PiAgentService } from '../src/agent/pi-agent.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { TypeOrmSessionStore } from '../src/database/typeorm-session.store.js';
@@ -27,6 +26,7 @@ describeReal('PostgreSQL input analysis rejection boundary', () => {
     process.env.DATABASE_URL = databaseUrl;
     process.env.SESSION_STORE = 'postgres';
     process.env.AUTH_JWT_SECRET = jwtSecret;
+    const { AppModule } = await import('../src/app.module.js');
     const fixture = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(PiAgentService)
       .useValue({ chat: agentChat, cancel: vi.fn(), onModuleInit: vi.fn() })
@@ -58,7 +58,9 @@ describeReal('PostgreSQL input analysis rejection boundary', () => {
     const body = command('real-pg-analysis-fingerprint');
     const first = await submit(body);
     const replay = await submit(body);
-    const collision = await submit(command('real-pg-analysis-other-fingerprint'));
+    const collision = await submit(
+      command('real-pg-analysis-other-fingerprint'),
+    );
 
     expect(first.status).toBe(501);
     expect(replay.status).toBe(501);

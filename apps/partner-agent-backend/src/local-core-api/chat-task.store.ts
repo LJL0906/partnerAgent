@@ -55,6 +55,10 @@ export interface StoredChatTask extends AcceptedChatTask {
   updatedAt: Date;
   startedAt?: Date;
   completedAt?: Date;
+  leaseOwner?: string;
+  leaseExpiresAt?: Date;
+  attemptCount: number;
+  waitingToolConfirmationId?: string;
 }
 
 export interface SessionMessageView {
@@ -87,21 +91,66 @@ export abstract class ChatTaskStore {
     ownerId: string,
     operationId: string,
   ): Promise<boolean>;
+  abstract listWaitingPrivacyTasks(): Promise<StoredChatTask[]>;
+  abstract failWaitingPrivacyDecision(
+    taskId: string,
+    ownerId: string,
+    code: string,
+    message: string,
+  ): Promise<StoredChatTask | undefined>;
   abstract markRunning(taskId: string, ownerId: string): Promise<boolean>;
+  abstract recoverExpiredLeases(now?: Date): Promise<number>;
+  abstract claimNextRunnable(
+    leaseOwner: string,
+    leaseDurationMs: number,
+  ): Promise<StoredChatTask | undefined>;
+  abstract renewLease(
+    taskId: string,
+    ownerId: string,
+    leaseOwner: string,
+    leaseDurationMs: number,
+  ): Promise<boolean>;
+  abstract releaseLeases(leaseOwner: string): Promise<number>;
   abstract claimPrivacyResume(
     taskId: string,
     ownerId: string,
   ): Promise<StoredChatTask | undefined>;
-  abstract markWaiting(taskId: string, ownerId: string): Promise<boolean>;
+  abstract claimToolResume(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    leaseOwner: string,
+    leaseDurationMs: number,
+  ): Promise<StoredChatTask | undefined>;
+  abstract markWaiting(
+    taskId: string,
+    ownerId: string,
+    leaseOwner?: string,
+  ): Promise<boolean>;
+  abstract markWaitingToolApproval(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    leaseOwner?: string,
+  ): Promise<boolean>;
+  abstract failWaitingToolApproval(
+    taskId: string,
+    ownerId: string,
+    confirmationId: string,
+    code: string,
+    message: string,
+  ): Promise<StoredChatTask | undefined>;
   abstract markCompleted(
     taskId: string,
     ownerId: string,
+    leaseOwner?: string,
   ): Promise<StoredChatTask | undefined>;
   abstract markFailed(
     taskId: string,
     ownerId: string,
     code: string,
     message: string,
+    leaseOwner?: string,
   ): Promise<StoredChatTask | undefined>;
   abstract listSessionMessages(
     ownerId: string,

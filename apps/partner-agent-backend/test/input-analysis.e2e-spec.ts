@@ -11,7 +11,6 @@ import {
   it,
   vi,
 } from 'vitest';
-import { AppModule } from '../src/app.module.js';
 import { PiAgentService } from '../src/agent/pi-agent.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { ChatTaskStore } from '../src/local-core-api/chat-task.store.js';
@@ -39,6 +38,7 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
     process.env.AUTH_JWT_SECRET = secret;
     process.env.SESSION_STORE = 'memory';
 
+    const { AppModule } = await import('../src/app.module.js');
     const fixture = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(ModelGatewayService)
       .useValue({
@@ -49,6 +49,7 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
       .overrideProvider(PiAgentService)
       .useValue({
         chat: agentChat,
+        resumeTask: agentChat,
         cancel: vi.fn(async () => false),
         onModuleInit: vi.fn(),
       })

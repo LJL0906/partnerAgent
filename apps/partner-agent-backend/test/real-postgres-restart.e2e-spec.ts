@@ -7,7 +7,6 @@ import { SignJWT } from 'jose';
 import { io, type Socket as ClientSocket } from 'socket.io-client';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AppModule } from '../src/app.module.js';
 import { AuthService } from '../src/auth/auth.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { TypeOrmSessionStore } from '../src/database/typeorm-session.store.js';
@@ -30,7 +29,10 @@ describeReal('PostgreSQL restart recovery', () => {
     process.env.SESSION_STORE = 'postgres';
     process.env.AUTH_JWT_SECRET = secret;
     process.env.CORS_ALLOWED_ORIGINS = origin;
-    const fixture = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const { AppModule } = await import('../src/app.module.js');
+    const fixture = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
     app = fixture.createNestApplication();
     app.useWebSocketAdapter(
       new SecureIoAdapter(app, app.get(AuthService), app.get(ConfigService)),
@@ -100,7 +102,10 @@ describeReal('PostgreSQL restart recovery', () => {
 
 function once<T>(socket: ClientSocket, event: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`等待 ${event} 超时`)), 5000);
+    const timer = setTimeout(
+      () => reject(new Error(`等待 ${event} 超时`)),
+      5000,
+    );
     socket.once(event, (value: T) => {
       clearTimeout(timer);
       resolve(value);

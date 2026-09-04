@@ -1,4 +1,5 @@
 import type { ToolRiskLevel } from '@partner-agent/contracts';
+import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 
 export type ConfirmationStatus =
   | 'pending'
@@ -7,12 +8,16 @@ export type ConfirmationStatus =
   | 'failed'
   | 'dismissed'
   | 'expired'
+  | 'indeterminate'
   | 'undone';
 
 export interface ToolConfirmationRecord {
   id: string;
   ownerId: string;
   sessionId: string;
+  /** 旧 Gateway 产生的确认记录可能没有正式任务关联。 */
+  taskId?: string;
+  operationId?: string;
   toolCallId: string;
   toolName: string;
   riskLevel: ToolRiskLevel;
@@ -20,6 +25,8 @@ export interface ToolConfirmationRecord {
   arguments: unknown;
   requestSummary: string;
   resultSummary?: string;
+  /** 已脱敏且可安全回灌 Agent 的完整结果；用于成功后的崩溃恢复。 */
+  result?: AgentToolResult<unknown>;
   createdAt: Date;
   expiresAt: Date;
 }
@@ -37,6 +44,7 @@ export interface ToolAuditRecord {
     | 'confirmed'
     | 'dismissed'
     | 'expired'
+    | 'indeterminate'
     | 'failed'
     | 'undone'
     | 'undo_failed'
@@ -62,6 +70,25 @@ export interface ToolExecutionReceipt {
   undoExpiresAt: Date;
 }
 
+export interface RecoverableToolConfirmationRecord extends ToolConfirmationRecord {
+  taskId: string;
+  operationId: string;
+  status: 'succeeded' | 'dismissed';
+  result: AgentToolResult<unknown>;
+}
+
+export interface ExpiredToolConfirmationRecord extends ToolConfirmationRecord {
+  taskId: string;
+  operationId: string;
+  status: 'expired';
+}
+
+export interface ReconciledToolConfirmationRecord extends ToolConfirmationRecord {
+  taskId: string;
+  operationId: string;
+  status: 'failed' | 'expired' | 'indeterminate';
+}
+
 export abstract class ToolOperationStore {
   abstract saveConfirmation(record: ToolConfirmationRecord): Promise<void>;
   abstract findConfirmation(
@@ -72,10 +99,24 @@ export abstract class ToolOperationStore {
     id: string,
     updates: Partial<ToolConfirmationRecord>,
   ): Promise<void>;
+  abstract listRecoverableConfirmations(
+    limit: number,
+  ): Promise<RecoverableToolConfirmationRecord[]>;
+  abstract expirePendingConfirmations(
+    now: Date,
+    limit: number,
+  ): Promise<ExpiredToolConfirmationRecord[]>;
+  abstract reconcileStaleConfirmations(
+    now: Date,
+    limit: number,
+  ): Promise<ReconciledToolConfirmationRecord[]>;
   abstract saveAudit(record: ToolAuditRecord): Promise<void>;
   abstract listAudits(): Promise<ToolAuditRecord[]>;
   abstract saveReceipt(receipt: ToolExecutionReceipt): Promise<void>;
   abstract findReceipt(id: string): Promise<ToolExecutionReceipt | undefined>;
+  abstract findReceiptByConfirmationId(
+    confirmationId: string,
+  ): Promise<ToolExecutionReceipt | undefined>;
   abstract claimReceiptForUndo(id: string): Promise<boolean>;
   abstract updateReceipt(
     id: string,

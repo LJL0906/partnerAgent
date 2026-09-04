@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -5,6 +6,7 @@ import {
   type Context,
   type Model,
   type MutableModels,
+  type ProviderResponse,
   type SimpleStreamOptions,
 } from '@earendil-works/pi-ai';
 import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
@@ -17,17 +19,29 @@ import {
 } from './egress.types.js';
 import { ExternalRequestBuilder } from './external-request.builder.js';
 import { ModelProviderAdapter } from './model-provider.adapter.js';
+import {
+  ModelGatewayCallError,
+  ModelGatewayObserver,
+  NoopModelGatewayObserver,
+  classifyModelProviderFailure,
+  resolveModelGatewayReliability,
+  type ModelGatewayObservationMetadata,
+} from './model-gateway-reliability.js';
 
 @Injectable()
 export class ModelGatewayService implements OnModuleInit {
   private readonly logger = new Logger(ModelGatewayService.name);
   private models?: MutableModels;
+  private readonly reliability;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly requestBuilder: ExternalRequestBuilder,
     private readonly egressPolicy: EgressPolicyGateway,
-  ) {}
+    private readonly observer: ModelGatewayObserver = new NoopModelGatewayObserver(),
+  ) {
+    this.reliability = resolveModelGatewayReliability(configService);
+  }
 
   onModuleInit(): void {
     const models = createModels();
@@ -74,13 +88,42 @@ export class ModelGatewayService implements OnModuleInit {
       context: Context,
       options?: SimpleStreamOptions,
     ) => {
+      const startedAt = Date.now();
+      const observation: ModelGatewayObservationMetadata = {
+        requestId: randomUUID(),
+        ownerId: metadata.ownerId,
+        sessionId: metadata.sessionId,
+        taskId: metadata.taskId,
+        operationId: metadata.operationId,
+        source: metadata.source,
+        provider: model.provider,
+        modelId: model.id,
+      };
+      this.observe({
+        ...observation,
+        type: 'request_started',
+        ...this.reliability,
+      });
+      const reliableOptions: SimpleStreamOptions = {
+        ...options,
+        // 注册的 Provider 只在收到首个响应前应用这些有限重试；流开始后不重放。
+        timeoutMs: this.reliability.timeoutMs,
+        maxRetries: this.reliability.maxRetries,
+        maxRetryDelayMs: this.reliability.maxRetryDelayMs,
+      };
       const external = this.requestBuilder.build(
         { ...metadata, provider: model.provider },
         model,
         context,
-        options,
+        reliableOptions,
       );
       const result = await this.egressPolicy.evaluate(external);
+      this.observe({
+        ...observation,
+        type: 'egress_decided',
+        decision: result.decision,
+        sensitiveCategoryCount: result.categories.length,
+      });
       if (!result.request) {
         throw new EgressDecisionError(
           result.decision as 'blocked' | 'pending_user_decision',
@@ -94,8 +137,84 @@ export class ModelGatewayService implements OnModuleInit {
           },
         );
       }
-      return provider.stream(result.request);
+      const callerOnResponse = result.request.options?.onResponse;
+      const approvedRequest = {
+        ...result.request,
+        options: {
+          ...result.request.options,
+          onResponse: async (
+            response: ProviderResponse,
+            responseModel: Model<any>,
+          ) => {
+            await callerOnResponse?.(response, responseModel);
+            this.observe({
+              ...observation,
+              type: 'provider_response',
+              status: response.status,
+              elapsedMs: Date.now() - startedAt,
+            });
+          },
+        },
+      };
+      try {
+        const stream = provider.stream(approvedRequest);
+        void stream.result().then(
+          (message) => {
+            if (
+              message.stopReason === 'error' ||
+              message.stopReason === 'aborted'
+            ) {
+              this.observe({
+                ...observation,
+                type: 'stream_failed',
+                elapsedMs: Date.now() - startedAt,
+                failure: classifyModelProviderFailure(message),
+              });
+              return;
+            }
+            this.observe({
+              ...observation,
+              type: 'stream_completed',
+              elapsedMs: Date.now() - startedAt,
+              inputTokens: message.usage.input,
+              outputTokens: message.usage.output,
+              totalTokens: message.usage.totalTokens,
+            });
+          },
+          (error: unknown) => {
+            this.observe({
+              ...observation,
+              type: 'stream_failed',
+              elapsedMs: Date.now() - startedAt,
+              failure: classifyModelProviderFailure(error),
+            });
+          },
+        );
+        return stream;
+      } catch (error) {
+        const failure = classifyModelProviderFailure(error);
+        this.observe({
+          ...observation,
+          type: 'stream_failed',
+          elapsedMs: Date.now() - startedAt,
+          failure,
+        });
+        throw new ModelGatewayCallError(failure, { cause: error });
+      }
     };
+  }
+
+  private observe(event: Parameters<ModelGatewayObserver['record']>[0]): void {
+    try {
+      const pending = this.observer.record(event);
+      if (pending !== undefined) {
+        void Promise.resolve(pending).catch(() => {
+          this.logger.warn('Model Gateway 指标观察器记录失败');
+        });
+      }
+    } catch {
+      this.logger.warn('Model Gateway 指标观察器记录失败');
+    }
   }
 
   private requireModels(): MutableModels {

@@ -11,6 +11,7 @@ const {
   GOAL_STATUSES,
   SENSITIVE_CATEGORIES,
   STRUCTURED_ANALYSIS_STATUSES,
+  TASK_STATES,
   UNDO_BLOCKING_REASON_CODES,
   WS_CONTROL_EVENTS,
 } = require("../dist");
@@ -86,6 +87,10 @@ describe("Local Core v1 contract constants", () => {
       SUBSCRIBE: "subscribe",
       UNSUBSCRIBE: "unsubscribe",
       SUBSCRIPTION_ACK: "subscription_ack",
+      CONFIRM_TOOL_EXECUTION: "confirm_tool_execution",
+      DISMISS_TOOL_EXECUTION: "dismiss_tool_execution",
+      UNDO_TOOL_EXECUTION: "undo_tool_execution",
+      TOOL_CONTROL_ACK: "tool_control_ack",
       PING: "ping",
       PONG: "pong",
     });
@@ -93,6 +98,13 @@ describe("Local Core v1 contract constants", () => {
 
   it("exposes the REST scaffold not-implemented error", () => {
     expect(ERRORS.NOT_IMPLEMENTED_001).toBe("NOT_IMPLEMENTED_001");
+    expect(ERRORS.TOOL_001).toBe("TOOL_001");
+    expect(ERRORS.TOOL_002).toBe("TOOL_002");
+    expect(ERRORS.TOOL_003).toBe("TOOL_003");
+  });
+
+  it("exposes the tool-approval waiting task state", () => {
+    expect(TASK_STATES).toContain("waiting_tool_approval");
   });
 
   it("freezes the SubmitTextInput analysis type vocabulary", () => {
