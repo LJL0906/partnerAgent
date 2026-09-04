@@ -2,8 +2,8 @@ import { MODULE_METADATA } from '@nestjs/common/constants';
 import { describe, expect, it } from 'vitest';
 import { AgentGateway } from './agent.gateway.js';
 import { AgentModule } from './agent.module.js';
+import { legacyAgentWsImports } from './legacy-agent-ws-imports.js';
 import { LegacyAgentWsModule } from './legacy-agent-ws.module.js';
-import { legacyAgentWsImports } from '../app.module.js';
 
 describe('legacy Agent WebSocket module isolation', () => {
   it('does not register the legacy gateway in the normal Agent module', () => {
