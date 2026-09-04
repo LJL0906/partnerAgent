@@ -93,7 +93,7 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
 
   it('returns stable 501 details for an explicit analysis request', async () => {
     const operationId = 'analysis-explicit-501';
-    const requestedTypes = ['idea_organize', 'problem_analysis'];
+    const requestedTypes = ['action'];
     const response = await submit(
       ownerToken,
       command(operationId, 'analysis-explicit-501-fingerprint', {

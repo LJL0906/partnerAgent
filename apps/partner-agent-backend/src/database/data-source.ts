@@ -13,6 +13,7 @@ import { CreateChatTaskTables1788501000000 } from './migrations/1788501000000-cr
 import { CreateEgressAuditLogs1788502000000 } from './migrations/1788502000000-create-egress-audit-logs.js';
 import { CreateEgressDecisionRequests1788503000000 } from './migrations/1788503000000-create-egress-decision-requests.js';
 import { StrengthenEgressAuditLogs1788504000000 } from './migrations/1788504000000-strengthen-egress-audit-logs.js';
+import { CreateAnalysisTables1788505000000 } from './migrations/1788505000000-create-analysis-tables.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL 未配置');
@@ -36,6 +37,7 @@ export default new DataSource({
     CreateEgressAuditLogs1788502000000,
     CreateEgressDecisionRequests1788503000000,
     StrengthenEgressAuditLogs1788504000000,
+    CreateAnalysisTables1788505000000,
   ],
   synchronize: false,
 });

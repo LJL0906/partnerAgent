@@ -34,9 +34,9 @@ describe('requestedInputAnalysis', () => {
     expect(
       requestedInputAnalysis({
         request_analysis: true,
-        analysis_types: ['idea_organize', 'content_extract'],
+        analysis_types: ['idea_organize', 'content_extract', 'action'],
       }),
-    ).toEqual(['idea_organize', 'content_extract']);
+    ).toEqual(['idea_organize', 'content_extract', 'action']);
   });
 });
 

@@ -1,4 +1,9 @@
-import type { PrivacyDecisionStatus, TaskStatus } from './local-core.js';
+import type {
+  AnalysisTaskRef,
+  PrivacyDecisionStatus,
+  ResourceRef,
+  TaskStatus,
+} from './local-core.js';
 
 /**
  * @deprecated 旧 Socket.IO request/response 事件名，仅供兼容层使用。
@@ -162,8 +167,18 @@ export type ToolUndoCompletedEventV1 = ServerPushEventBaseV1<
 >;
 export type CandidateEventV1 = ServerPushEventBaseV1<
   "candidate",
-  { candidate_id: string; batch_id: string; kind: string }
->;
+  {
+    analysis_ref: ResourceRef & { kind: 'analysis_run' };
+    batch_ref: ResourceRef & { kind: 'confirmation_batch' };
+    candidate_refs: Array<ResourceRef & { kind: 'candidate' }>;
+    task_ref: AnalysisTaskRef;
+    candidate_count: number;
+    risk_level: 'normal' | 'high';
+    /** 已过滤敏感信息的短摘要；完整候选只能通过 REST 查询。 */
+    safe_summary: string;
+    occurred_at: number;
+  }
+> & { task_id: string };
 export type ReminderEventV1 = ServerPushEventBaseV1<
   "reminder",
   { reminder_instance_id: string }

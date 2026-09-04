@@ -39,6 +39,7 @@ export class LocalCoreOperationEntity {
 }
 
 @Entity({ name: 'chat_tasks' })
+@Unique('chat_tasks_owner_id_key', ['ownerId', 'id'])
 @Index('chat_tasks_owner_updated_idx', ['ownerId', 'updatedAt'])
 export class ChatTaskEntity {
   @PrimaryColumn({ type: 'uuid' }) id: string;

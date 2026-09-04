@@ -3,15 +3,18 @@ const {
   ACTION_PLAN_STATUSES,
   ACTION_TIMELINESS_STATUSES,
   ANALYSIS_TYPES,
+  ANALYSIS_RUN_STATUSES,
   BUSINESS_OBJECT_ACTIONS,
   CANDIDATE_STATUSES,
   CONFIRMATION_DECISIONS,
   ERRORS,
   GOAL_STATUSES,
   SENSITIVE_CATEGORIES,
+  STRUCTURED_ANALYSIS_STATUSES,
   UNDO_BLOCKING_REASON_CODES,
   WS_CONTROL_EVENTS,
 } = require("../dist");
+const localCoreFacade = require("../dist/local-core");
 
 describe("Local Core v1 contract constants", () => {
   it("freezes the P0-4 goal and action states", () => {
@@ -98,6 +101,7 @@ describe("Local Core v1 contract constants", () => {
       "experience_review",
       "problem_analysis",
       "content_extract",
+      "action",
     ]);
     expect(new Set(ANALYSIS_TYPES).size).toBe(ANALYSIS_TYPES.length);
 
@@ -108,6 +112,23 @@ describe("Local Core v1 contract constants", () => {
       analysis_types: [ANALYSIS_TYPES[1]],
     };
     expect(explicitAnalysisExample.analysis_types).toEqual(["experience_review"]);
+  });
+
+  it("freezes the persisted analysis lifecycle", () => {
+    expect(ANALYSIS_RUN_STATUSES).toEqual([
+      "queued",
+      "running",
+      "completed",
+      "partially_completed",
+      "failed",
+      "cancelled",
+    ]);
+    expect(STRUCTURED_ANALYSIS_STATUSES).toEqual([
+      "valid",
+      "partially_valid",
+      "invalid",
+    ]);
+    expect(localCoreFacade.ANALYSIS_TYPES).toBe(ANALYSIS_TYPES);
   });
 
   it("freezes the privacy decision safe category vocabulary", () => {

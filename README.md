@@ -2,7 +2,7 @@
 
 紫灵AI 是一个面向个人长期信息管理、行动跟踪、目标管理和决策辅助的个人助手项目。
 
-当前仓库同时保存产品需求、架构设计和产品自有代码。Monorepo、共享契约、持久会话、隐私外发决定闭环、外发审计强保证与递归敏感扫描、确认事务、WS v1 和 Expo 首条正式聊天主链路已经落地；首次订阅恢复仍待加固，正式 Action 业务闭环尚未实现。
+当前仓库同时保存产品需求、架构设计和产品自有代码。Monorepo、共享契约、持久会话、隐私外发决定闭环、外发审计强保证与递归敏感扫描、确认事务、WS v1 和 Expo 首条正式聊天主链路已经落地；阶段 0 可靠性与安全门槛已关闭，P1-01「Action 分析契约与数据基础」已经完成，下一步进入 P1-02「Action 候选生产链」。正式 Action 业务闭环尚未实现。
 
 ## 仓库边界
 
@@ -76,8 +76,10 @@ git -C pi pull
 - Expo / React Native 前端只使用正式 v1 REST/WS 协议，支持订阅 ACK、事件去重、水位和 REST 恢复；
 - Model Gateway 已建立递归结构扫描、递归脱敏与复扫、脱敏/等待/阻断策略、单次决定持久化及重启恢复闭环；无明文 PostgreSQL 审计已成为 Provider 调用前的可等待门槛，审计失败时以 `EGRESS_001` 阻止外发；
 - `SubmitTextInput` 已显式校验 `request_analysis` / `analysis_types`；分析能力上线前，合法显式分析请求同步返回可幂等重放的 `NOT_IMPLEMENTED_001`，不创建消息、原始记录或 ChatTask；
+- P1-01 已将 `action` 纳入权威 `ANALYSIS_TYPES`，冻结 Action DTO、`AnalysisTaskRef` 与 WS `candidate` 安全资源引用；`local-core.ts` 已拆分为 463 行，并新增 `local-core-analysis.ts`、`local-core-model.ts`、`local-core-queries.ts`；
+- 已新增 `analysis_runs`、`structured_analyses` 实体与第 8 条 migration，具备 owner、OriginalRecord、ChatTask 复合所有权约束、状态约束和必要索引；
 - `SubmitConfirmationBatch` 已按逐项决策、批次/候选/目标版本接通 PostgreSQL 原子事务；正式事实、目标、行动和长期记忆的其余 handler 仍需逐项接通，且只能经该事务生效；
-- PostgreSQL 16.15 的全量 migration up → down → up、约束、确认事务、聊天闭环及重启恢复已验证。
+- PostgreSQL 16.15 的阶段 0 原有 7 条 migration 曾完成全量 up → down → up；P1-01 新增的第 8 条 migration 已单独完成 up → down → up，约束专项 5/5 通过，最终 8/8 已应用。确认事务、聊天闭环及重启恢复也已有验证记录。
 
 ## 后续启动顺序
 
@@ -85,8 +87,8 @@ git -C pi pull
 
 恢复开发后，建议按以下顺序推进：
 
-1. 先关闭 WS 首次订阅和 token 接线的剩余可靠性门槛；
-2. 打通“文字输入 → Action 候选 → 确认中心 → 正式 Action → 执行页 → 撤销”的首个业务纵切；
+1. 执行 P1-02「Action 候选生产链」，实现严格提案工具、服务端校验、候选事务和安全 `candidate` 事件；
+2. 候选 DTO 稳定后打通“文字输入 → Action 候选 → 确认中心 → 正式 Action → 执行页 → 撤销”的首个业务纵切；
 3. 使用确定性 Agent 完成自动回归，并以真实模型和 Expo 设备联调作为最终验收；
 4. 业务闭环稳定后再扩展 Goal/Memory、上下文摘要和 Python AI/RAG。
 

@@ -16,11 +16,16 @@ import {
   SourceRelationEntity,
 } from './entities/core/object-history.entity.js';
 import { UserEntity } from './entities/core/user.entity.js';
+import {
+  AnalysisRunEntity,
+  StructuredAnalysisEntity,
+} from './entities/core/analysis.entity.js';
 import { CHAT_TASK_ENTITIES } from './entities/chat-task.entity.js';
 import { EgressAuditEntity } from './entities/egress-audit.entity.js';
 import { EgressDecisionRequestEntity } from './entities/egress-decision-request.entity.js';
 
 export * from './entities/core/core.types.js';
+export * from './entities/core/analysis.entity.js';
 export * from './entities/core/user.entity.js';
 export * from './entities/core/confirmation.entity.js';
 export * from './entities/core/business-object.entity.js';
@@ -30,6 +35,8 @@ export * from './entities/core/object-history.entity.js';
 /** 生产 DataSource 与测试共用的 Local Core 实体清单。 */
 export const CORE_ENTITIES = [
   UserEntity,
+  AnalysisRunEntity,
+  StructuredAnalysisEntity,
   ConfirmationBatchEntity,
   CandidateItemEntity,
   ConfirmationActionEntity,
