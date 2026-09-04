@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.venv/
+venv/
+__pycache__/
+
+# Local reference repositories
+/pi/
+
+# Build output
+/dist/
+/build/
+coverage/
+.next/
+.expo/
+.turbo/
+target/
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data and runtime state
+data/
+storage/
+uploads/
+*.sqlite
+*.sqlite3
+*.db
+.pi_config/
