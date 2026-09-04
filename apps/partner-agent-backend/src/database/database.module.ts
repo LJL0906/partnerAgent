@@ -14,6 +14,12 @@ import {
   MemoryEgressAuditStore,
   TypeOrmEgressAuditStore,
 } from './egress-audit.store.js';
+import {
+  EGRESS_DECISION_STORE,
+  type EgressDecisionStore,
+} from '../model-gateway/egress-decision.store.js';
+import { MemoryEgressDecisionStore } from '../model-gateway/memory-egress-decision.store.js';
+import { TypeOrmEgressDecisionStore } from '../model-gateway/typeorm-egress-decision.store.js';
 
 @Module({
   providers: [
@@ -62,7 +68,21 @@ import {
           ? new TypeOrmEgressAuditStore(sessionStore.getDataSource())
           : new MemoryEgressAuditStore(),
     },
+    {
+      provide: EGRESS_DECISION_STORE,
+      inject: [SessionStore],
+      useFactory: (sessionStore: SessionStore): EgressDecisionStore =>
+        sessionStore instanceof TypeOrmSessionStore
+          ? new TypeOrmEgressDecisionStore(sessionStore.getDataSource())
+          : new MemoryEgressDecisionStore(),
+    },
   ],
-  exports: [SessionStore, ToolOperationStore, ChatTaskStore, EgressAuditStore],
+  exports: [
+    SessionStore,
+    ToolOperationStore,
+    ChatTaskStore,
+    EgressAuditStore,
+    EGRESS_DECISION_STORE,
+  ],
 })
 export class DatabaseModule {}

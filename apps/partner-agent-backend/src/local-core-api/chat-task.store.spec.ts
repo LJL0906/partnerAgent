@@ -96,4 +96,22 @@ describe('ChatTaskStore', () => {
       true,
     );
   });
+
+  it('claims a privacy resume exactly once and never through markRunning', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    const accepted = await store.submitText(base);
+    const taskId = accepted.task!.taskId;
+    await store.markRunning(taskId, base.ownerId);
+    await store.markWaiting(taskId, base.ownerId);
+
+    expect(await store.markRunning(taskId, base.ownerId)).toBe(false);
+    expect(await store.claimPrivacyResume(taskId, 'other')).toBeUndefined();
+    expect(await store.claimPrivacyResume(taskId, base.ownerId)).toMatchObject({
+      taskId,
+      state: 'running',
+    });
+    expect(
+      await store.claimPrivacyResume(taskId, base.ownerId),
+    ).toBeUndefined();
+  });
 });

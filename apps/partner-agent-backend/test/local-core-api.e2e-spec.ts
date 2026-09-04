@@ -8,6 +8,11 @@ import { LocalCoreApiModule } from '../src/local-core-api/local-core-api.module.
 import { SessionStore } from '../src/database/session-store.js';
 import { ConfirmationTransactionService } from '../src/local-core-api/confirmation-transaction.service.js';
 import { ChatTaskScheduler } from '../src/local-core-api/chat-task-scheduler.js';
+import { ChatTaskStore } from '../src/local-core-api/chat-task.store.js';
+import {
+  EGRESS_DECISION_STORE,
+  type EgressDecisionStore,
+} from '../src/model-gateway/egress-decision.store.js';
 
 const secret = 'test-secret-that-is-at-least-32-bytes';
 
@@ -38,7 +43,11 @@ describe('Local Core REST API (e2e)', () => {
         })),
       })
       .overrideProvider(ChatTaskScheduler)
-      .useValue({ schedule: vi.fn(), cancel: vi.fn() })
+      .useValue({
+        schedule: vi.fn(),
+        resumeAfterPrivacyDecision: vi.fn(),
+        cancel: vi.fn(),
+      })
       .compile();
     app = moduleFixture.createNestApplication();
     await app.init();
@@ -143,6 +152,58 @@ describe('Local Core REST API (e2e)', () => {
       status: 'completed',
       data: { task_id: taskId, state: 'cancelled' },
     });
+  });
+
+  it('submits an owned privacy decision and exposes no payload plaintext', async () => {
+    const submitted = await request(app.getHttpServer())
+      .post('/api/v1/inputs/text')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(
+        command('operation-before-privacy', {
+          text: 'secret=must-not-leak',
+          input_id: 'input-privacy',
+        }),
+      );
+    const taskId = submitted.body.data.chat_task.task_id as string;
+    const tasks = app.get(ChatTaskStore);
+    await tasks.markRunning(taskId, 'owner');
+    await tasks.markWaiting(taskId, 'owner');
+    const task = await tasks.getTask('owner', taskId);
+    const decisions = app.get<EgressDecisionStore>(EGRESS_DECISION_STORE);
+    const pending = await decisions.createOrGetPending({
+      ownerId: 'owner',
+      taskId,
+      sessionId: task!.sessionId,
+      operationId: task!.operationId,
+      requestFingerprint: 'provider-payload-fingerprint',
+      provider: 'deepseek',
+      modelId: 'model-a',
+      source: 'submit_text_input',
+      categories: ['secret'],
+      ttlMs: 900_000,
+    });
+
+    const hidden = await request(app.getHttpServer())
+      .post('/api/v1/privacy-decisions/submit')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send(command('privacy-other', { egress_id: pending.id, decision: 'allow' }));
+    expect(hidden.status).toBe(404);
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/privacy-decisions/submit')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(command('privacy-owner', { egress_id: pending.id, decision: 'allow' }));
+    expect(response.status).toBe(202);
+    expect(response.body).toMatchObject({
+      status: 'accepted',
+      data: { egress_id: pending.id, decision: 'allow' },
+    });
+    expect(JSON.stringify(response.body)).not.toContain('must-not-leak');
+    expect(
+      (app.get(ChatTaskScheduler).resumeAfterPrivacyDecision as ReturnType<
+        typeof vi.fn
+      >),
+    ).toHaveBeenCalled();
   });
 
   it('keeps command and input retries idempotent and hides cross-owner tasks', async () => {

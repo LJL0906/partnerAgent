@@ -15,6 +15,7 @@ import {
   ChatTaskScheduler,
   PiChatTaskScheduler,
 } from './chat-task-scheduler.js';
+import { PrivacyDecisionService } from './privacy-decision.service.js';
 
 @Module({
   imports: [AuthModule, DatabaseModule, AgentModule],
@@ -26,6 +27,7 @@ import {
     LocalCoreApplicationService,
     ChatTaskEventBus,
     ChatTaskOwnershipService,
+    PrivacyDecisionService,
     PiChatTaskScheduler,
     { provide: ChatTaskScheduler, useExisting: PiChatTaskScheduler },
     {

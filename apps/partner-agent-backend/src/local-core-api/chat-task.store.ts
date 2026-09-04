@@ -61,6 +61,10 @@ export abstract class ChatTaskStore {
     operationId: string,
   ): Promise<boolean>;
   abstract markRunning(taskId: string, ownerId: string): Promise<boolean>;
+  abstract claimPrivacyResume(
+    taskId: string,
+    ownerId: string,
+  ): Promise<StoredChatTask | undefined>;
   abstract markWaiting(taskId: string, ownerId: string): Promise<boolean>;
   abstract markCompleted(
     taskId: string,

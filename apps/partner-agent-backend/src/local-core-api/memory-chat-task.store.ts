@@ -176,6 +176,18 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     task.updatedAt = task.startedAt;
     return true;
   }
+  async claimPrivacyResume(taskId: string, ownerId: string) {
+    const task = this.tasks.get(taskId);
+    if (
+      !task ||
+      task.ownerId !== ownerId ||
+      task.state !== 'waiting_privacy_decision'
+    )
+      return undefined;
+    task.state = 'running';
+    task.updatedAt = new Date();
+    return this.copy(task);
+  }
   async markWaiting(taskId: string, ownerId: string) {
     return this.transition(taskId, ownerId, 'waiting_privacy_decision');
   }
@@ -249,6 +261,8 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       ...task,
       createdAt: new Date(task.createdAt),
       updatedAt: new Date(task.updatedAt),
+      ...(task.startedAt ? { startedAt: new Date(task.startedAt) } : {}),
+      ...(task.completedAt ? { completedAt: new Date(task.completedAt) } : {}),
     };
   }
   private result(

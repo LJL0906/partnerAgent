@@ -1,17 +1,14 @@
-import type { Context, Model, SimpleStreamOptions } from '@earendil-works/pi-ai';
+import type {
+  Context,
+  Model,
+  SimpleStreamOptions,
+} from '@earendil-works/pi-ai';
+import type { SensitiveCategory } from '@partner-agent/contracts';
+
+export type { SensitiveCategory } from '@partner-agent/contracts';
 
 export type EgressDecision =
-  | 'allowed'
-  | 'redacted'
-  | 'pending_user_decision'
-  | 'blocked';
-
-export type SensitiveCategory =
-  | 'identity_document'
-  | 'bank_card'
-  | 'password'
-  | 'api_key'
-  | 'secret';
+  'allowed' | 'redacted' | 'pending_user_decision' | 'blocked';
 
 export interface EgressRequestMetadata {
   ownerId: string;
@@ -41,6 +38,9 @@ export interface ApprovedEgressRequest extends ExternalModelRequest {
 export interface EgressPolicyResult {
   decision: EgressDecision;
   categories: SensitiveCategory[];
+  requestFingerprint?: string;
+  egressId?: string;
+  expiresAt?: Date;
   request?: ApprovedEgressRequest;
 }
 
@@ -55,10 +55,37 @@ export interface EgressAuditRecord {
 }
 
 export class EgressDecisionError extends Error {
+  readonly code: 'EGRESS_001' | 'EGRESS_002';
+
   constructor(
     readonly decision: 'pending_user_decision' | 'blocked',
     readonly categories: readonly SensitiveCategory[],
+    readonly details: {
+      egressId?: string;
+      expiresAt?: Date;
+      provider?: string;
+      modelId?: string;
+      requestFingerprint?: string;
+    } = {},
   ) {
     super(decision === 'blocked' ? '外发已被策略阻止' : '外发等待用户决定');
+    this.name = 'EgressDecisionError';
+    this.code = decision === 'blocked' ? 'EGRESS_001' : 'EGRESS_002';
+  }
+
+  get egressId(): string | undefined {
+    return this.details.egressId;
+  }
+
+  get expiresAt(): Date | undefined {
+    return this.details.expiresAt;
+  }
+
+  get provider(): string | undefined {
+    return this.details.provider;
+  }
+
+  get modelId(): string | undefined {
+    return this.details.modelId;
   }
 }

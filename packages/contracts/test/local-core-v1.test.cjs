@@ -7,6 +7,7 @@ const {
   CONFIRMATION_DECISIONS,
   ERRORS,
   GOAL_STATUSES,
+  SENSITIVE_CATEGORIES,
   UNDO_BLOCKING_REASON_CODES,
   WS_CONTROL_EVENTS,
 } = require("../dist");
@@ -88,5 +89,15 @@ describe("Local Core v1 contract constants", () => {
 
   it("exposes the REST scaffold not-implemented error", () => {
     expect(ERRORS.NOT_IMPLEMENTED_001).toBe("NOT_IMPLEMENTED_001");
+  });
+
+  it("freezes the privacy decision safe category vocabulary", () => {
+    expect(SENSITIVE_CATEGORIES).toEqual([
+      "identity_document",
+      "bank_card",
+      "password",
+      "api_key",
+      "secret",
+    ]);
   });
 });

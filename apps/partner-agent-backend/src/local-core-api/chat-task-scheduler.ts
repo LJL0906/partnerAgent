@@ -1,5 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { PiAgentService } from '../agent/pi-agent.service.js';
+import {
+  EGRESS_DECISION_STORE,
+  type EgressDecisionStore,
+} from '../model-gateway/egress-decision.store.js';
 import { ChatTaskEventBus } from './chat-task-event.bus.js';
 import { ChatTaskStore, type AcceptedChatTask } from './chat-task.store.js';
 
@@ -7,6 +11,7 @@ type AgentEvent = { type: string; data?: unknown; timestamp: number };
 
 export abstract class ChatTaskScheduler {
   abstract schedule(task: AcceptedChatTask): void;
+  abstract resumeAfterPrivacyDecision(task: AcceptedChatTask): void;
   abstract cancel(task: AcceptedChatTask): Promise<void>;
 }
 
@@ -18,12 +23,18 @@ export class PiChatTaskScheduler extends ChatTaskScheduler {
     private readonly agent: PiAgentService,
     private readonly store: ChatTaskStore,
     private readonly events: ChatTaskEventBus,
+    @Inject(EGRESS_DECISION_STORE)
+    private readonly decisions: EgressDecisionStore,
   ) {
     super();
   }
 
   schedule(task: AcceptedChatTask): void {
-    void this.run(task);
+    void this.run(task, 'initial');
+  }
+
+  resumeAfterPrivacyDecision(task: AcceptedChatTask): void {
+    void this.run(task, 'privacy_resume');
   }
 
   async cancel(task: AcceptedChatTask): Promise<void> {
@@ -37,8 +48,15 @@ export class PiChatTaskScheduler extends ChatTaskScheduler {
     }
   }
 
-  private async run(task: AcceptedChatTask): Promise<void> {
-    if (!(await this.store.markRunning(task.taskId, task.ownerId))) {
+  private async run(
+    task: AcceptedChatTask,
+    mode: 'initial' | 'privacy_resume',
+  ): Promise<void> {
+    const claimed =
+      mode === 'initial'
+        ? (await this.store.markRunning(task.taskId, task.ownerId)) && task
+        : await this.store.claimPrivacyResume(task.taskId, task.ownerId);
+    if (!claimed) {
       this.cancelledTasks.delete(task.taskId);
       return;
     }
@@ -64,8 +82,21 @@ export class PiChatTaskScheduler extends ChatTaskScheduler {
       )) {
         if (this.cancelledTasks.has(task.taskId)) return;
         if (event.type === 'privacy_decision_required') {
-          await this.store.markWaiting(task.taskId, task.ownerId);
-          this.state(task, 'waiting_privacy_decision');
+          const decision = await this.decisions.findCurrentForTask(
+            task.taskId,
+            task.ownerId,
+          );
+          if (!decision || decision.state !== 'pending') {
+            throw new Error('隐私等待记录未持久化');
+          }
+          if (!(await this.store.markWaiting(task.taskId, task.ownerId))) return;
+          this.state(task, 'waiting_privacy_decision', {
+            egress_id: decision.id,
+            categories: [...decision.categories],
+            provider: decision.provider,
+            model_id: decision.modelId,
+            expires_at: decision.expiresAt.toISOString(),
+          });
           return;
         }
         if (event.type === 'error') {

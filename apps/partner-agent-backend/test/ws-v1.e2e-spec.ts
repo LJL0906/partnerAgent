@@ -174,6 +174,62 @@ describe('WS v1 subscriptions (e2e)', () => {
     });
   });
 
+  it('publishes only the safe privacy decision recovery summary', async () => {
+    const client = await connect('owner');
+    await subscribe(client, {
+      request_id: 'subscribe-privacy-decision',
+      channels: [`task:${ownedTaskId}`],
+    });
+
+    const eventPromise = nextAgentEvent(client);
+    taskEvents.publish({
+      ownerId: 'owner',
+      taskId: ownedTaskId,
+      operationId: ownedOperationId,
+      sessionId: 'owned-session',
+      state: 'waiting_privacy_decision',
+      type: 'state_changed',
+      data: {
+        privacyDecision: {
+          egressId: 'egress-safe-id',
+          categories: ['api_key'],
+          provider: 'deepseek',
+          modelId: 'deepseek-chat',
+          expiresAt: '2026-09-04T12:15:00.000Z',
+          matchedText: 'sk-sensitive-plaintext',
+          request: { authorization: 'Bearer sensitive-token' },
+        },
+      },
+    });
+
+    const event = await eventPromise;
+    expect(event).toMatchObject({
+      event_type: 'task_state',
+      data: {
+        state: 'waiting_privacy_decision',
+        privacy_decision: {
+          egress_id: 'egress-safe-id',
+          categories: ['api_key'],
+          provider: 'deepseek',
+          model_id: 'deepseek-chat',
+          expires_at: '2026-09-04T12:15:00.000Z',
+        },
+      },
+    });
+    expect(event.data).toEqual({
+      state: 'waiting_privacy_decision',
+      privacy_decision: {
+        egress_id: 'egress-safe-id',
+        categories: ['api_key'],
+        provider: 'deepseek',
+        model_id: 'deepseek-chat',
+        expires_at: '2026-09-04T12:15:00.000Z',
+      },
+    });
+    expect(JSON.stringify(event)).not.toContain('sensitive-plaintext');
+    expect(JSON.stringify(event)).not.toContain('sensitive-token');
+  });
+
   it('orders live events and replays events after a known event id', async () => {
     const firstClient = await connect('owner');
     await subscribe(firstClient, {

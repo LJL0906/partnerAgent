@@ -1,6 +1,8 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import {
+  SENSITIVE_CATEGORIES,
   WS_EVENTS,
+  type PrivacyDecisionStatus,
   type ServerPushEventTypeV1,
   type ServerPushEventV1,
   type SubscribeRequestV1,
@@ -226,7 +228,14 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
       }
       return {
         eventType: 'task_state',
-        data: { state: event.state },
+        data: {
+          state: event.state,
+          ...(event.state === 'waiting_privacy_decision'
+            ? {
+                privacy_decision: this.privacyDecisionStatus(event.data),
+              }
+            : {}),
+        },
       };
     }
 
@@ -267,6 +276,50 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         this.toSnakeCase(entry),
       ]),
     );
+  }
+
+  private privacyDecisionStatus(
+    value: unknown,
+  ): PrivacyDecisionStatus | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return undefined;
+    }
+    const data = value as Record<string, unknown>;
+    const nested = data.privacy_decision ?? data.privacyDecision ?? data;
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
+      return undefined;
+    }
+    const decision = nested as Record<string, unknown>;
+    const egressId = decision.egress_id ?? decision.egressId;
+    const modelId = decision.model_id ?? decision.modelId;
+    const expiresAt = decision.expires_at ?? decision.expiresAt;
+    if (
+      !this.isNonEmptyString(egressId) ||
+      !this.isNonEmptyString(decision.provider) ||
+      !this.isNonEmptyString(modelId) ||
+      !this.isNonEmptyString(expiresAt) ||
+      !Array.isArray(decision.categories) ||
+      !decision.categories.every(
+        (category) =>
+          typeof category === 'string' &&
+          SENSITIVE_CATEGORIES.includes(
+            category as (typeof SENSITIVE_CATEGORIES)[number],
+          ),
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      egress_id: egressId,
+      categories: decision.categories as PrivacyDecisionStatus['categories'],
+      provider: decision.provider,
+      model_id: modelId,
+      expires_at: expiresAt,
+    };
+  }
+
+  private isNonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0;
   }
 
   private removeInternalDetails(value: unknown): unknown {

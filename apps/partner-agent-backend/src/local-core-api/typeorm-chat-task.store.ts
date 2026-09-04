@@ -241,6 +241,30 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       );
     return Boolean(result.affected);
   }
+  async claimPrivacyResume(taskId: string, ownerId: string) {
+    const claimed = await this.dataSource.transaction(async (manager) => {
+      const result = await manager
+        .createQueryBuilder()
+        .update(ChatTaskEntity)
+        .set({ state: 'running', updatedAt: () => 'CURRENT_TIMESTAMP' })
+        .where(
+          'id = :taskId and owner_id = :ownerId and state = :waitingState',
+          {
+            taskId,
+            ownerId,
+            waitingState: 'waiting_privacy_decision',
+          },
+        )
+        .returning('*')
+        .execute();
+      return result.raw[0] as ChatTaskEntity | undefined;
+    });
+    if (!claimed) return undefined;
+    const task = await this.dataSource
+      .getRepository(ChatTaskEntity)
+      .findOneBy({ id: taskId, ownerId });
+    return task ? this.loadStored(this.dataSource.manager, task) : undefined;
+  }
   async markWaiting(taskId: string, ownerId: string) {
     return this.updateState(taskId, ownerId, 'waiting_privacy_decision');
   }
@@ -361,6 +385,8 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       ...(task.errorMessage ? { errorMessage: task.errorMessage } : {}),
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
+      ...(task.startedAt ? { startedAt: task.startedAt } : {}),
+      ...(task.completedAt ? { completedAt: task.completedAt } : {}),
     };
   }
   private async findOperation(

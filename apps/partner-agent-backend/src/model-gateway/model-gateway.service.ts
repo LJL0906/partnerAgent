@@ -44,9 +44,12 @@ export class ModelGatewayService implements OnModuleInit {
 
     this.models = models;
 
-    const provider = this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
+    const provider =
+      this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
     const modelCount = models.getModels(provider).length;
-    this.logger.log(`Model Gateway 初始化完成: ${provider} (${modelCount} 个模型)`);
+    this.logger.log(
+      `Model Gateway 初始化完成: ${provider} (${modelCount} 个模型)`,
+    );
   }
 
   listModels(provider: string): readonly Model<any>[] {
@@ -66,18 +69,29 @@ export class ModelGatewayService implements OnModuleInit {
     const provider = new ModelProviderAdapter((request) =>
       models.streamSimple(request.model, request.context, request.options),
     );
-    return (model: Model<any>, context: Context, options?: SimpleStreamOptions) => {
+    return async (
+      model: Model<any>,
+      context: Context,
+      options?: SimpleStreamOptions,
+    ) => {
       const external = this.requestBuilder.build(
         { ...metadata, provider: model.provider },
         model,
         context,
         options,
       );
-      const result = this.egressPolicy.evaluate(external);
+      const result = await this.egressPolicy.evaluate(external);
       if (!result.request) {
         throw new EgressDecisionError(
           result.decision as 'blocked' | 'pending_user_decision',
           result.categories,
+          {
+            egressId: result.egressId,
+            expiresAt: result.expiresAt,
+            provider: model.provider,
+            modelId: model.id,
+            requestFingerprint: result.requestFingerprint,
+          },
         );
       }
       return provider.stream(result.request);

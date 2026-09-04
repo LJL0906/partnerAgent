@@ -2,7 +2,7 @@
 
 紫灵AI 是一个面向个人长期信息管理、行动跟踪、目标管理和决策辅助的个人助手项目。
 
-当前仓库同时保存产品需求、架构设计和产品自有代码。Monorepo、共享契约、持久会话、外发策略边界、确认事务、WS v1 和 Expo 首条正式聊天主链路已经落地；首次订阅恢复、隐私决定和审计强保证仍待加固，正式 Action 业务闭环尚未实现。
+当前仓库同时保存产品需求、架构设计和产品自有代码。Monorepo、共享契约、持久会话、隐私外发决定闭环、确认事务、WS v1 和 Expo 首条正式聊天主链路已经落地；首次订阅恢复和审计强保证仍待加固，正式 Action 业务闭环尚未实现。
 
 ## 仓库边界
 
@@ -70,11 +70,11 @@ git -C pi pull
 - 使用 HS256 JWT 的 `sub` 识别可信用户；
 - 支持按用户校验 `sessionId` 所有权、隔离限额、取消，以及带消息序号水位和完整工具上下文的会话恢复；
 - 已接入无副作用的 `get_current_time` 工具；
-- `/api/v1` 已登记 36 个 Command 和 37 个 Query，健康检查、会话/任务查询、`SubmitTextInput`、`CancelTask` 和 `SubmitConfirmationBatch` 已接通，其余 handler 显式返回 501；
+- `/api/v1` 已登记 36 个 Command 和 37 个 Query，健康检查、会话/任务查询、`SubmitTextInput`、`CancelTask`、`SubmitPrivacyDecision` 和 `SubmitConfirmationBatch` 已接通，其余 handler 显式返回 501；
 - Local Core Entity/Migration 已加固，复用并扩展现有会话/消息表，候选 24 小时期限和高风险单候选由数据库约束；
 - `/ws/v1` 已基于 PostgreSQL 权威数据授权 session/task/operation 频道，并支持顺序推送、已有水位的断线重放和 REST 恢复提示；首次无水位订阅后的 REST 对账仍待加固；旧 Agent WS 仅保留兼容；
 - Expo / React Native 前端只使用正式 v1 REST/WS 协议，支持订阅 ACK、事件去重、水位和 REST 恢复；
-- Model Gateway 已建立外发扫描、脱敏/等待/阻断策略和无明文 PostgreSQL 审计基础；隐私决定恢复、递归结构扫描和审计失败时阻止 Provider 仍待加固；
+- Model Gateway 已建立外发扫描、脱敏/等待/阻断策略、单次决定持久化及重启恢复闭环和无明文 PostgreSQL 审计基础；递归结构扫描和审计失败时阻止 Provider 仍待加固；
 - `SubmitConfirmationBatch` 已按逐项决策、批次/候选/目标版本接通 PostgreSQL 原子事务；正式事实、目标、行动和长期记忆的其余 handler 仍需逐项接通，且只能经该事务生效；
 - PostgreSQL 16.15 的全量 migration up → down → up、约束、确认事务、聊天闭环及重启恢复已验证。
 
@@ -84,7 +84,7 @@ git -C pi pull
 
 恢复开发后，建议按以下顺序推进：
 
-1. 先关闭 WS 首次订阅、隐私决定、审计强保证、结构化敏感扫描和 token 接线的可靠性门槛；
+1. 先关闭 WS 首次订阅、审计强保证、结构化敏感扫描和 token 接线的可靠性门槛；
 2. 打通“文字输入 → Action 候选 → 确认中心 → 正式 Action → 执行页 → 撤销”的首个业务纵切；
 3. 使用确定性 Agent 完成自动回归，并以真实模型和 Expo 设备联调作为最终验收；
 4. 业务闭环稳定后再扩展 Goal/Memory、上下文摘要和 Python AI/RAG。

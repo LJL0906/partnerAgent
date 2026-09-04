@@ -1,4 +1,4 @@
-import type { TaskStatus } from './local-core.js';
+import type { PrivacyDecisionStatus, TaskStatus } from './local-core.js';
 
 /**
  * @deprecated 旧 Socket.IO request/response 事件名，仅供兼容层使用。
@@ -174,7 +174,13 @@ export type SummaryEventV1 = ServerPushEventBaseV1<
 >;
 export type TaskStateEventV1 = ServerPushEventBaseV1<
   "task_state",
-  { state: TaskStatus['state']; error_code?: string; message?: string }
+  {
+    state: TaskStatus['state'];
+    error_code?: string;
+    message?: string;
+    /** 仅 waiting_privacy_decision 状态携带的无明文恢复摘要。 */
+    privacy_decision?: PrivacyDecisionStatus;
+  }
 >;
 export type AgentCancelledEventV1 = ServerPushEventBaseV1<"cancelled", Record<string, never>>;
 export type AgentDoneEventV1 = ServerPushEventBaseV1<"done", Record<string, never>>;

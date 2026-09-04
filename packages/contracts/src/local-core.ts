@@ -309,6 +309,25 @@ export interface SubmitPrivacyDecisionPayload {
   decision: 'allow' | 'redact' | 'block';
 }
 
+/** 外发策略可公开给客户端的敏感类别；只描述类别，不包含命中明文。 */
+export const SENSITIVE_CATEGORIES = [
+  'identity_document',
+  'bank_card',
+  'password',
+  'api_key',
+  'secret',
+] as const;
+export type SensitiveCategory = (typeof SENSITIVE_CATEGORIES)[number];
+
+/** 等待隐私决定时用于 REST/WS 恢复的安全摘要。 */
+export interface PrivacyDecisionStatus {
+  egress_id: string;
+  categories: SensitiveCategory[];
+  provider: string;
+  model_id: string;
+  expires_at: string;
+}
+
 /** 记录建议采纳、拒绝或暂不处理。不自动创建行动。 */
 export interface RecordSuggestionFeedbackPayload {
   suggestion_id: string;
@@ -630,6 +649,8 @@ export interface TaskStatus {
   progress?: number;
   error?: string;
   result_ref?: ResourceRef;
+  /** 仅 waiting_privacy_decision 状态返回；不得包含命中明文或完整请求。 */
+  privacy_decision?: PrivacyDecisionStatus;
 }
 export interface GetCoreHealthQuery {}
 export interface CoreHealth {

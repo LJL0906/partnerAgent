@@ -13,6 +13,7 @@ import type {
 import { ConfirmationTransactionService } from './confirmation-transaction.service.js';
 import { ChatTaskConflictError, ChatTaskStore } from './chat-task.store.js';
 import { ChatTaskScheduler } from './chat-task-scheduler.js';
+import { PrivacyDecisionService } from './privacy-decision.service.js';
 
 @Injectable()
 export class LocalCoreApplicationService extends LocalCoreApplicationPort {
@@ -21,6 +22,7 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     private readonly confirmationTransaction: ConfirmationTransactionService,
     private readonly chatTasks: ChatTaskStore,
     private readonly scheduler: ChatTaskScheduler,
+    private readonly privacyDecisions: PrivacyDecisionService,
   ) {
     super();
   }
@@ -34,6 +36,9 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     }
     if (command === 'CancelTask') {
       return this.cancelTask(request);
+    }
+    if (command === 'SubmitPrivacyDecision') {
+      return this.privacyDecisions.submit(request);
     }
     if (command === 'SubmitConfirmationBatch') {
       return this.confirmationTransaction.submit(request);
@@ -141,6 +146,10 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
         request.envelope,
       );
       if (cancelled.task?.state === 'cancelled') {
+        await this.privacyDecisions.cancelForTask(
+          cancelled.task.taskId,
+          cancelled.task.ownerId,
+        );
         await this.scheduler.cancel(cancelled.task);
       }
       return cancelled.result;
@@ -155,9 +164,14 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     if (!task) {
       throw new NotFoundException({ code: 'AUTH_002', message: '任务不存在' });
     }
+    const privacyDecision =
+      task.state === 'waiting_privacy_decision'
+        ? await this.privacyDecisions.currentForTask(task.taskId, task.ownerId)
+        : undefined;
     return {
       task_id: task.taskId,
       state: task.state,
+      ...(privacyDecision ? { privacy_decision: privacyDecision } : {}),
       ...(task.errorMessage ? { error: task.errorMessage } : {}),
       ...(task.errorCode ? { error_code: task.errorCode } : {}),
       ...(task.resultMessageId
