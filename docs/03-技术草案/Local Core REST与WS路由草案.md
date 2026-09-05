@@ -66,6 +66,7 @@
 | 路由 | Query |
 |---|---|
 | `GET /api/v1/chat-sessions/:sessionId` | `GetChatSessionQuery` |
+| `GET /api/v1/chat-sessions` | `ListChatSessionsQuery`（当前用户的会话摘要；详情与列表附活动/最近任务引用供恢复） |
 | `GET /api/v1/original-records/:recordId` | `GetOriginalRecordQuery` |
 | `GET /api/v1/attachments/:attachmentId/status` | `GetAttachmentStatusQuery` |
 | `GET /api/v1/analysis-runs/:analysisRunId` | `GetAnalysisRunQuery` |

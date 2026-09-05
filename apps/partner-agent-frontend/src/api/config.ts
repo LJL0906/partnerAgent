@@ -5,6 +5,7 @@ import { requireResolvedServerUrl, resolveServerUrl } from './server-url';
 
 const serverUrlResolution = resolveServerUrl({
   environmentUrl: process.env.EXPO_PUBLIC_SERVER_URL,
+  webEnvironmentUrl: process.env.EXPO_PUBLIC_WEB_SERVER_URL,
   expoHostUri: Constants.expoConfig?.hostUri,
   legacyDebuggerHost: Constants.expoGoConfig?.debuggerHost,
   platform: Platform.OS,

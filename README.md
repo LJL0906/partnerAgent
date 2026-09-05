@@ -72,9 +72,11 @@ git -C pi pull
 - 正式 `/ws/v1` 已承载工具批准、拒绝和撤销，工具结果可持久恢复；WS 事件在 PostgreSQL 中保留最近 100 条/流并支持游标重放；
 - P0 决策已收口为正式基线，`@partner-agent/contracts` 提供 REST Command/Query 与 WebSocket v1 共享契约；
 - 使用 HS256 JWT 的 `sub` 识别可信用户；
+- 正式用户名密码注册、登录、刷新和退出已接入；Web 使用 HttpOnly 刷新 Cookie，Native 使用 SecureStore。账户为第 16 条迁移，旧开发身份不自动合并；
+- 会话列表、历史切换、续聊、重新打开恢复和消息贴底策略已实现并完成 Web 验证；Android Expo Go 键盘聚焦修复仍待真机验收；
 - 支持按用户校验 `sessionId` 所有权、隔离限额、取消，以及带消息序号水位和完整工具上下文的会话恢复；
 - 已接入无副作用的 `get_current_time` 工具；
-- `/api/v1` 已登记 36 个 Command 和 37 个 Query，健康检查、会话/任务查询、`SubmitTextInput`、`CancelTask`、`SubmitPrivacyDecision` 和 `SubmitConfirmationBatch` 已接通，其余 handler 显式返回 501；
+- `/api/v1` 已登记 36 个 Command 和 38 个 Query，健康检查、会话列表/详情与任务查询、`SubmitTextInput`、`CancelTask`、`SubmitPrivacyDecision` 和 `SubmitConfirmationBatch` 已接通，其余 handler 显式返回 501；
 - Local Core Entity/Migration 已加固，复用并扩展现有会话/消息表，候选 24 小时期限和高风险单候选由数据库约束；
 - `/ws/v1` 已基于 PostgreSQL 权威数据授权 session/task/operation 频道，并支持顺序推送、已有水位的断线重放、LISTEN 重连主动 catch-up 和保留窗缺口的 REST 恢复提示；旧 Agent WS 已移出默认模块图，只允许开发环境显式启用兼容；
 - ChatTask 生命周期和工具确认/拒绝/执行结果/撤销通知均已使用各自的 transactional outbox；relay 以稳定幂等键、lease/fence、同会话头阻塞和有限重试投递 WS stream；
@@ -95,12 +97,14 @@ git -C pi pull
 
 恢复开发后，建议按以下顺序推进：
 
-1. 固化并推送 2026 年 9 月 5 日技术、风险和文档收口基线；
-2. 继续部署侧工作时补 Prometheus 抓取/告警与备份恢复演练；个人单实例使用不安排双实例故障注入或容量压测；
-3. 按用户安排于 2026 年 9 月 6 日恢复业务开发，再执行 P1-02「Action 候选生产链」，打通首个 Action 业务纵切；
-4. 业务闭环稳定后再评审 Goal/Memory、上下文摘要和 Python AI/RAG，不预先引入 Redis/BullMQ、LangGraph 或 pgvector。
+1. 用户已于 2026 年 9 月 5 日调整路线：优先完成日常聊天，原定 9 月 6 日进入 P1-02 的安排取消；P1-02 暂缓，未设恢复日期；
+2. [聊天会话连续性](docs/05-任务架构/2026-09-05-聊天会话连续性.md) 和 [用户名密码登录闭环](docs/05-任务架构/2026-09-05-用户名密码登录闭环.md) 已实现，先完成 Android Expo Go 登录、键盘、滚动、会话恢复验收，再补齐草稿、失败处理等聊天功能；先保证功能完整，样式后续优化；
+3. 聊天稳定后验证可校验、可追溯的结构化提案，再按需接正式业务确认和管理；正式对象仍只能通过确认事务生效；
+4. 部署侧后续补 Prometheus 抓取/告警与备份恢复演练；不预先引入 Redis/BullMQ、LangGraph、pgvector 或 Python AI/RAG。
 
 ## 仓库拆分原则
+
+本轮集成验证：build、lint 通过；contracts 12、后端 325、前端 112 项单元测试通过，共 449 项；memory e2e 121 项通过，真实 PostgreSQL 的 20 项本轮未运行。此前独立账户验收已完成 16 条迁移 up → down → up 及 8 项真实库账户测试，详见账户记录；不得把历史技术底座的 15 条迁移记录当作当前迁移数量。
 
 当前不按语言或框架拆分仓库。只要前端、NestJS 和 Python 服务仍然共同服务于同一个产品、需要同步接口和需求，就继续使用本仓库。
 

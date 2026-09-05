@@ -1,3 +1,4 @@
+import { postgresSessionTaskRefs } from './会话任务引用.js';
 import { randomUUID } from 'node:crypto';
 import { DataSource, IsNull, type EntityManager } from 'typeorm';
 import { ChatSessionEntity } from '../database/entities/chat-session.entity.js';
@@ -268,6 +269,10 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       return { result, task: await this.loadStored(manager, task) };
     });
   }
+  async getSessionTaskRefs(ownerId: string, sessionId: string) {
+    return postgresSessionTaskRefs(this.dataSource, ownerId, sessionId);
+  }
+
   async getTask(ownerId: string, taskId: string) {
     const task = await this.dataSource
       .getRepository(ChatTaskEntity)

@@ -17,6 +17,8 @@ export interface StoredSession {
 }
 
 export abstract class SessionStore {
+  /** 返回当前用户的会话，不携带 Agent 内部上下文。 */
+  abstract list(ownerId: string): Promise<StoredSession[]>;
   abstract find(
     sessionId: string,
     ownerId?: string,

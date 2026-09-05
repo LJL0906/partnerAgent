@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { ChatTaskEntity } from './entities/chat-task.entity.js';
+import { postgresSessionTaskRefs } from '../local-core-api/会话任务引用.js';
 import { ConfigService } from '@nestjs/config';
 import { DataType, newDb } from 'pg-mem';
 import type { DataSource } from 'typeorm';
@@ -11,6 +14,7 @@ import { ToolExecutionReceiptEntity } from './entities/tool-execution-receipt.en
 import { TypeOrmToolOperationStore } from '../tools/typeorm-tool-operation.store.js';
 
 const entities = [
+  ChatTaskEntity,
   ChatSessionEntity,
   SessionMessageEntity,
   ToolConfirmationEntity,
@@ -135,6 +139,48 @@ describe('TypeOrmSessionStore', () => {
       { role: 'user', content: '第一轮问题' },
       { role: 'assistant', content: [{ type: 'text', text: '第一轮回答' }] },
     ]);
+    await storeB.createIfAllowed('other-owner', 'user-b', 10);
+    const listed = await storeB.list('user-a');
+    expect(listed.map((session) => session.id)).toEqual(['persistent']);
+    expect(listed[0].messages).toHaveLength(3);
+    expect(listed[0].contextMessages).toEqual([]);
+    await expect(storeB.list('unknown')).resolves.toEqual([]);
+    const taskRepository = dataSourceB.getRepository(ChatTaskEntity);
+    const taskId = randomUUID();
+    await taskRepository.insert({
+      id: taskId,
+      ownerId: 'user-a',
+      sessionId: 'persistent',
+      operationId: 'recover-operation',
+      inputId: 'recover-input',
+      originalRecordId: randomUUID(),
+      userMessageId: randomUUID(),
+      state: 'waiting_tool_approval',
+      createdAt: now,
+      updatedAt: now,
+    });
+    await expect(
+      postgresSessionTaskRefs(dataSourceB, 'user-a', 'persistent'),
+    ).resolves.toEqual({
+      active_task: {
+        task_id: taskId,
+        operation_id: 'recover-operation',
+        state: 'waiting_tool_approval',
+      },
+      latest_task: {
+        task_id: taskId,
+        operation_id: 'recover-operation',
+        state: 'waiting_tool_approval',
+      },
+    });
+    await expect(
+      postgresSessionTaskRefs(dataSourceB, 'user-b', 'persistent'),
+    ).resolves.toEqual({});
+    await taskRepository.update({ id: taskId }, { state: 'completed' });
+    expect(
+      await postgresSessionTaskRefs(dataSourceB, 'user-a', 'persistent'),
+    ).not.toHaveProperty('active_task');
+
     const operationStoreB = new TypeOrmToolOperationStore(dataSourceB);
     await expect(
       operationStoreB.findConfirmation('00000000-0000-4000-8000-000000000001'),

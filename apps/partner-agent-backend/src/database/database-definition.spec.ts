@@ -5,17 +5,19 @@ import {
 } from './database-definition.js';
 import { AddToolReconciliation1788512000000 } from './migrations/1788512000000-add-tool-reconciliation.js';
 import { AddToolControlOutboxRemediation1788513000000 } from './migrations/1788513000000-add-tool-control-outbox-remediation.js';
+import { CreateAccountTables1788514000000 } from './migrations/1788514000000-create-account-tables.js';
 
 describe('database definition', () => {
   it('registers the latest reversible migration exactly once', () => {
     expect(DATABASE_MIGRATIONS.at(-1)).toBe(
-      AddToolControlOutboxRemediation1788513000000,
+      CreateAccountTables1788514000000,
     );
     expect(
       DATABASE_MIGRATIONS.filter(
         (migration) => migration === AddToolReconciliation1788512000000,
       ),
     ).toHaveLength(1);
+    expect(DATABASE_MIGRATIONS.filter((migration) => migration === CreateAccountTables1788514000000)).toHaveLength(1);
     expect(
       DATABASE_MIGRATIONS.filter(
         (migration) =>

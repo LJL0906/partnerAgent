@@ -8,6 +8,7 @@ export type ServerUrlSource =
 
 export interface ResolveServerUrlOptions {
   environmentUrl?: string;
+  webEnvironmentUrl?: string;
   expoHostUri?: string;
   legacyDebuggerHost?: string;
   platform: ServerUrlPlatform;
@@ -73,7 +74,9 @@ function developmentPlatformFallback(platform: ServerUrlPlatform): string | unde
 }
 
 export function resolveServerUrl(options: ResolveServerUrlOptions): ServerUrlResolution {
-  const configuredUrl = options.environmentUrl?.trim();
+  const configuredUrl = (options.platform === 'web'
+    ? options.webEnvironmentUrl?.trim() || options.environmentUrl
+    : options.environmentUrl)?.trim();
   if (configuredUrl) {
     const serverUrl = normalizeHttpUrl(configuredUrl);
     if (!serverUrl) {

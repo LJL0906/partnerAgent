@@ -1,3 +1,4 @@
+import type { ChatSessionTaskRef } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import type { ChatTaskState } from '../database/entities/chat-task.entity.js';
 import type { TypeOrmChatTaskLifecycleOutbox } from './chat-task-lifecycle-outbox.js';
@@ -84,6 +85,13 @@ export abstract class ChatTaskStore {
     ownerId: string,
     envelope: CommandEnvelopeBody,
   ): Promise<{ result: Record<string, unknown>; task?: StoredChatTask }>;
+  abstract getSessionTaskRefs(
+    ownerId: string,
+    sessionId: string,
+  ): Promise<{
+    active_task?: ChatSessionTaskRef;
+    latest_task?: ChatSessionTaskRef;
+  }>;
   abstract getTask(
     ownerId: string,
     taskId: string,

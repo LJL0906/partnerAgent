@@ -6,6 +6,9 @@ import type {
 import * as Crypto from 'expo-crypto';
 import type { MutableRefObject } from 'react';
 import { useCallback, useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
+
+import { initialize会话, useConversationStore } from './会话管理';
 
 import {
   closeAllAgentStreams,
@@ -74,11 +77,15 @@ export async function reconcileChatFromRest(
   sessionId: string | undefined,
   options: ReconcileChatOptions = {},
 ): Promise<[TaskQueryResult, SessionQueryResult]> {
+  const initial = useChatStore.getState();
+  const revision = initial.sessionRevision;
+  const sessionMatches = !initial.sessionId || !sessionId || initial.sessionId === sessionId;
   const results = await loadChatReconciliation(
     taskId,
     sessionId,
     options.queries ?? { getTaskStatus, getChatSession },
   );
+  if (!sessionMatches || useChatStore.getState().sessionRevision !== revision) return results;
   const [taskResult, sessionResult] = results;
   const assistantMessageIdRef =
     options.assistantMessageIdRef ?? ({ current: undefined } as MutableRefObject<string | undefined>);
@@ -113,6 +120,9 @@ export function resetChatRuntime(): void {
 }
 
 export function useChat() {
+  const ready = useConversationStore((state) => state.ready);
+  const sessionRevision = useChatStore((state) => state.sessionRevision);
+  const sessionPersisted = useChatStore((state) => state.sessionPersisted);
   const sessionId = useChatStore((state) => state.sessionId);
   const activeTaskId = useChatStore((state) => state.activeTaskId);
   const activeOperationId = useChatStore((state) => state.activeOperationId);
@@ -137,7 +147,8 @@ export function useChat() {
 
   const reconcileFromRest = useCallback(
     (taskId: string | undefined, recoverySessionId: string | undefined): Promise<void> => {
-      const key = `${taskId ?? 'session'}:${recoverySessionId ?? ''}`;
+      const revision = useChatStore.getState().sessionRevision;
+      const key = `${revision}:${taskId ?? 'session'}:${recoverySessionId ?? ''}`;
       const existing = reconciliationsRef.current.get(key);
       if (existing) return existing;
 
@@ -159,6 +170,7 @@ export function useChat() {
           },
         );
 
+        if (revision !== useChatStore.getState().sessionRevision) return;
         const failures: string[] = [];
         if (taskResult.status === 'rejected') failures.push('任务状态');
         if (sessionResult.status === 'rejected') failures.push('会话消息');
@@ -230,38 +242,43 @@ export function useChat() {
     [reconcileFromRest, reportError],
   );
 
-  useEffect(() => {
-    if (sessionId) return;
-    useChatStore.getState().setSessionId(Crypto.randomUUID());
-  }, [sessionId]);
+  useEffect(() => { void initialize会话(); }, []);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !ready) return;
+    assistantMessageIdRef.current = undefined;
+    currentTaskIdRef.current = useChatStore.getState().activeTaskId;
+    previousTaskIdRef.current = undefined;
+    pendingSubmissionRef.current = undefined;
     let disposed = false;
+    const isCurrent = () => !disposed && useChatStore.getState().sessionRevision === sessionRevision;
     const opening = subscribeAgentStream({
       // 新生成的 sessionId 在首条 REST 提交前尚未归属当前用户，不能提前
       // 订阅。先以 user:self 完成鉴权与连接握手，REST 创建会话后再追加
       // session/task/operation，并通过权威 REST 快照补齐 ACK 前的事件。
-      channels: initialChatChannels(),
-      onEvent: handleAgentEvent,
-      onSubscriptionAck: handleSubscriptionAck,
-      onSubscriptionError: (error) => reportError(error, '实时订阅失败。'),
-      onConnectionError: (error) => reportError(error, '无法连接实时服务，请稍后重试。'),
-      onStatusChange: (status) => useChatStore.getState().setConnectionStatus(status),
+      channels: useChatStore.getState().sessionPersisted
+        ? desiredChannels(sessionId, useChatStore.getState().activeTaskId, useChatStore.getState().activeOperationId)
+        : initialChatChannels(),
+      onEvent: (event) => { if (isCurrent()) handleAgentEvent(event); },
+      onSubscriptionAck: (ack) => { if (isCurrent()) handleSubscriptionAck(ack); },
+      onSubscriptionError: (error) => { if (isCurrent()) reportError(error, '实时订阅失败。'); },
+      onConnectionError: (error) => { if (isCurrent()) reportError(error, '无法连接实时服务，请稍后重试。'); },
+      onStatusChange: (status) => { if (isCurrent()) useChatStore.getState().setConnectionStatus(status); },
     });
     streamReadyRef.current = opening;
 
     void opening
       .then((connection) => {
-        if (disposed) {
+        if (!isCurrent()) {
           connection.close();
           return;
         }
         streamConnectionRef.current = connection;
+        if (useChatStore.getState().sessionPersisted) void reconcileFromRest(useChatStore.getState().activeTaskId, sessionId);
       })
       .catch((error: unknown) => {
         if (
-          !disposed &&
+          isCurrent() &&
           !(error instanceof SubscriptionRejectedError) &&
           !(error instanceof AgentStreamConnectError)
         ) {
@@ -275,21 +292,34 @@ export function useChat() {
       streamConnectionRef.current?.close();
       streamConnectionRef.current = undefined;
     };
-  }, [handleAgentEvent, handleSubscriptionAck, reportError, sessionId]);
+  }, [handleAgentEvent, handleSubscriptionAck, reconcileFromRest, reportError, sessionId, sessionRevision, ready]);
 
   useEffect(() => {
     const connection = streamConnectionRef.current;
-    if (!connection || !sessionId) return;
+    if (!connection || !sessionId || !sessionPersisted || !ready) return;
+    const revision = useChatStore.getState().sessionRevision;
     void connection
       .setChannels(desiredChannels(sessionId, activeTaskId, activeOperationId))
       .catch((error: unknown) => {
+        if (revision !== useChatStore.getState().sessionRevision) return;
         if (!(error instanceof SubscriptionRejectedError)) {
           reportError(error, '实时频道更新失败。');
         }
       });
-  }, [activeOperationId, activeTaskId, reportError, sessionId]);
+  }, [activeOperationId, activeTaskId, reportError, sessionId, sessionPersisted, ready]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (status) => {
+      const state = useChatStore.getState();
+      if (status === 'active' && state.sessionPersisted && useConversationStore.getState().ready) {
+        void reconcileFromRest(state.activeTaskId, state.sessionId);
+      }
+    });
+    return () => subscription.remove();
+  }, [reconcileFromRest]);
 
   const sendMessage = useCallback(async (rawMessage: string) => {
+    if (!useConversationStore.getState().ready) return false;
     return sendChatMessage(rawMessage, {
       assistantMessageIdRef,
       currentTaskIdRef,
@@ -305,20 +335,24 @@ export function useChat() {
   const stopStreaming = useCallback(async () => {
     const state = useChatStore.getState();
     if (!state.activeTaskId) return;
+    const isCurrent = () => useChatStore.getState().sessionRevision === state.sessionRevision;
     const previousTaskStatus = state.taskStatus;
     state.setTaskStatus('cancelling');
     try {
       const result = await cancelTask(state.activeTaskId);
+      if (!isCurrent()) return;
       if (result.status === 'rejected') {
         throw new Error(result.validation_errors?.[0]?.message ?? '取消请求被拒绝。');
       }
       state.setActiveOperationId(result.operation_id);
       const connection = streamConnectionRef.current ?? (await streamReadyRef.current);
+      if (!isCurrent()) return;
       if (!connection) throw new Error('实时连接尚未就绪。');
       await connection.setChannels(
         desiredChannels(state.sessionId, state.activeTaskId, result.operation_id),
       );
     } catch (error) {
+      if (!isCurrent()) return;
       state.setTaskStatus(previousTaskStatus);
       if (!(error instanceof SubscriptionRejectedError)) {
         reportError(error, '取消请求失败，请稍后重试。');
@@ -334,9 +368,9 @@ export function useChat() {
 }
 
 function findLatestAssistantId(): string | undefined {
-  return [...useChatStore.getState().messages]
-    .reverse()
-    .find((message) => message.role === 'assistant')?.id;
+  const messages = useChatStore.getState().messages.filter((message) => message.role === 'user' || message.role === 'assistant');
+  const last = messages[messages.length - 1];
+  return last?.role === 'assistant' ? last.id : undefined;
 }
 
 export { desiredChannels, initialChatChannels } from './chat-event-routing';

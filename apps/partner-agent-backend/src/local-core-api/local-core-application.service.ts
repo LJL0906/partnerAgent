@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { SessionStore } from '../database/session-store.js';
+import { SessionStore, type StoredSession } from '../database/session-store.js';
 import { LocalCoreApplicationPort } from './local-core-application.port.js';
 import type {
   LocalCoreCommandRequest,
@@ -63,6 +63,17 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
       };
     }
 
+    if (query === 'ListChatSessions') {
+      const sessions = await this.sessionStore.list(request.userId);
+      return {
+        items: await Promise.all(
+          sessions.map((session) =>
+            this.sessionSummary(session, request.userId),
+          ),
+        ),
+      };
+    }
+
     if (query === 'GetChatSession') {
       return this.getChatSession(request);
     }
@@ -95,19 +106,30 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
       });
     }
 
-    const lastMessage = session.messages.at(-1);
     return {
-      id: session.id,
-      created_at: session.createdAt.toISOString(),
-      updated_at: session.lastActiveAt.toISOString(),
-      message_count: session.messages.length,
+      ...(await this.sessionSummary(session, request.userId)),
       messages: await this.chatTasks.listSessionMessages(
         request.userId,
         session.id,
       ),
-      ...(lastMessage
-        ? { last_message_preview: lastMessage.content.slice(0, 120) }
-        : {}),
+    };
+  }
+
+  private async sessionSummary(session: StoredSession, ownerId: string) {
+    const title = session.messages.find(
+      (message) => message.role === 'user',
+    )?.content;
+    const preview = session.messages.at(-1)?.content;
+    const compact = (text: string, length: number) =>
+      text.replace(/\s+/g, ' ').trim().slice(0, length);
+    return {
+      id: session.id,
+      title: title ? compact(title, 48) : '新对话',
+      created_at: session.createdAt.toISOString(),
+      updated_at: session.lastActiveAt.toISOString(),
+      message_count: session.messages.length,
+      ...(preview ? { last_message_preview: compact(preview, 120) } : {}),
+      ...(await this.chatTasks.getSessionTaskRefs(ownerId, session.id)),
     };
   }
 

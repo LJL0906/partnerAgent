@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 import { View } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
 import { FeedbackState } from '@/components/ui/feedback-state';
 import { bootstrapAuth, registerAuthTeardown, useAuthStore } from '@/features/auth';
 import { resetChatRuntime } from '@/features/chat/use-chat';
+import { reset会话管理 } from '@/features/chat/会话管理';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
 
@@ -14,9 +15,18 @@ import AuthRoute from './auth';
 export default function RootLayout() {
   const isReady = useAuthStore((state) => state.isReady);
   const status = useAuthStore((state) => state.status);
+  const router = useRouter();
+  const [firstSegment] = useSegments();
 
   useEffect(() => {
-    const unregisterTeardown = registerAuthTeardown(resetChatRuntime);
+    if (status === 'authenticated' && firstSegment === 'auth') router.replace('/');
+  }, [firstSegment, router, status]);
+
+  useEffect(() => {
+    const unregisterTeardown = registerAuthTeardown(async () => {
+      resetChatRuntime();
+      await reset会话管理();
+    });
     void bootstrapAuth();
     return unregisterTeardown;
   }, []);
@@ -43,6 +53,7 @@ export default function RootLayout() {
     <>
       <StatusBar style="dark" />
       <Stack
+        initialRouteName="(tabs)"
         screenOptions={{
           contentStyle: { backgroundColor: colors.canvas },
           headerBackButtonDisplayMode: 'minimal',
@@ -52,6 +63,7 @@ export default function RootLayout() {
           headerTitleStyle: typography.pageTitle,
         }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="sessions" options={{ title: '历史对话' }} />
         <Stack.Screen
           name="privacy-decision"
           options={{

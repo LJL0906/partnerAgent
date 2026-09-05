@@ -1,3 +1,4 @@
+import { memorySessionTaskRefs } from './会话任务引用.js';
 import { randomUUID } from 'node:crypto';
 import { SessionStore } from '../database/session-store.js';
 import {
@@ -192,6 +193,10 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       result,
     });
     return { result, task: copyStoredChatTask(task) };
+  }
+
+  async getSessionTaskRefs(ownerId: string, sessionId: string) {
+    return memorySessionTaskRefs(this.tasks.values(), ownerId, sessionId);
   }
 
   async getTask(ownerId: string, taskId: string) {

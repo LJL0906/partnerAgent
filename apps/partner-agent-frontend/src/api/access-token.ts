@@ -3,6 +3,9 @@ import { ApiClientError } from './api-error';
 export type AccessTokenProvider = () => Promise<string | undefined> | string | undefined;
 
 let accessTokenProvider: AccessTokenProvider = () => undefined;
+let unauthorizedHandler: (token: string) => Promise<void> | void = () => undefined;
+export function setUnauthorizedHandler(handler: typeof unauthorizedHandler): void { unauthorizedHandler = handler; }
+export async function reportUnauthorized(token: string): Promise<void> { await unauthorizedHandler(token); }
 
 /** 由登录层注入，HTTP 与 WebSocket 始终共用这一令牌来源。 */
 export function setAccessTokenProvider(provider: AccessTokenProvider): void {

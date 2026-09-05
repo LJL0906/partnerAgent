@@ -17,7 +17,7 @@ export default function ProfileRoute() {
 
   return (
     <View style={{ backgroundColor: colors.canvas, flex: 1 }}>
-      <AppHeader title="我的" />
+      <AppHeader title="设置" />
       <ScrollView
         contentContainerStyle={{
           gap: spacing.xl,

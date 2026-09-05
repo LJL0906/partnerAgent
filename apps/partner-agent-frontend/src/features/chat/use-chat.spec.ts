@@ -115,6 +115,37 @@ describe('chat event state merge', () => {
     });
   });
 
+  it('does not append a restored running answer to the previous turn', async () => {
+    const assistantRef: { current: string | undefined } = { current: undefined };
+    await reconcileChatFromRest('task-1', 'session-1', {
+      assistantMessageIdRef: assistantRef,
+      queries: {
+        getTaskStatus: async () => ({ task_id: 'task-1', state: 'running' }),
+        getChatSession: async () => ({ id: 'session-1', created_at: '', updated_at: '', message_count: 3,
+          messages: [
+            { id: 'u1', role: 'user', content: 'first', created_at: '' },
+            { id: 'a1', role: 'assistant', content: 'old answer', created_at: '' },
+            { id: 'u2', role: 'user', content: 'second', created_at: '' },
+          ],
+        }),
+      },
+    });
+    applyAgentEvent(event('text_delta', 'new answer'), assistantRef);
+    expect(useChatStore.getState().messages.map((message) => message.content)).toEqual(['first', 'old answer', 'second', 'new answer']);
+  });
+
+  it('discards a REST snapshot that resolves after session switching', async () => {
+    let resolve!: (value: import('../../api/chat-api').RecoverableChatSession) => void;
+    const session = new Promise<import('../../api/chat-api').RecoverableChatSession>((done) => { resolve = done; });
+    const reconciling = reconcileChatFromRest(undefined, 'session-1', {
+      queries: { getTaskStatus: vi.fn(), getChatSession: () => session },
+    });
+    useChatStore.getState().selectSession('session-2', false);
+    resolve({ id: 'session-1', created_at: '', updated_at: '', message_count: 1, messages: [{ id: 'old', role: 'user', content: 'old', created_at: '' }] });
+    await reconciling;
+    expect(useChatStore.getState().messages).toEqual([]);
+  });
+
   it('handles a normal delta and terminal event', () => {
     const assistantRef: { current: string | undefined } = { current: undefined };
 

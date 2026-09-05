@@ -1,6 +1,6 @@
 import { ERRORS, type ApiError, type ErrorCode } from '@partner-agent/contracts';
 
-import { requireAccessToken } from './access-token';
+import { reportUnauthorized, requireAccessToken } from './access-token';
 import { ApiClientError } from './api-error';
 import { apiConfig } from './config';
 
@@ -66,6 +66,7 @@ async function requestJson<TResponse>(path: string, init: RequestInit): Promise<
   if (!response.ok) {
     const apiError = toSafeApiError(responseBody, response.status);
     if (response.status === 401) {
+      await reportUnauthorized(accessToken);
       throw new ApiClientError(
         '登录状态已失效，请重新登录。',
         response.status,

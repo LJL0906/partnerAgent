@@ -2,6 +2,7 @@ import type {
   CommandEnvelope,
   CommandResult,
   ChatSessionSummary,
+  ListChatSessionsResult,
   SubmitTextInputPayload,
   SubmitTextInputResult,
   TaskStatus,
@@ -76,4 +77,8 @@ export async function cancelTask(
     envelope,
     options,
   );
+}
+
+export function listChatSessions(options: RequestOptions = {}): Promise<ListChatSessionsResult> {
+  return getJson(apiConfig.chatSessionPath, options);
 }

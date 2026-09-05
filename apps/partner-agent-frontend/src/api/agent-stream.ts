@@ -10,8 +10,8 @@ import * as Crypto from 'expo-crypto';
 import { io, type Socket } from 'socket.io-client';
 
 import { requireAccessToken } from './access-token';
+import { configureStreamAuthentication } from './实时鉴权';
 import { apiConfig } from './config';
-
 const MAX_SEEN_EVENT_IDS = 500;
 const activeStreamClosers = new Set<() => void>();
 
@@ -146,6 +146,7 @@ export async function subscribeAgentStream(
   const pendingRequests = new Map<string, PendingRequest>();
   const deferredSubscriptions: DeferredSubscription[] = [];
   let closed = false;
+  const authentication = configureStreamAuthentication(socket, accessToken, () => closed, () => subscription.onStatusChange?.('auth_required'));
   let hasBeenReady = false;
   let lastConnectionErrorKind: AgentStreamConnectErrorKind | undefined;
 
@@ -295,11 +296,12 @@ export async function subscribeAgentStream(
       });
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = (reason?: string) => {
     acknowledgedChannels.clear();
     for (const pending of pendingRequests.values()) pending.reject(new StreamDisconnectedError());
     pendingRequests.clear();
     if (!closed) subscription.onStatusChange?.('disconnected');
+    authentication.disconnected(reason);
   };
   const handleConnectError = (cause?: unknown) => {
     const error = new AgentStreamConnectError(classifyConnectError(cause));
@@ -310,6 +312,7 @@ export async function subscribeAgentStream(
     }
 
     if (error.kind === 'auth') {
+      authentication.rejected();
       if (!hasBeenReady) rejectReady(error);
       close();
     }

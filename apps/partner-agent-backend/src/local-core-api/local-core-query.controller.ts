@@ -35,6 +35,11 @@ export class LocalCoreQueryController {
     });
   }
 
+  @Get('chat-sessions')
+  listChatSessions(@Req() r: AuthenticatedRequest) {
+    return this.query('ListChatSessions', r);
+  }
+
   @Get('chat-sessions/:sessionId')
   getChatSession(
     @Req() r: AuthenticatedRequest,

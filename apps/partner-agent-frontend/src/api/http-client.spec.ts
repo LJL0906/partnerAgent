@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   requireAccessToken: vi.fn(async () => 'header.payload.signature'),
 }));
 
-vi.mock('./access-token', () => ({ requireAccessToken: mocks.requireAccessToken }));
+vi.mock('./access-token', () => ({ requireAccessToken: mocks.requireAccessToken, reportUnauthorized: vi.fn() }));
 vi.mock('./config', () => ({
   apiConfig: {
     get serverUrl() {

@@ -12,6 +12,8 @@ import {
 } from '@/api/chat-api';
 import { useChatStore } from '@/store/chat-store';
 
+import { remember会话 } from './会话管理';
+
 import { desiredChannels, PENDING_CHAT_TASK_ID } from './chat-event-routing';
 
 export interface PendingChatSubmission {
@@ -44,18 +46,19 @@ export async function sendChatMessage(
   const stateBefore = useChatStore.getState();
   if (!stateBefore.sessionId || stateBefore.isStreaming) return false;
 
+  const isCurrent = () => useChatStore.getState().sessionRevision === stateBefore.sessionRevision;
   let connection: AgentStreamConnection;
   try {
     const opening = context.streamReadyRef.current;
     if (!opening) throw new Error('实时连接尚未初始化，请稍后重试。');
     connection = await opening;
   } catch (error) {
-    context.reportError(error, '实时连接尚未就绪。');
+    if (isCurrent()) context.reportError(error, '实时连接尚未就绪。');
     return false;
   }
 
   const state = useChatStore.getState();
-  if (state.isStreaming) return false;
+  if (!isCurrent() || state.isStreaming) return false;
   const attempt = getOrCreateSubmission(
     context.pendingSubmissionRef.current,
     message,
@@ -75,6 +78,7 @@ export async function sendChatMessage(
       inputId: attempt.inputId,
       operationId: attempt.operationId,
     });
+    if (!isCurrent()) return false;
     if (result.status === 'rejected') {
       throw new Error(result.validation_errors?.[0]?.message ?? '消息提交被拒绝。');
     }
@@ -91,6 +95,8 @@ export async function sendChatMessage(
       state.bindOptimisticMessageId(attempt.optimisticMessageId, stableMessageId);
     }
     if (acceptedSessionId !== state.sessionId) state.setSessionId(acceptedSessionId);
+    state.setSessionPersisted(true);
+    remember会话(acceptedSessionId);
     context.currentTaskIdRef.current = taskId;
     context.previousTaskIdRef.current = undefined;
     state.setActiveOperationId(result.operation_id);
@@ -101,14 +107,17 @@ export async function sendChatMessage(
         desiredChannels(acceptedSessionId, taskId, result.operation_id),
       );
     } catch (error) {
+      if (!isCurrent()) return false;
       if (!(error instanceof SubscriptionRejectedError)) {
         context.reportError(error, '任务实时频道订阅失败。');
       }
       await context.reconcileFromRest(taskId, acceptedSessionId);
     }
+    if (!isCurrent()) return false;
     context.pendingSubmissionRef.current = undefined;
     return true;
   } catch (error) {
+    if (!isCurrent()) return false;
     context.currentTaskIdRef.current = undefined;
     context.previousTaskIdRef.current = undefined;
     state.setStreaming(false);

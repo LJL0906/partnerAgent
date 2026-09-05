@@ -1,0 +1,5 @@
+# Local HTTP development only; do not use this override in production.
+services:
+  backend:
+    environment:
+      NODE_ENV: development

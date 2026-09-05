@@ -107,6 +107,10 @@ export function mergeChatMessages(
 
 export interface ChatState {
   sessionId: string;
+  sessionRevision: number;
+  sessionPersisted: boolean;
+  selectSession: (sessionId: string, persisted: boolean) => void;
+  setSessionPersisted: (persisted: boolean) => void;
   activeTaskId?: string;
   activeOperationId?: string;
   messages: ChatMessage[];
@@ -135,6 +139,8 @@ export interface ChatState {
 
 const INITIAL_CHAT_STATE = {
   sessionId: '',
+  sessionRevision: 0,
+  sessionPersisted: false,
   activeTaskId: undefined,
   activeOperationId: undefined,
   messages: [] as ChatMessage[],
@@ -148,6 +154,8 @@ const INITIAL_CHAT_STATE = {
 export const useChatStore = create<ChatState>((set) => ({
   ...INITIAL_CHAT_STATE,
   setSessionId: (sessionId) => set({ sessionId }),
+  selectSession: (sessionId, sessionPersisted) => set((state) => ({ ...INITIAL_CHAT_STATE, messages: [], sessionId, sessionPersisted, sessionRevision: state.sessionRevision + 1 })),
+  setSessionPersisted: (sessionPersisted) => set({ sessionPersisted }),
   setActiveTaskId: (activeTaskId) => set({ activeTaskId }),
   setActiveOperationId: (activeOperationId) => set({ activeOperationId }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
@@ -218,5 +226,5 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => ({ messages: mergeChatMessages(state.messages, messages) })),
   replaceMessages: (messages) =>
     set((state) => ({ messages: mergeChatMessages(state.messages, messages) })),
-  resetChat: () => set({ ...INITIAL_CHAT_STATE, messages: [] }),
+  resetChat: () => set((state) => ({ ...INITIAL_CHAT_STATE, messages: [], sessionRevision: state.sessionRevision + 1 })),
 }));

@@ -38,6 +38,9 @@ export class WsV1Gateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.extractToken(client),
       );
       this.service.connect(client);
+      const stopWatching = await this.authService.watchToken(this.extractToken(client), () => client.disconnect(true));
+      if (!client.connected) stopWatching();
+      else client.once('disconnect', stopWatching);
     } catch {
       client.disconnect(true);
     }

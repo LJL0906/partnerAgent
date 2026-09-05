@@ -12,6 +12,17 @@ const developmentDefaults = {
 };
 
 describe('server URL resolution', () => {
+  it('keeps native LAN routing separate from the Web localhost override', () => {
+    const options = {
+      isDevelopment: true,
+      environmentUrl: 'http://192.168.1.5:3000',
+      webEnvironmentUrl: 'http://localhost:3000',
+    };
+    expect(resolveServerUrl({ ...options, platform: 'web' }).serverUrl).toBe('http://localhost:3000');
+    expect(resolveServerUrl({ ...options, platform: 'android' }).serverUrl).toBe('http://192.168.1.5:3000');
+    expect(resolveServerUrl({ ...options, platform: 'ios' }).serverUrl).toBe('http://192.168.1.5:3000');
+  });
+
   it('prefers a valid environment URL and removes trailing slashes', () => {
     expect(resolveServerUrl({
       ...developmentDefaults,

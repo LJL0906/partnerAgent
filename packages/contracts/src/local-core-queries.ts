@@ -25,7 +25,27 @@ export interface PaginatedResult<T> {
 export interface GetChatSessionQuery {
   session_id: string;
 }
-export interface ChatSessionSummary {
+export interface ChatSessionTaskRef {
+  task_id: string;
+  operation_id: string;
+  state: TaskState;
+}
+export interface ListChatSessionsQuery {}
+export interface ChatSessionListItem {
+  id: string;
+  title?: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message_preview?: string;
+  /** 最早未结束任务，优先恢复该任务。 */
+  active_task?: ChatSessionTaskRef;
+  latest_task?: ChatSessionTaskRef;
+}
+export interface ListChatSessionsResult {
+  items: ChatSessionListItem[];
+}
+export interface ChatSessionSummary extends ChatSessionListItem {
   id: string;
   title?: string;
   created_at: string;

@@ -36,7 +36,7 @@ export function ChatInput({ isStreaming, onSend, onCancel }: ChatInputProps) {
         paddingVertical: spacing.xxs,
         backgroundColor: colors.surface,
         borderColor: isFocused ? colors.brand500 : colors.border,
-        borderWidth: isFocused ? 2 : 1,
+        borderWidth: 2,
         borderRadius: radius.large,
         borderCurve: 'continuous',
         boxShadow: shadows.float,

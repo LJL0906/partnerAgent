@@ -4,6 +4,17 @@ import { SessionStore, type StoredSession } from './session-store.js';
 export class MemorySessionStore extends SessionStore {
   private readonly sessions = new Map<string, StoredSession>();
 
+  async list(ownerId: string): Promise<StoredSession[]> {
+    return [...this.sessions.values()]
+      .filter((session) => session.ownerId === ownerId)
+      .sort(
+        (a, b) =>
+          b.lastActiveAt.getTime() - a.lastActiveAt.getTime() ||
+          b.id.localeCompare(a.id),
+      )
+      .map((session) => ({ ...this.copy(session), contextMessages: [] }));
+  }
+
   async find(
     sessionId: string,
     ownerId?: string,

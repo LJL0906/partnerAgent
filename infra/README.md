@@ -16,10 +16,20 @@
 
 ## 启动与检查
 
-在仓库根目录运行：
+本机 Web 通过 `http://localhost:8081` 联调用户名密码登录时，前端 `.env.local` 的 `EXPO_PUBLIC_WEB_SERVER_URL` 应设置为 `http://localhost:3000`，后端 `CORS_ALLOWED_ORIGINS` 应包含 `http://localhost:8081`。前后端使用相同主机名，才能正常保存和恢复 SameSite Cookie。`EXPO_PUBLIC_SERVER_URL` 可同时使用开发机局域网地址供 Android/iOS 真机连接，Web 覆盖项不会影响原生端。
+
+本地 HTTP 开发需叠加开发配置（关闭仅适用于 HTTPS 的生产 Cookie 标志，允许 localhost 来源）：
 
 ```bash
-docker compose --project-name partner-agent-local -f infra/compose.yml up --build -d
+docker compose --project-name partner-agent-local -f infra/compose.yml -f infra/compose.local.yml up --build -d
+```
+
+`compose.local.yml` 仅限本地开发，生产部署不要使用。前端环境变量更改后重新加载页面；若 Metro 未加载新值，重启开发服务。
+
+生产基线（需配置 HTTPS 入口、生产密钥和明确 CORS；本地 HTTP 联调继续使用上面的 override 命令）：
+
+```bash
+docker compose --project-name partner-agent-prod -f infra/compose.yml up --build -d
 ```
 
 Compose 会先等待 PostgreSQL 健康，再运行一次性 migration job；只有 migration 成功退出后，backend 才会启动。检查探针：
@@ -31,10 +41,10 @@ curl http://127.0.0.1:3000/health/ready
 
 `live` 只表示进程存活。`ready` 还要求服务未进入 draining、数据库可达且不存在待执行 migration；它不会探测模型 Provider。
 
-停止服务但保留数据库卷：
+停止本地联调服务但保留数据库卷（生产使用对应 project 名与配置文件）：
 
 ```bash
-docker compose --project-name partner-agent-local -f infra/compose.yml down
+docker compose --project-name partner-agent-local -f infra/compose.yml -f infra/compose.local.yml down
 ```
 
 迁移镜像运行编译后的迁移入口，不依赖 TypeScript 开发工具。生产部署应使用外部密钥管理和受控镜像标签，不应使用仓库内默认值替代凭据。

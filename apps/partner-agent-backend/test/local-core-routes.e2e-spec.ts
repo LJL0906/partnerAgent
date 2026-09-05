@@ -122,6 +122,12 @@ const commandRoutes: CommandRoute[] = [
 const queryRoutes: QueryRoute[] = [
   {
     method: 'get',
+    path: '/api/v1/chat-sessions',
+    handler: 'ListChatSessions',
+    implemented: true,
+  },
+  {
+    method: 'get',
     path: '/api/v1/chat-sessions/route-session',
     handler: 'GetChatSession',
     implemented: true,
@@ -250,8 +256,8 @@ const queryRoutes: QueryRoute[] = [
   { method: 'get', path: '/api/v1/exports/route-id', handler: 'GetExportTask' },
 ];
 
-if (commandRoutes.length !== 36 || queryRoutes.length !== 37) {
-  throw new Error('Local Core 路由表必须保持 36 Command + 37 Query');
+if (commandRoutes.length !== 36 || queryRoutes.length !== 38) {
+  throw new Error('Local Core 路由表必须保持 36 Command + 38 Query');
 }
 
 const secret = 'route-table-secret-that-is-at-least-32-bytes';
@@ -291,6 +297,7 @@ describe('Local Core registered route table (e2e)', () => {
   const executeQuery = vi.fn(
     (handler: string, queryRequest: LocalCoreRequest) => {
       if (
+        handler === 'ListChatSessions' ||
         handler === 'GetCoreHealth' ||
         handler === 'GetChatSession' ||
         handler === 'GetTaskStatus'

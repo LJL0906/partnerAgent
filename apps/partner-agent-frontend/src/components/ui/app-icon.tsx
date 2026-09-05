@@ -26,6 +26,8 @@ const iconMap = {
   retry: { ios: 'arrow.clockwise', android: 'refresh', web: 'refresh' },
   sparkle: { ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' },
   lock: { ios: 'lock', android: 'lock', web: 'lock' },
+  eye: { ios: 'eye', android: 'visibility', web: 'visibility' },
+  eyeOff: { ios: 'eye.slash', android: 'visibility_off', web: 'visibility_off' },
   shield: { ios: 'checkmark.shield', android: 'verified_user', web: 'verified_user' },
   logout: { ios: 'rectangle.portrait.and.arrow.right', android: 'logout', web: 'logout' },
   clock: { ios: 'clock', android: 'schedule', web: 'schedule' },

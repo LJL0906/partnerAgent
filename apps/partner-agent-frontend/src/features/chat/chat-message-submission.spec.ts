@@ -34,6 +34,22 @@ describe('chat message submission', () => {
     expect(useChatStore.getState().messages).toEqual([]);
   });
 
+  it('ignores a submitted message response after the user switches sessions', async () => {
+    let resolve!: (value: CommandResult<SubmitTextInputResult>) => void;
+    const submit = vi.fn<Submit>(() => new Promise((done) => { resolve = done; }));
+    const connection = fakeConnection();
+    const sending = sendChatMessage('旧会话', {
+      ...refs(), reconcileFromRest: vi.fn(), reportError: vi.fn(),
+      streamReadyRef: { current: Promise.resolve(connection) }, submit,
+    });
+    await vi.waitFor(() => expect(submit).toHaveBeenCalledOnce());
+    useChatStore.getState().selectSession('session-2', false);
+    resolve(acceptedResult());
+    expect(await sending).toBe(false);
+    expect(useChatStore.getState()).toMatchObject({ sessionId: 'session-2', messages: [], activeTaskId: undefined });
+    expect(connection.setChannels).not.toHaveBeenCalled();
+  });
+
   it('reuses ids and the optimistic message when an explicit REST retry succeeds', async () => {
     const submit = vi
       .fn<Submit>()

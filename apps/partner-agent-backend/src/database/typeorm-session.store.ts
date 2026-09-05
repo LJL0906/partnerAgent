@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, IsNull, type EntityManager } from 'typeorm';
+import { DataSource, In, IsNull, type EntityManager } from 'typeorm';
 import { SessionStore, type StoredSession } from './session-store.js';
 import { ChatSessionEntity } from './entities/chat-session.entity.js';
 import { SessionMessageEntity } from './entities/session-message.entity.js';
@@ -55,6 +55,37 @@ export class TypeOrmSessionStore
 
   getDataSource(): DataSource {
     return this.dataSource;
+  }
+
+  async list(ownerId: string): Promise<StoredSession[]> {
+    const sessions = await this.dataSource
+      .getRepository(ChatSessionEntity)
+      .find({
+        where: { ownerId, deletedAt: IsNull() },
+        select: {
+          id: true,
+          ownerId: true,
+          createdAt: true,
+          lastActiveAt: true,
+        },
+        order: { lastActiveAt: 'DESC', id: 'DESC' },
+      });
+    if (!sessions.length) return [];
+    const messages = await this.dataSource
+      .getRepository(SessionMessageEntity)
+      .find({
+        where: {
+          ownerId,
+          sessionId: In(sessions.map((session) => session.id)),
+        },
+        order: { sequence: 'ASC' },
+      });
+    return sessions.map((session) =>
+      this.toStoredSession(
+        { ...session, contextJson: '[]', contextRevision: 0 },
+        messages.filter((message) => message.sessionId === session.id),
+      ),
+    );
   }
 
   async find(

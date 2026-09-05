@@ -45,6 +45,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="today"
         options={{
+          href: null,
           title: '今日',
           tabBarAccessibilityLabel: '今日',
           tabBarIcon: ({ focused }) => (
@@ -56,6 +57,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="execute"
         options={{
+          href: null,
           title: '执行',
           tabBarAccessibilityLabel: '执行',
           tabBarIcon: ({ focused }) => (
@@ -67,6 +69,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="memory"
         options={{
+          href: null,
           title: '记忆',
           tabBarAccessibilityLabel: '记忆',
           tabBarIcon: ({ focused }) => (
@@ -78,12 +81,13 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="profile"
         options={{
-          title: '我的',
-          tabBarAccessibilityLabel: '我的',
+          headerShown: false,
+          title: '设置',
+          tabBarAccessibilityLabel: '设置',
           tabBarIcon: ({ focused }) => (
-            <AppTabIcon accessibilityLabel="我的" focused={focused} name="profile" />
+            <AppTabIcon accessibilityLabel="设置" focused={focused} name="profile" />
           ),
-          tabBarLabel: '我的',
+          tabBarLabel: '设置',
         }}
       />
     </Tabs>

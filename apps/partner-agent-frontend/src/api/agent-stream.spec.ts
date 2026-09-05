@@ -2,6 +2,7 @@ import type { ServerPushEventV1, SubscriptionAckV1 } from '@partner-agent/contra
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { apiConfig } from './config';
+import { requireAccessToken } from './access-token';
 import {
   AgentStreamConnectError,
   closeAllAgentStreams,
@@ -18,7 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('expo-crypto', () => ({
   randomUUID: () => `request-${++mocks.uuid}`,
 }));
-vi.mock('./access-token', () => ({ requireAccessToken: vi.fn(async () => 'token') }));
+vi.mock('./access-token', () => ({ requireAccessToken: vi.fn(async () => 'token'), reportUnauthorized: vi.fn() }));
 vi.mock('./config', () => ({
   apiConfig: {
     serverUrl: 'http://example.test',
@@ -93,6 +94,31 @@ describe('agent stream', () => {
     (apiConfig as { serverUrlConfigError?: string }).serverUrlConfigError = undefined;
     mocks.socket = new FakeSocket();
     mocks.uuid = 0;
+    vi.mocked(requireAccessToken).mockResolvedValue('token');
+  });
+
+  it('reads the refreshed token for a new socket handshake', async () => {
+    const connection = await openConnection();
+    vi.mocked(requireAccessToken).mockResolvedValue('rotated-token');
+    const callback = vi.fn();
+    (mocks.socket as unknown as { auth: (callback: (value: unknown) => void) => void }).auth(callback);
+    await nextMicrotask();
+    expect(callback).toHaveBeenCalledWith({ token: 'rotated-token' });
+    connection.close();
+  });
+
+  it('reconnects an expired server-disconnected socket only when its token changed', async () => {
+    const connection = await openConnection();
+    const count = mocks.socket!.sent.length;
+    mocks.socket!.serverEmit('disconnect', 'io server disconnect');
+    await nextMicrotask();
+    expect(mocks.socket!.sent).toHaveLength(count);
+    vi.mocked(requireAccessToken).mockResolvedValue('rotated-token');
+    mocks.socket!.serverEmit('disconnect', 'io server disconnect');
+    await nextMicrotask();
+    expect(mocks.socket!.sent.length).toBeGreaterThan(count);
+    acknowledge(mocks.socket!, mocks.socket!.lastRequest(), ['user:self', 'session:session-1']);
+    connection.close();
   });
 
   it('becomes ready only after the stable channel request is acknowledged', async () => {

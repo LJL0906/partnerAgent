@@ -1,4 +1,6 @@
 import { DataSource } from 'typeorm';
+import { AccountCredentialEntity, AccountSessionEntity } from './entities/账户.entity.js';
+import { CreateAccountTables1788514000000 } from './migrations/1788514000000-create-account-tables.js';
 import { CORE_ENTITIES } from './core-entities.js';
 import { ChatSessionEntity } from './entities/chat-session.entity.js';
 import { SessionMessageEntity } from './entities/session-message.entity.js';
@@ -28,6 +30,8 @@ import { AddToolControlOutboxRemediation1788513000000 } from './migrations/17885
 import { WsV1EventEntity } from './entities/ws-v1-event.entity.js';
 
 export const DATABASE_ENTITIES = [
+  AccountCredentialEntity,
+  AccountSessionEntity,
   ChatSessionEntity,
   SessionMessageEntity,
   ToolConfirmationEntity,
@@ -58,6 +62,7 @@ export const DATABASE_MIGRATIONS = [
   CreateAgentRunTraces1788511000000,
   AddToolReconciliation1788512000000,
   AddToolControlOutboxRemediation1788513000000,
+  CreateAccountTables1788514000000,
 ] as const;
 
 export function createDatabaseDataSource(url: string): DataSource {

@@ -160,7 +160,7 @@ function finishStream(
 }
 
 function findLatestAssistantId(): string | undefined {
-  return [...useChatStore.getState().messages]
-    .reverse()
-    .find((message) => message.role === 'assistant')?.id;
+  const messages = useChatStore.getState().messages.filter((message) => message.role === 'user' || message.role === 'assistant');
+  const last = messages[messages.length - 1];
+  return last?.role === 'assistant' ? last.id : undefined;
 }
