@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { TextInput, View } from 'react-native';
+import { Keyboard, TextInput, View } from 'react-native';
 
 import { AppButton } from '@/components/ui/app-button';
 import { colors } from '@/theme/colors';
@@ -23,6 +23,8 @@ export function ChatInput({ isStreaming, onSend, onCancel }: ChatInputProps) {
     const submitted = await onSend(submittedValue);
     if (submitted) {
       setValue((currentValue) => (currentValue === submittedValue ? '' : currentValue));
+      // 发送成功后收键盘并释放焦点,让注意力回到正在生成的模型回复上。
+      Keyboard.dismiss();
     }
   }
 
