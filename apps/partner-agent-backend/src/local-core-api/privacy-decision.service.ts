@@ -187,6 +187,7 @@ export class PrivacyDecisionService implements OnModuleInit, OnModuleDestroy {
       operationId: task.operationId,
       sessionId: task.sessionId,
       state: 'failed',
+      revision: task.revision,
       type: 'state_changed',
       data: { code: 'EGRESS_001', message: task.errorMessage },
     });

@@ -273,6 +273,10 @@ export class TypeOrmWsV1EventStore extends WsV1EventStore {
       ...(input.session_id ? { session_id: input.session_id } : {}),
       ...(input.operation_id ? { operation_id: input.operation_id } : {}),
       ...(input.task_id ? { task_id: input.task_id } : {}),
+      ...(input.item_id ? { item_id: input.item_id } : {}),
+      ...(input.item_revision !== undefined
+        ? { item_revision: input.item_revision }
+        : {}),
     } as ServerPushEventV1;
   }
 

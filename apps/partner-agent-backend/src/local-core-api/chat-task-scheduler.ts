@@ -251,7 +251,7 @@ export class PiChatTaskScheduler
       claimed.leaseOwner,
     );
     if (failed?.state === 'failed') {
-      this.runner.publishState(claimed.task, 'failed', {
+      await this.runner.publishState(claimed.task, 'failed', {
         code: 'TOOL_001',
         message,
       });
@@ -296,7 +296,7 @@ export class PiChatTaskScheduler
       message,
     );
     if (failed?.state !== 'failed') return false;
-    this.runner.publishState(task, 'failed', {
+    await this.runner.publishState(task, 'failed', {
       code,
       message,
     });
@@ -312,7 +312,7 @@ export class PiChatTaskScheduler
     } catch {
       // 持久任务状态是权威源；执行任务可能位于另一进程或已经结束。
     } finally {
-      this.runner.publishState(task, 'cancelled');
+      await this.runner.publishState(task, 'cancelled');
       void this.pump();
     }
   }
@@ -391,7 +391,10 @@ export class PiChatTaskScheduler
       leaseOwner,
     );
     if (failed?.state === 'failed') {
-      this.runner.publishState(task, 'failed', { code: 'TOOL_001', message });
+      await this.runner.publishState(task, 'failed', {
+        code: 'TOOL_001',
+        message,
+      });
     }
     void this.pump();
   }

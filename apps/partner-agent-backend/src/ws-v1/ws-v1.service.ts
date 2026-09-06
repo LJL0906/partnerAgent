@@ -6,6 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import {
+  chatItemIds,
   SENSITIVE_CATEGORIES,
   WS_SERVER_EVENTS,
   type PrivacyDecisionStatus,
@@ -378,6 +379,18 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
       task_id: event.taskId,
       event_type: mapped.eventType,
       data: mapped.data,
+      ...(event.type === 'state_changed' && mapped.eventType === 'task_state'
+        ? {
+            item_id: chatItemIds.taskRuntime(event.taskId),
+            item_revision: event.revision,
+          }
+        : {}),
+      ...(event.type === 'state_changed' && mapped.eventType === 'error'
+        ? {
+            item_id: `task:${event.taskId}:error`,
+            item_revision: event.revision,
+          }
+        : {}),
     } as const;
     for (const channel of [
       `task:${event.taskId}`,

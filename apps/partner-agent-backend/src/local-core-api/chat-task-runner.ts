@@ -79,7 +79,7 @@ export class ChatTaskRunner {
     );
     heartbeat.unref?.();
 
-    this.publishState(task, 'running');
+    await this.publishState(task, 'running');
     try {
       const priorMessage = (await this.store.listSessionMessages(
         task.ownerId,
@@ -119,7 +119,7 @@ export class ChatTaskRunner {
           ) {
             return;
           }
-          this.publishState(task, 'waiting_privacy_decision', {
+          await this.publishState(task, 'waiting_privacy_decision', {
             egress_id: decision.id,
             categories: [...decision.categories],
             provider: decision.provider,
@@ -195,7 +195,7 @@ export class ChatTaskRunner {
               leaseOwner,
             );
             if (failed?.state === 'failed') {
-              this.publishState(task, 'failed', {
+              await this.publishState(task, 'failed', {
                 code: completed.code,
                 message: completed.message,
               });
@@ -204,7 +204,7 @@ export class ChatTaskRunner {
           }
           if (completed.outcome === 'committed') {
             outputCommitted = true;
-            this.publishState(task, 'completed');
+            await this.publishState(task, 'completed');
           }
           if (completed.outcome !== 'committed') return;
           continue;
@@ -233,7 +233,7 @@ export class ChatTaskRunner {
             leaseOwner,
           )
         ) {
-          this.publishState(task, 'waiting_tool_approval');
+          await this.publishState(task, 'waiting_tool_approval');
         }
         return;
       }
@@ -246,7 +246,7 @@ export class ChatTaskRunner {
           leaseOwner,
         );
         if (failed?.state === 'failed')
-          this.publishState(task, 'failed', failure);
+          await this.publishState(task, 'failed', failure);
         return;
       }
       if (outputCommitted) return;
@@ -259,7 +259,7 @@ export class ChatTaskRunner {
           leaseOwner,
         );
         if (failed?.state === 'failed') {
-          this.publishState(task, 'failed', {
+          await this.publishState(task, 'failed', {
             code: 'STRUCTURED_PREVIEW_MISSING',
             message: '结构化预览任务未产生 emit_chat_preview 输出。',
           });
@@ -271,7 +271,9 @@ export class ChatTaskRunner {
         task.ownerId,
         leaseOwner,
       );
-      if (completed?.state === 'completed') this.publishState(task, 'completed');
+      if (completed?.state === 'completed') {
+        await this.publishState(task, 'completed');
+      }
     } catch (error) {
       if (this.shouldStop(task.taskId, leaseLost)) return;
       const message = safeChatTaskErrorMessage(
@@ -286,14 +288,14 @@ export class ChatTaskRunner {
         leaseOwner,
       );
       if (failed?.state === 'failed') {
-        this.publishState(task, 'failed', { code, message });
+        await this.publishState(task, 'failed', { code, message });
       }
     } finally {
       clearInterval(heartbeat);
     }
   }
 
-  publishState(
+  async publishState(
     task: AcceptedChatTask,
     state:
       | 'running'
@@ -303,11 +305,14 @@ export class ChatTaskRunner {
       | 'failed'
       | 'cancelled',
     data?: unknown,
-  ) {
+  ): Promise<void> {
     if (this.store.lifecycleOutbox) return;
+    const current = await this.store.getTask(task.ownerId, task.taskId);
+    if (!current || current.state !== state) return;
     this.events.publish({
       ...this.base(task),
       state,
+      revision: current.revision,
       type: 'state_changed',
       data,
     });

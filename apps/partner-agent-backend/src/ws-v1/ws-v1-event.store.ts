@@ -14,6 +14,8 @@ export interface WsV1PublishInput {
   session_id?: string;
   operation_id?: string;
   task_id?: string;
+  item_id?: string;
+  item_revision?: number;
   /** Internal routing key for user:self; never copied into the wire event. */
   recipient_user_id?: string;
   /** Internal stable relay key; never copied into the wire event. */
@@ -102,6 +104,10 @@ export class MemoryWsV1EventStore extends WsV1EventStore {
       ...(input.session_id ? { session_id: input.session_id } : {}),
       ...(input.operation_id ? { operation_id: input.operation_id } : {}),
       ...(input.task_id ? { task_id: input.task_id } : {}),
+      ...(input.item_id ? { item_id: input.item_id } : {}),
+      ...(input.item_revision !== undefined
+        ? { item_revision: input.item_revision }
+        : {}),
     } as ServerPushEventV1;
 
     const channelRecords = this.records.get(streamKey) ?? [];

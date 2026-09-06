@@ -71,6 +71,7 @@ export class ChatTaskOutboxRelay {
         operationId: event.operationId,
         sessionId: event.sessionId,
         state: event.state,
+        revision: event.revision,
         type: 'state_changed',
         data: event.data,
         eventKey: event.eventKey,

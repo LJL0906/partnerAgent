@@ -87,6 +87,43 @@ describe('TypeOrmWsV1EventStore', () => {
     ).toBe(true);
   });
 
+  it('persists display item identity and revision in the wire payload', async () => {
+    const managerQuery = vi.fn(async (sql: string) =>
+      sql.includes('returning last_position') ? [{ last_position: '8' }] : [],
+    );
+    const transaction = vi.fn(
+      async (work: (manager: EntityManager) => unknown) =>
+        work({ query: managerQuery } as unknown as EntityManager),
+    );
+    const store = new TypeOrmWsV1EventStore(
+      { transaction } as unknown as DataSource,
+      'postgres://unused',
+    );
+
+    const stored = await store.append({
+      channel: 'task:task-1',
+      task_id: 'task-1',
+      operation_id: '00000000-0000-4000-8000-000000000010',
+      session_id: 'session-1',
+      event_type: 'task_state',
+      item_id: 'task:task-1:runtime',
+      item_revision: 7,
+      data: { state: 'running' },
+    });
+
+    expect(stored.event).toMatchObject({
+      item_id: 'task:task-1:runtime',
+      item_revision: 7,
+    });
+    const insert = managerQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('insert into ws_v1_events'),
+    );
+    expect(JSON.parse(String(insert?.[1]?.[4]))).toMatchObject({
+      item_id: 'task:task-1:runtime',
+      item_revision: 7,
+    });
+  });
+
   it('returns an idempotent relay event without consuming another stream position', async () => {
     const existing = storedEvent('00000000-0000-4000-8000-000000000007', 7);
     const managerQuery = vi.fn(async (sql: string) =>

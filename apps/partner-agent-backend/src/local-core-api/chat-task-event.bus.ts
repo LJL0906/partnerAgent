@@ -1,18 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import type { ChatTaskState } from '../database/entities/chat-task.entity.js';
 
-export interface ChatTaskEvent {
+interface ChatTaskEventBase {
   ownerId: string;
   taskId: string;
   operationId: string;
   sessionId: string;
   state: ChatTaskState;
-  type: 'state_changed' | 'agent_event';
   eventType?: string;
   data?: unknown;
   /** Stable key present only for persisted lifecycle outbox delivery. */
   eventKey?: string;
 }
+
+export type ChatTaskEvent = ChatTaskEventBase &
+  (
+    | { type: 'state_changed'; revision: number }
+    | { type: 'agent_event'; revision?: never }
+  );
 
 type Listener = (event: ChatTaskEvent) => void | Promise<void>;
 

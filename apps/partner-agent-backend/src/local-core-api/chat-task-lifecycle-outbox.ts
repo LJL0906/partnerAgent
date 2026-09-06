@@ -14,6 +14,7 @@ export interface ClaimedChatTaskLifecycleEvent {
   operationId: string;
   sessionId: string;
   state: ChatTaskState;
+  revision: number;
   data: Record<string, unknown>;
   attemptCount: number;
   leaseOwner: string;
@@ -131,6 +132,7 @@ export class TypeOrmChatTaskLifecycleOutbox {
   }
 
   private map(row: Record<string, unknown>): ClaimedChatTaskLifecycleEvent {
+    const data = (row.event_data ?? {}) as Record<string, unknown>;
     return {
       eventId: String(row.event_id),
       eventKey: String(row.event_key),
@@ -139,7 +141,8 @@ export class TypeOrmChatTaskLifecycleOutbox {
       operationId: String(row.operation_id),
       sessionId: String(row.session_id),
       state: String(row.state) as ChatTaskState,
-      data: (row.event_data ?? {}) as Record<string, unknown>,
+      revision: Number(data.revision),
+      data,
       attemptCount: Number(row.attempt_count),
       leaseOwner: String(row.lease_owner),
       leaseToken: String(row.lease_token),
