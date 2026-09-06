@@ -1,7 +1,7 @@
 # Local Core REST 路由与 WebSocket 订阅草案
 
-> 状态：v1 路由与订阅实现基线（2026-09-04）。  
-> 契约依据：`packages/contracts/src/local-core.ts`。
+> 状态：2026-09-04 路由草案；当前登记以控制器与拆分后的 contracts 源码为准。
+> 契约依据：`packages/contracts/src/local-core.ts`、`local-core-analysis.ts`、`local-core-model.ts`、`local-core-queries.ts`、`chat-items.ts` 与 `events.ts`。
 
 ## 1. 统一约定
 
@@ -17,6 +17,8 @@
 | 路由 | Command payload | 备注 |
 |---|---|---|
 | `POST /api/v1/inputs/text` | `SubmitTextInputPayload` | 返回会话、消息和任务引用 |
+| `POST /api/v1/chat-sessions/:sessionId/rename` | `RenameChatSessionPayload` | 当前已接通的会话重命名 |
+| `POST /api/v1/chat-sessions/:sessionId/archive` | `ArchiveChatSessionPayload` | 当前已接通的会话归档 |
 | `POST /api/v1/inputs/voice` | `SubmitVoiceInputPayload` | 仅接收用户确认后的转写 |
 | `POST /api/v1/voice-drafts/upsert` | `CreateOrUpdateVoiceDraftPayload` | 临时数据 |
 | `POST /api/v1/voice-drafts/cancel` | `CancelVoiceDraftPayload` | 不产生正式副作用 |
@@ -59,7 +61,7 @@
 | `POST /api/v1/object-change-candidates/soft-delete` | `CreateSoftDeleteObjectCandidatePayload` | 生成软删除候选 |
 | `POST /api/v1/object-change-candidates/restore` | `CreateRestoreObjectCandidatePayload` | 生成恢复候选 |
 | `POST /api/v1/object-change-candidates/permanently-delete` | `CreatePermanentDeleteObjectCandidatePayload` | 生成二次确认候选；本路由不执行物理删除 |
-| `POST /api/v1/object-change-candidates/undo` | `CreateUndoObjectCandidatePayload` | 按原确认动作和批次生成整批撤销候选；本路由不直接撤销 |
+| （历史预留，无当前路由）`/api/v1/object-change-candidates/undo` | `CreateUndoObjectCandidatePayload`（未进入当前契约） | 历史规划的整批撤销候选语义；实现前不得当作可调用接口 |
 
 ## 3. Query 路由映射
 
@@ -144,7 +146,7 @@ interface SubscriptionAck {
 
 ### 4.3 事件信封
 
-`local-core.ts` 的 `ServerPushEvent` 建议在基线前补齐：
+以下是历史收口建议；当前 `ServerPushEventV1` 以 `events.ts` 的实际导出为准：
 
 ```ts
 interface ServerPushEventV1 extends ServerPushEvent {
@@ -166,4 +168,4 @@ interface ServerPushEventV1 extends ServerPushEvent {
 2. 旧 WS `chat/cancel/resume_session` 仅作弃用兼容契约；v1 业务 Command/Query 走 REST。
 3. v1 推送使用 `ServerPushEventV1`，统一 `snake_case` 和 `event_type`；旧 `AgentEvent` 已标记 deprecated。
 4. 归档/删除/恢复类 Command 已统一为 `Create*CandidatePayload`，不提供正式对象旁路写入。
-5. 路由已全部登记；尚未接通的业务 handler 显式返回 `501 NOT_IMPLEMENTED_001`，不伪造成功。
+5. 当前控制器登记 38 个 Command 和 37 个 Query；其中 7 个 Command、5 个 Query 已接通，其余 handler 显式返回 `501 NOT_IMPLEMENTED_001`，不伪造成功。历史预留的 undo 候选路由不在当前登记内。
