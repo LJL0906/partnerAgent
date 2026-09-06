@@ -121,6 +121,10 @@ export const ERRORS = {
   EGRESS_001: 'EGRESS_001', // 外发被阻止（拒绝发送）
   EGRESS_002: 'EGRESS_002', // 外发等待隐私决定
   EGRESS_003: 'EGRESS_003', // 外发脱敏后允许（带标记）
+  STRUCTURED_PREVIEW_INVALID: 'STRUCTURED_PREVIEW_INVALID',
+  STRUCTURED_PREVIEW_MISSING: 'STRUCTURED_PREVIEW_MISSING',
+  STRUCTURED_PREVIEW_TOO_LARGE: 'STRUCTURED_PREVIEW_TOO_LARGE',
+  STRUCTURED_PREVIEW_SOURCE_INVALID: 'STRUCTURED_PREVIEW_SOURCE_INVALID',
   DEPS_001: 'DEPS_001', // 来源不存在 / 已删除
   DEPS_002: 'DEPS_002', // 依赖的正式对象缺失
   NOT_IMPLEMENTED_001: 'NOT_IMPLEMENTED_001', // 路由契约已建立，但业务实现尚未提供
@@ -434,7 +438,6 @@ export interface RebuildIndexPayload {
 
 /** 刷新处境聚合。只能生成视图或候选，不能直接写正式处境。 */
 export interface RefreshContextSnapshotPayload {
-  user_id?: string;
 }
 
 /** 标记事实错误。具体是否形成候选由事实规则决定。 */
@@ -464,7 +467,5 @@ export * from './local-core-queries.js';
 
 /** @deprecated 从 events.ts 导入 ServerPushEventV1。 */
 export type ServerPushEvent = import('./events').ServerPushEventV1;
-
-export interface RenameChatSessionPayload { session_id: string; title: string; }
 
 export interface RenameChatSessionPayload { session_id: string; title: string; }

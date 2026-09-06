@@ -1,85 +1,93 @@
-import { vi } from 'vitest';
-vi.mock('expo-crypto', () => ({ randomUUID: () => 'assistant-1' }));
-import { describe, expect, it } from 'vitest';
-import type { CandidateEventV1, ChatItem, ServerPushEventV1 } from '@partner-agent/contracts';
-import { mapServerPushEventToChatItems } from './chat-event-routing';
+import type { ServerPushEventV1 } from '@partner-agent/contracts';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-describe('ChatItem event routing', () => {
-  it('maps event types into distinct canonical item types', () => {
-    const base = { schema_version: 1 as const, event_id: 'e1', channel: 'session:s1' as const, sequence: 1, session_id: 's1', task_id: 't1', operation_id: 'o1', timestamp: 1 };
-    const candidate: CandidateEventV1 = {
-      ...base,
-      event_type: 'candidate',
-      data: {
-        analysis_ref: { kind: 'analysis_run', id: 'analysis-1' },
-        batch_ref: { kind: 'confirmation_batch', id: 'batch-1' },
-        candidate_refs: [{ kind: 'candidate', id: 'candidate-1' }],
-        task_ref: { kind: 'analysis', task_id: 'task-1', analysis_run_id: 'analysis-1', analysis_types: ['action'] },
-        candidate_count: 1,
-        risk_level: 'normal',
-        safe_summary: '候选摘要',
-        occurred_at: 1,
-      },
-    };
-    const events: ServerPushEventV1[] = [
-      { ...base, event_type: 'thinking_delta', data: 'think' },
-      { ...base, event_id: 'e2', event_type: 'tool_execution_start', data: { tool: 'search', tool_call_id: 'c1' } },
-      candidate,
-      { ...base, event_id: 'e4', event_type: 'error', data: { code: 'E', message: 'bad' } },
-    ];
-    expect(events.flatMap(mapServerPushEventToChatItems).map((entry) => (entry as ChatItem).type)).toEqual(['thinking', 'tool', 'candidate', 'error']);
-  });
-});
-
-
-
-
-import { applyAgentEvent } from './chat-event-state';
 import { useChatStore } from '@/store/chat-store';
+import { applyAgentEvent } from './chat-event-state';
+
+const operationId = '11111111-1111-4111-8111-111111111111';
+const assistantRef: { current: string | undefined } = { current: undefined };
+
+function base() {
+  return { schema_version: 1 as const, channel: 'task:task-1' as const, sequence: 1,
+    session_id: 'session-1', task_id: 'task-1', operation_id: operationId, timestamp: 1 };
+}
 
 describe('canonical realtime event application', () => {
-  it('does not create legacy duplicate thinking or tool cards', () => {
+  beforeEach(() => {
+    assistantRef.current = undefined;
     useChatStore.getState().resetChat();
-    useChatStore.getState().setSessionId('s1');
-    const ref = { current: undefined as string | undefined };
-    const base = { schema_version: 1 as const, channel: 'session:s1' as const, session_id: 's1', task_id: 't1', operation_id: 'o1', sequence: 1, timestamp: 10 };
-    applyAgentEvent({ ...base, event_id: 'think-1', event_type: 'thinking_delta', data: 'abc' }, ref);
-    applyAgentEvent({ ...base, event_id: 'tool-1', event_type: 'tool_execution_start', data: { tool: 'search', tool_call_id: 'call-1' } }, ref);
-    const items = useChatStore.getState().items;
-    expect(items.filter((item) => item.type === 'thinking')).toHaveLength(1);
-    expect(items.filter((item) => item.type === 'tool')).toHaveLength(1);
+    useChatStore.getState().selectSession('session-1', true);
+    useChatStore.getState().setActiveTaskId('task-1');
+    useChatStore.getState().setActiveOperationId(operationId);
+    useChatStore.getState().beginTask();
+    useChatStore.getState().setActiveTaskId('task-1');
+    useChatStore.getState().setActiveOperationId(operationId);
   });
 
-  it('merges tool completion and undo by stable call/execution identity', () => {
-    useChatStore.getState().resetChat();
-    useChatStore.getState().setSessionId('s1');
-    const ref = { current: undefined as string | undefined };
-    const base = { schema_version: 1 as const, channel: 'session:s1' as const, session_id: 's1', task_id: 't1', operation_id: 'o1', sequence: 1, timestamp: 10 };
-    applyAgentEvent({ ...base, event_id: 'tool-1', event_type: 'tool_execution_start', data: { tool: 'search', tool_call_id: 'call-1' } }, ref);
-    applyAgentEvent({ ...base, event_id: 'tool-2', event_type: 'tool_execution_end', data: { tool: 'search', tool_call_id: 'call-1', execution_id: 'exec-1', success: true, undo_available: true } }, ref);
-    applyAgentEvent({ ...base, event_id: 'undo-1', event_type: 'tool_undo_available', data: { tool: 'search', execution_id: 'exec-1', expires_at: 20 } }, ref);
-    expect(useChatStore.getState().items.filter((item) => item.type === 'tool')).toHaveLength(1);
-    expect(useChatStore.getState().items[0]).toMatchObject({ tool_call_id: 'call-1', execution_id: 'exec-1', status: 'completed' });
-  });
-});
-
-
-
-describe('canonical live item updates', () => {
-  it('does not duplicate a tool item when start and end events arrive', () => {
-    useChatStore.setState({ sessionId: 's1', activeTaskId: 't1', activeOperationId: 'o1', items: [], messages: [], taskStatus: 'queued' });
-    const ref: { current: string | undefined } = { current: undefined };
-    applyAgentEvent({ schema_version: 1, event_id: 'start', event_type: 'tool_execution_start', channel: 'task:t1', sequence: 1, session_id: 's1', task_id: 't1', operation_id: 'o1', timestamp: 1, data: { tool: 'search', tool_call_id: 'call-1' } }, ref);
-    applyAgentEvent({ schema_version: 1, event_id: 'end', event_type: 'tool_execution_end', channel: 'task:t1', sequence: 2, session_id: 's1', task_id: 't1', operation_id: 'o1', timestamp: 2, data: { tool: 'search', tool_call_id: 'call-1', success: true, execution_id: 'exec-1', undo_available: true } }, ref);
-    expect(useChatStore.getState().items.filter((item) => item.type === 'tool')).toHaveLength(1);
-    expect(useChatStore.getState().items.find((item) => item.type === 'tool')?.status).toBe('completed');
+  it('applies stable text deltas and reports an offset gap for REST recovery', () => {
+    const first: ServerPushEventV1 = { ...base(), event_id: 'text-1', event_type: 'text_delta',
+      item_id: 'task:task-1:assistant', item_revision: 1, message_id: 'message-1',
+      text_offset: 0, data: '完整' };
+    const gap: ServerPushEventV1 = { ...first, event_id: 'text-2', sequence: 2,
+      item_revision: 2, text_offset: 10, data: '缺口' };
+    expect(applyAgentEvent(first, assistantRef)).toEqual({ recoveryRequired: false, terminalObserved: false });
+    expect(applyAgentEvent(gap, assistantRef)).toEqual({ recoveryRequired: true, terminalObserved: false });
+    expect(useChatStore.getState().messages).toEqual([
+      expect.objectContaining({ id: 'task:task-1:assistant', content: '完整' }),
+    ]);
   });
 
-  it('keeps thinking as a separate item without an empty assistant bubble', () => {
-    useChatStore.setState({ sessionId: 's1', activeTaskId: 't1', activeOperationId: 'o1', items: [], messages: [], taskStatus: 'queued' });
-    const ref: { current: string | undefined } = { current: undefined };
-    applyAgentEvent({ schema_version: 1, event_id: 'think', event_type: 'thinking_delta', channel: 'task:t1', sequence: 1, session_id: 's1', task_id: 't1', operation_id: 'o1', timestamp: 1, data: '分析中' }, ref);
-    expect(useChatStore.getState().items.filter((item) => item.type === 'thinking')).toHaveLength(1);
-    expect(useChatStore.getState().items.filter((item) => item.type === 'message')).toHaveLength(0);
+  it('merges tool events by the shared tool item id and revision', () => {
+    const start: ServerPushEventV1 = { ...base(), event_id: 'tool-1', event_type: 'tool_execution_start',
+      item_id: 'tool:call-1', item_revision: 1, data: { tool: 'search', tool_call_id: 'call-1' } };
+    const end: ServerPushEventV1 = { ...base(), event_id: 'tool-2', sequence: 2,
+      event_type: 'tool_execution_end', item_id: 'tool:call-1', item_revision: 2,
+      data: { tool: 'search', tool_call_id: 'call-1', execution_id: 'exec-1', success: true,
+        undo_available: true } };
+    expect(applyAgentEvent(start, assistantRef).recoveryRequired).toBe(true);
+    expect(applyAgentEvent(end, assistantRef).recoveryRequired).toBe(true);
+    expect(useChatStore.getState().items.filter((item) => item.type === 'tool')).toEqual([
+      expect.objectContaining({ id: 'tool:call-1', revision: 2, status: 'completed', execution_id: 'exec-1' }),
+    ]);
+  });
+
+  it('requests authoritative tool views for pending approval task states', () => {
+    const pending: ServerPushEventV1 = { ...base(), event_id: 'approval-1',
+      event_type: 'tool_confirmation_pending', item_id: 'approval:confirmation-1', item_revision: 1,
+      data: { confirmation_id: 'confirmation-1', tool_call_id: 'call-1', tool: 'send_message',
+        request_summary: '发送消息', risk_level: 'high', expires_at: 1788682200000 } };
+    const waiting: ServerPushEventV1 = { ...base(), event_id: 'state-waiting', sequence: 2,
+      event_type: 'task_state', item_id: 'task:task-1:runtime', item_revision: 2,
+      data: { state: 'waiting_tool_approval' } };
+
+    expect(applyAgentEvent(pending, assistantRef).recoveryRequired).toBe(true);
+    expect(applyAgentEvent(waiting, assistantRef).recoveryRequired).toBe(true);
+  });
+
+  it('refreshes tool views for every tool lifecycle event even when a view already exists', () => {
+    useChatStore.getState().mergeSnapshot([], [{ session_id: 'session-1', tool_call_id: 'call-1',
+      task_id: 'task-1', operation_id: operationId, tool_name: 'search', status: 'executing',
+      version: 1, request_summary: '搜索', risk_level: 'low', allowed_actions: [] }]);
+    const start: ServerPushEventV1 = { ...base(), event_id: 'tool-refresh',
+      event_type: 'tool_execution_start', item_id: 'tool:call-1', item_revision: 2,
+      data: { tool: 'search', tool_call_id: 'call-1' } };
+    expect(applyAgentEvent(start, assistantRef).recoveryRequired).toBe(true);
+  });
+
+  it('keeps thinking separate and uses its offset/revision', () => {
+    const event: ServerPushEventV1 = { ...base(), event_id: 'thinking-1', event_type: 'thinking_delta',
+      item_id: 'task:task-1:thinking', item_revision: 1, text_offset: 0, data: '分析中' };
+    applyAgentEvent(event, assistantRef);
+    expect(useChatStore.getState().items).toEqual([
+      expect.objectContaining({ id: 'task:task-1:thinking', revision: 1, type: 'thinking' }),
+    ]);
+    expect(useChatStore.getState().messages).toEqual([]);
+  });
+
+  it('reports terminal task state so use-chat can perform final REST reconciliation', () => {
+    const event: ServerPushEventV1 = { ...base(), event_id: 'state-1', event_type: 'task_state',
+      item_id: 'task:task-1:runtime', item_revision: 2, data: { state: 'completed' } };
+    expect(applyAgentEvent(event, assistantRef)).toEqual({ recoveryRequired: false, terminalObserved: true });
+    expect(useChatStore.getState().taskStatus).toBe('completed');
   });
 });

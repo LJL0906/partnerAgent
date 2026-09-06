@@ -7,7 +7,14 @@ vi.mock('@/api/account-api', () => ({ accountRequest: mocks.request, AccountApiE
 vi.mock('./refresh-credential', () => ({ refreshStorage: { get: async () => mocks.refresh, set: async (value: string) => { mocks.refresh = value; }, remove: async () => { mocks.refresh = undefined; } } }));
 vi.mock('./token-storage', () => ({ tokenStorage: { get: async () => undefined, set: async () => {}, remove: async () => {} } }));
 
-const tokens = (suffix = '1') => ({ access_token: `access-${suffix}`, refresh_token: `refresh-${suffix}`, expires_at: Date.now() + 900_000, refresh_expires_at: Date.now() + 604_800_000, user: { id: 'owner', username: 'test_user' } });
+const accessToken = (suffix: string) => {
+  const payload = btoa(JSON.stringify({ exp: 4_102_444_800, sub: 'owner', jti: suffix }))
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+  return `header.${payload}.signature`;
+};
+const tokens = (suffix = '1') => ({ access_token: accessToken(suffix), refresh_token: `refresh-${suffix}`, expires_at: Date.now() + 900_000, refresh_expires_at: Date.now() + 604_800_000, user: { id: 'owner', username: 'test_user' } });
 
 describe('account authentication lifecycle', () => {
   beforeEach(() => { mocks.request.mockReset(); mocks.refresh = undefined; useAuthStore.setState({ status: 'unauthenticated', isReady: true }, true); });
@@ -21,22 +28,24 @@ describe('account authentication lifecycle', () => {
     useAuthStore.setState({ status: 'bootstrapping', isReady: false }, true);
     mocks.request.mockResolvedValueOnce(tokens('2'));
     await bootstrapAuth();
-    expect(await getAccessToken()).toBe('access-2');
+    expect(await getAccessToken()).toBe(accessToken('2'));
   });
   it('deduplicates concurrent refresh requests from HTTP and WS clients', async () => {
     mocks.refresh = 'refresh-1';
     useAuthStore.setState({ status: 'authenticated', isReady: true, authMode: 'account', token: 'expired', expiresAt: 0 }, true);
     mocks.request.mockResolvedValue(tokens('2'));
-    expect(await Promise.all([getAccessToken(), getAccessToken()])).toEqual(['access-2', 'access-2']);
+    expect(await Promise.all([getAccessToken(), getAccessToken()])).toEqual([accessToken('2'), accessToken('2')]);
     expect(mocks.request).toHaveBeenCalledTimes(1);
   });
   it('ignores a late 401 for an older token but signs out the rejected current session', async () => {
     mocks.request.mockResolvedValueOnce(tokens());
     await signInWithPassword('test_user', 'a lengthy test password');
+    const currentToken = useAuthStore.getState().token;
+    expect(currentToken).toBeDefined();
     await reportUnauthorized('old-token');
     expect(useAuthStore.getState().status).toBe('authenticated');
     mocks.request.mockResolvedValueOnce(undefined);
-    await reportUnauthorized('access-1');
+    await reportUnauthorized(currentToken!);
     expect(useAuthStore.getState().status).toBe('expired');
     expect(await getAccessToken()).toBeUndefined();
   });

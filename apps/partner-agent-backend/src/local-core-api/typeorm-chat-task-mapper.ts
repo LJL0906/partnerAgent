@@ -13,6 +13,8 @@ export function toStoredChatTask(
     inputId: task.inputId,
     modelConfigId: task.modelConfigId,
     reasoningLevel: task.reasoningLevel,
+    outputMode: task.outputMode,
+    ...(task.previewKind ? { previewKind: task.previewKind } : {}),
     text,
     state: task.state,
     originalRecordId: task.originalRecordId,

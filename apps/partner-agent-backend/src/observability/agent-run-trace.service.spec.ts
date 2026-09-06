@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MemoryAgentRunTraceStore,
   type AgentRunTraceRecord,
@@ -10,6 +10,8 @@ import {
 import { AgentRuntimeTelemetry } from '../agent/agent-runtime-telemetry.js';
 
 describe('Agent run trace', () => {
+  afterEach(() => vi.useRealTimers());
+
   it('forms continuous traces for reply, two-turn tool, cancel, budget stop and approval wait', async () => {
     const store = new MemoryAgentRunTraceStore();
     const telemetry = new AgentRuntimeTelemetry(new AgentRunTraceSink(store));
@@ -265,6 +267,87 @@ describe('Agent run trace', () => {
         },
       }),
     ).not.toThrow();
+  });
+
+  it('reserves the last event for the ending summary and cleans a capped run index', async () => {
+    vi.useFakeTimers();
+    const store = new MemoryAgentRunTraceStore();
+    const sink = new AgentRunTraceSink(store);
+    const common = {
+      runId: '00000000-0000-4000-8000-000000000256',
+      ownerId: 'owner-a',
+      sessionId: 'session-a',
+      source: 'test',
+      at: Date.now(),
+      elapsedMs: 0,
+    };
+    sink.record({
+      ...common,
+      kind: 'agent_run_started',
+      policy: {
+        runTimeoutMs: 1_000,
+        maxModelTurns: 300,
+        maxToolCalls: 1,
+        totalOutputTokens: 100,
+        requestMaxTokens: 10,
+      },
+    });
+    for (let turn = 1; turn <= 300; turn += 1) {
+      sink.record({
+        ...common,
+        kind: 'agent_turn_started',
+        turn,
+        outputTokensUsed: 0,
+        outputTokensRemaining: 100,
+        deadlineRemainingMs: 1_000,
+      });
+    }
+    sink.record({
+      ...common,
+      kind: 'agent_run_finished',
+      reason: 'completed',
+      modelTurnsStarted: 300,
+      toolCallsStarted: 0,
+      outputTokensUsed: 0,
+    });
+
+    await vi.runAllTicks();
+    const page = await store.query({
+      ownerId: common.ownerId,
+      runId: common.runId,
+      from: new Date(common.at - 1),
+      to: new Date(common.at + 1),
+      limit: 100,
+    });
+    expect(page.items).toHaveLength(100);
+    let cursor = page.nextCursor;
+    const all = [...page.items];
+    while (cursor) {
+      const next = await store.query({
+        ownerId: common.ownerId,
+        runId: common.runId,
+        from: new Date(common.at - 1),
+        to: new Date(common.at + 1),
+        limit: 100,
+        after: cursor,
+      });
+      all.push(...next.items);
+      cursor = next.nextCursor;
+    }
+    expect(all).toHaveLength(256);
+    expect(all.at(-1)).toMatchObject({
+      sequence: 256,
+      eventType: 'agent_run_finished',
+      status: 'completed',
+    });
+    expect(
+      (sink as unknown as { sequences: Map<string, number> }).sequences.size,
+    ).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(
+      (sink as unknown as { sequences: Map<string, number> }).sequences.size,
+    ).toBe(0);
   });
 });
 

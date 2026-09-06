@@ -42,6 +42,26 @@ describe('SensitiveDataScanner', () => {
   });
 
   it.each([
+    ['password', String.raw`{"password":"json-password-value"}`, 'password'],
+    ['api key', String.raw`{"api_key": "json-api-key-value"}`, 'api_key'],
+    ['secret', String.raw`{"client_secret":"json-secret-value"}`, 'secret'],
+  ])(
+    'detects a quoted %s value inside a JSON string',
+    (_name, value, category) => {
+      const result = successfulFindings(value);
+      expect(result.categories).toContain(category);
+      expect(JSON.stringify(result.findings)).not.toContain(value);
+    },
+  );
+
+  it.each([
+    String.raw`{"pass\u0077ord":"escaped-password"}`,
+    String.raw`{"\u5bc6\u7801":"escaped-password"}`,
+  ])('detects an escaped sensitive key in a JSON string', (value) => {
+    expect(successfulFindings(value).categories).toContain('password');
+  });
+
+  it.each([
     ['password', 'random-value', 'password'],
     ['ACCESS-token', 'random-value', 'secret'],
     ['api key', 'random-value', 'api_key'],

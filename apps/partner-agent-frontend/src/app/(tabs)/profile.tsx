@@ -44,12 +44,10 @@ function SettingsRow({ item, onPress }: { item: SettingsItem; onPress: () => voi
 
 export default function ProfileRoute() {
   const insets = useSafeAreaInsets();
-  const { status, username, expiresAt, errorMessage } = useAuthStore((state) => ({
-    status: state.status,
-    username: state.username,
-    expiresAt: state.expiresAt,
-    errorMessage: state.errorMessage,
-  }));
+  const status = useAuthStore((state) => state.status);
+  const username = useAuthStore((state) => state.username);
+  const expiresAt = useAuthStore((state) => state.expiresAt);
+  const errorMessage = useAuthStore((state) => state.errorMessage);
   const session = getSessionStatus(status);
   const displayName = username?.trim() || '紫灵用户';
   const accountLabel = username ? '账户登录' : '个人助手账户';

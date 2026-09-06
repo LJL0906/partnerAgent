@@ -2,7 +2,7 @@ const { CHAT_ITEM_TYPES, createChatItemDefaults, isChatItem, parseChatItem, PREV
 
 describe('unified chat item contract', () => {
   it('exports all supported item types and safe collapse defaults', () => {
-    expect(CHAT_ITEM_TYPES).toEqual(['message','thinking','tool','candidate','approval','runtime','system','reminder','summary','error']);
+    expect(CHAT_ITEM_TYPES).toEqual(['message','thinking','tool','candidate','approval','structured_preview','runtime','system','reminder','summary','error']);
     expect(createChatItemDefaults('message').collapsed).toBe(false);
     expect(createChatItemDefaults('thinking').collapsed).toBe(true);
     expect(createChatItemDefaults('tool').collapsed).toBe(true);
@@ -12,7 +12,8 @@ describe('unified chat item contract', () => {
   it('validates stable ids and relations without requiring backend-specific fields', () => {
     const item = {
       schema_version: 1, id: 'item-1', type: 'candidate', status: 'pending', collapsed: true,
-      created_at: 1000, updated_at: 1000, session_id: 's-1', task_id: 't-1', operation_id: 'op-1',
+      created_at: 1000, updated_at: 1000, revision: 1, session_id: 's-1', task_id: 't-1', operation_id: '11111111-1111-4111-8111-111111111111',
+      candidate_id: 'c-1',
       payload: { candidate_id: 'c-1', kind: 'goal', preview: { title: 'x' }, applied: false }
     };
     expect(isChatItem(item)).toBe(true);
@@ -24,18 +25,18 @@ describe('unified chat item contract', () => {
     expect(PREVIEW_ONLY_APPLIED).toBe(false);
     expect(isChatItem({
       schema_version: 1, id: 'item-2', type: 'candidate', status: 'pending', collapsed: true,
-      created_at: 1000, updated_at: 1000, payload: { candidate_id: 'c-2', kind: 'goal', preview: {}, applied: true }
+      created_at: 1000, updated_at: 1000, revision: 1, payload: { candidate_id: 'c-2', kind: 'goal', preview: {}, applied: true }
     })).toBe(false);
   });
 
   it('does not treat thinking deltas as ordinary message content', () => {
     expect(isChatItem({
       schema_version: 1, id: 'item-3', type: 'thinking', status: 'streaming', collapsed: true,
-      created_at: 1000, updated_at: 1000, payload: { text: 'internal', display: 'summary' }
+      created_at: 1000, updated_at: 1000, revision: 1, payload: { text: 'internal', display: 'summary' }
     })).toBe(true);
     expect(isChatItem({
       schema_version: 1, id: 'item-4', type: 'message', status: 'streaming', collapsed: false,
-      created_at: 1000, updated_at: 1000, payload: { role: 'assistant', content: 'internal', visibility: 'thinking' }
+      created_at: 1000, updated_at: 1000, revision: 1, payload: { role: 'assistant', content: 'internal', visibility: 'thinking' }
     })).toBe(false);
   });
 });
@@ -61,8 +62,10 @@ const relationFields = [
 ];
 const makeItem = (type, payload = validPayloads[type]) => ({
   schema_version: 1, id: 'item-1', type, status: 'completed', collapsed: type !== 'message',
-  created_at: 0, updated_at: 1000.5, sequence: 0,
-  ...Object.fromEntries(relationFields.map((field) => [field, `${field}-1`])), payload,
+  created_at: 0, updated_at: 1000.5, revision: 1, sequence: 0,
+  ...Object.fromEntries(relationFields.map((field) => [field,
+    field === 'operation_id' ? '11111111-1111-4111-8111-111111111111' : `${field}-1`,
+  ])), ...(type === 'candidate' ? { candidate_id: payload.candidate_id } : {}), payload,
 });
 const expectValid = (item) => {
   expect(isChatItem(item)).toBe(true);
@@ -84,9 +87,8 @@ describe('untrusted chat item parsing', () => {
 
   it.each([
     ['message', { role: 'user', content: '' }], ['thinking', {}], ['tool', { tool: 'read' }],
-    ['candidate', { candidate_id: 'c', kind: 'goal', preview: {}, applied: false }],
     ['approval', { approval_id: 'a', tool: 'write', request_summary: 'Confirm', risk_level: 'low' }],
-    ['runtime', { state: '' }], ['system', { message: '' }], ['reminder', { title: '' }],
+    ['runtime', { state: 'running' }], ['system', { message: '' }], ['reminder', { title: '' }],
     ['summary', { content: '' }], ['error', { code: 'error', message: '' }],
   ])('accepts %s without optional fields', (type, payload) => {
     const item = makeItem(type, payload);
@@ -102,6 +104,7 @@ describe('untrusted chat item parsing', () => {
     ['type', [undefined, null, 'unknown', 1]], ['status', [undefined, null, 'unknown', 1]],
     ['collapsed', [undefined, ...badBooleans]], ['payload', [undefined, null, [], 'payload', 1]],
     ['created_at', [undefined, ...badNumbers, -1]], ['updated_at', [undefined, ...badNumbers, -1]],
+    ['revision', [undefined, ...badNumbers, -1, 0, 0.5, Number.MAX_SAFE_INTEGER + 1]],
     ['sequence', [...badNumbers, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]],
     ...relationFields.map((field) => [field, badIds]),
   ])('rejects invalid envelope field %s', (field, values) => {
@@ -146,7 +149,7 @@ describe('untrusted chat item parsing', () => {
     ['approval', 'request_summary', [undefined, ...badIds]],
     ['approval', 'risk_level', [undefined, null, '', 'critical', 1]],
     ['approval', 'expires_at', [...badNumbers, -1]],
-    ['runtime', 'state', [undefined, ...badStrings]], ['runtime', 'detail', badStrings],
+    ['runtime', 'state', [undefined, ...badStrings, '', 'unknown']], ['runtime', 'detail', badStrings],
     ['runtime', 'progress', badNumbers],
     ['system', 'code', badStrings], ['system', 'message', [undefined, ...badStrings]],
     ['reminder', 'reminder_id', badIds], ['reminder', 'title', [undefined, ...badStrings]],

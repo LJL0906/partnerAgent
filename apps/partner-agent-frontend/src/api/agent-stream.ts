@@ -8,7 +8,7 @@ import type {
   ToolUndoControlRequestV1,
   ToolControlAckV1,
 } from '@partner-agent/contracts';
-import { WS_CONTROL_EVENTS, WS_SERVER_EVENTS } from '@partner-agent/contracts';
+import { parseServerPushEventV1, WS_CONTROL_EVENTS, WS_SERVER_EVENTS } from '@partner-agent/contracts';
 import * as Crypto from 'expo-crypto';
 import { io, type Socket } from 'socket.io-client';
 
@@ -20,7 +20,7 @@ const MAX_SEEN_EVENT_IDS = 500;
 const activeStreamClosers = new Set<() => void>();
 
 interface ServerToClientEvents {
-  agent_event: (event: ServerPushEventV1) => void;
+  agent_event: (event: unknown) => void;
   subscription_ack: (ack: SubscriptionAckV1) => void;
   tool_control_ack: (ack: unknown) => void;
 }
@@ -61,6 +61,7 @@ export type StreamConnectionStatus =
 export interface StreamSubscription {
   channels: SubscriptionChannel[];
   onEvent: (event: ServerPushEventV1) => void;
+  onInvalidEvent?: () => void;
   onSubscriptionAck?: (ack: SubscriptionAckV1) => void;
   onSubscriptionError?: (error: SubscriptionRejectedError) => void;
   onConnectionError?: (error: AgentStreamConnectError) => void;
@@ -285,7 +286,14 @@ export async function subscribeAgentStream(
     return sendRequest('unsubscribe', removals);
   };
 
-  const handleEvent = (event: ServerPushEventV1) => {
+  const handleEvent = (value: unknown) => {
+    let event: ServerPushEventV1;
+    try {
+      event = parseServerPushEventV1(value);
+    } catch {
+      subscription.onInvalidEvent?.();
+      return;
+    }
     if (!acceptEvent(event, channelWatermarks, seenEventIds, seenEventOrder)) return;
     if (!isCanonicalEvent(event, acknowledgedChannels)) return;
     subscription.onEvent(event);

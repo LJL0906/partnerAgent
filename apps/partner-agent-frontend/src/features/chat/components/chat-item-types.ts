@@ -1,9 +1,11 @@
-/** Feature-local display and preview decision models. */
+import type { SessionToolStatus, TaskState } from '@partner-agent/contracts';
+
+/** Feature-local layout props; service state comes directly from the shared contract. */
 export type ChatItemTone = 'neutral' | 'thinking' | 'tool' | 'candidate' | 'approval' | 'runtime' | 'system';
 
 export type ToolCallDisplay = {
   toolName: string;
-  state?: 'queued' | 'running' | 'succeeded' | 'failed';
+  state?: SessionToolStatus;
   inputPreview?: string;
   outputPreview?: string;
   previewOnly?: boolean;
@@ -38,7 +40,7 @@ export type ApprovalDisplay = {
 };
 
 export type RuntimeStatusDisplay = {
-  state?: 'idle' | 'running' | 'paused' | 'completed' | 'failed';
+  state?: TaskState;
   summary?: string;
   details?: string;
 };

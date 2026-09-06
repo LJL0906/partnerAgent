@@ -45,6 +45,10 @@ export function memoryChatTaskResult(
       message_ref: { kind: 'chat_message', id: messageId },
       original_record: { kind: 'original_record', id: recordId },
       chat_task: { task_id: task.taskId, kind: 'chat_response' },
+      resolved_model: {
+        model_config_id: task.modelConfigId,
+        reasoning_level: task.reasoningLevel,
+      },
     },
   };
 }
@@ -109,10 +113,21 @@ export function memorySessionMessageViews(
 ): SessionMessageView[] {
   return (
     session?.messages.map((message) => ({
-      id: memoryMessageId(messageIds, session.id, message.sequence),
+      id: message.id ?? memoryMessageId(messageIds, session.id, message.sequence),
       role: message.role,
       content: message.content,
       created_at: new Date(message.timestamp).toISOString(),
+      sequence: message.sequence,
+      status: message.status ?? 'complete',
+      session_id: session.id,
+      revision: message.revision ?? 1,
+      ...(message.taskId ? { task_id: message.taskId } : {}),
+      ...(message.operationId ? { operation_id: message.operationId } : {}),
+      ...(message.modelConfigId ? { model_config_id: message.modelConfigId } : {}),
+      ...(message.reasoningLevel ? { reasoning_level: message.reasoningLevel } : {}),
+      ...(!message.modelConfigId && message.metadata?.model_config_id
+        ? { model_config_id: String(message.metadata.model_config_id) }
+        : {}),
     })) ?? []
   );
 }

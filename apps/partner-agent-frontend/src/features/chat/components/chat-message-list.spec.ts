@@ -15,32 +15,25 @@ vi.mock('react-native', () => ({
 vi.mock('@/components/ui/app-button', () => ({ AppButton: () => null }));
 vi.mock('./empty-chat-state', () => ({ EmptyChatState: () => React.createElement('span', null, 'EMPTY') }));
 vi.mock('./message-bubble', () => ({
-  MessageBubble: () => React.createElement('span', null, 'LEGACY'),
   ChatItemBubble: () => React.createElement('span', null, 'CANONICAL'),
 }));
+vi.mock('@/store/chat-store', () => ({ findSessionToolViewForItem: () => undefined }));
 
 const props = {
-  messages: [{ id: 'legacy', role: 'user' as const, content: 'old' }],
+  items: [] as ChatItem[], toolViews: [],
   horizontalPadding: 16, scroll: {} as MessageScrollController, onPrivacyPress: () => {},
 };
 
 const item: ChatItem = { schema_version: 1, id: 'current', type: 'message', status: 'completed',
-  collapsed: false, created_at: 1, updated_at: 1, payload: { role: 'user', content: 'new' } };
+  collapsed: false, created_at: 1, updated_at: 1, revision: 1, payload: { role: 'user', content: 'new' } };
 
 describe('chat list snapshot precedence', () => {
   it('does not display legacy messages alongside an authoritative empty state', () => {
-    const html = renderToStaticMarkup(React.createElement(ChatMessageList, { ...props, items: [] }));
-    expect(html).toContain('EMPTY');
-    expect(html).not.toContain('LEGACY');
-  });
-  it('keeps the legacy fallback only when items is absent', () => {
     const html = renderToStaticMarkup(React.createElement(ChatMessageList, props));
-    expect(html).toContain('LEGACY');
-    expect(html).not.toContain('EMPTY');
+    expect(html).toContain('EMPTY');
   });
   it('renders supplied items instead of the compatibility projection', () => {
     const html = renderToStaticMarkup(React.createElement(ChatMessageList, { ...props, items: [item] }));
     expect(html).toContain('CANONICAL');
-    expect(html).not.toContain('LEGACY');
   });
 });

@@ -18,6 +18,7 @@ export async function claimConfirmationWithOutbox(
       .getOne();
     if (!record || record.status !== 'pending') return false;
     record.status = 'executing';
+    record.version += 1;
     await repository.save(record);
     if (decision === 'confirm') {
       await ToolControlOutboxWriter.append(manager, record, [
@@ -55,11 +56,13 @@ export async function updateConfirmationWithOutbox(
       .getOne();
     if (!record) return;
     const previousStatus = record.status;
+    const previousVersion = record.version;
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
         (record as unknown as Record<string, unknown>)[key] = value;
       }
     }
+    if (record.version === previousVersion) record.version += 1;
     await repository.save(record);
     if (previousStatus === record.status) return;
     if (record.status === 'dismissed') {
@@ -139,6 +142,7 @@ export async function completeUndoWithOutbox(
     if (!confirmation) throw new Error('确认请求不存在');
     receipt.status = 'undone';
     confirmation.status = 'undone';
+    confirmation.version += 1;
     await receiptRepository.save(receipt);
     await confirmationRepository.save(confirmation);
     await ToolControlOutboxWriter.append(manager, confirmation, [

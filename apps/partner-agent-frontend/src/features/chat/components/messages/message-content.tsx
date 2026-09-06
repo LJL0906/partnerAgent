@@ -1,4 +1,4 @@
-import { Text, View } from 'react-native';
+import { Linking, Text, View } from 'react-native';
 
 import { colors } from '@/theme/colors';
 import { spacing } from '@/theme/spacing';
@@ -64,8 +64,19 @@ function renderParagraph(content: string) {
   const parts = content.split(/(\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g);
   return parts.map((part, index) => {
     const match = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-    return match ? <Text key={`link-${index}`} accessibilityLabel={`${match[1]}，链接`} accessibilityRole="link" selectable>{match[1]}</Text> : <Text key={`text-${index}`} selectable>{part}</Text>;
+    return match ? <Text key={`link-${index}`} accessibilityLabel={`${match[1]}，链接`} accessibilityRole="link" onPress={() => { void openSafeLink(match[2]); }} selectable style={{ color: colors.brand600, textDecorationLine: 'underline' }}>{match[1]}</Text> : <Text key={`text-${index}`} selectable>{part}</Text>;
   });
+}
+
+export async function openSafeLink(url: string): Promise<boolean> {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    await Linking.openURL(parsed.toString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function MessageContent({ content, align = 'left' }: MessageContentProps) {
@@ -73,7 +84,7 @@ export function MessageContent({ content, align = 'left' }: MessageContentProps)
   return <View accessibilityLabel="消息正文" style={{ width: '100%', alignItems: align === 'right' ? 'flex-end' : 'flex-start' }}>
     {blocks.map((block, index) => {
       if (block.type === 'code') return <View key={`code-${index}`} style={{ alignSelf: 'stretch', marginTop: index === 0 ? 0 : spacing.sm, padding: spacing.sm, borderRadius: 8, backgroundColor: colors.aiCore }}><Text selectable style={{ color: colors.surface, fontFamily: 'monospace', ...typography.body }}>{block.content}</Text></View>;
-      if (block.type === 'table') return <View key={`table-${index}`} accessibilityLabel="消息表格" accessibilityRole="table" style={{ alignSelf: 'stretch', marginTop: index === 0 ? 0 : spacing.sm, borderColor: colors.border, borderWidth: 1, borderRadius: 8, overflow: 'hidden' }}>{block.rows.map((row, rowIndex) => <View key={`row-${rowIndex}`} accessibilityRole="row" style={{ flexDirection: 'row', borderBottomColor: colors.border, borderBottomWidth: rowIndex === block.rows.length - 1 ? 0 : 1 }}>{row.map((cell, cellIndex) => <Text key={`cell-${cellIndex}`} accessibilityRole="cell" selectable style={{ flex: 1, padding: spacing.sm, color: colors.ink, ...typography.body }}>{cell}</Text>)}</View>)}</View>;
+      if (block.type === 'table') return <View key={`table-${index}`} accessibilityLabel="消息表格" style={{ alignSelf: 'stretch', marginTop: index === 0 ? 0 : spacing.sm, borderColor: colors.border, borderWidth: 1, borderRadius: 8, overflow: 'hidden' }}>{block.rows.map((row, rowIndex) => <View key={`row-${rowIndex}`} accessibilityLabel={`第 ${rowIndex + 1} 行`} style={{ flexDirection: 'row', borderBottomColor: colors.border, borderBottomWidth: rowIndex === block.rows.length - 1 ? 0 : 1 }}>{row.map((cell, cellIndex) => <Text key={`cell-${cellIndex}`} accessibilityLabel={`第 ${rowIndex + 1} 行第 ${cellIndex + 1} 列`} selectable style={{ flex: 1, padding: spacing.sm, color: colors.ink, ...typography.body }}>{cell}</Text>)}</View>)}</View>;
       return <Text key={`paragraph-${index}`} selectable style={{ color: colors.ink, ...typography.body, marginTop: index === 0 ? 0 : spacing.sm }}>{renderParagraph(block.content)}</Text>;
     })}
   </View>;

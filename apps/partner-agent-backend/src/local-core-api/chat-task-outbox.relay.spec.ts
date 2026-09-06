@@ -81,4 +81,27 @@ describe('ChatTaskOutboxRelay', () => {
     expect(outbox.fail).toHaveBeenCalledOnce();
     expect(outbox.claim).toHaveBeenCalledTimes(2);
   });
+
+  it('contains claim failures and permits the next poll to recover', async () => {
+    const { outbox, relay } = fixture();
+    outbox.claim
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockResolvedValueOnce([]);
+
+    await expect(relay.runOnce()).resolves.toBe(0);
+    await expect(relay.runOnce()).resolves.toBe(0);
+    expect(outbox.claim).toHaveBeenCalledTimes(2);
+  });
+
+  it('contains failure-recording errors and permits a later retry', async () => {
+    const { outbox, events, relay } = fixture();
+    events.subscribe(async () => {
+      throw new Error('publish unavailable');
+    });
+    outbox.fail.mockRejectedValueOnce(new Error('database unavailable'));
+
+    await expect(relay.runOnce()).resolves.toBe(0);
+    await expect(relay.runOnce()).resolves.toBe(0);
+    expect(outbox.claim).toHaveBeenCalledTimes(2);
+  });
 });

@@ -9,6 +9,7 @@ import {
   ToolOperationStore,
   ToolReconciliationError,
   assertToolReconciliationInput,
+  sessionToolViewFrom,
   type ExpiredToolConfirmationRecord,
   type ReconciledToolConfirmationRecord,
   type RecoverableToolConfirmationRecord,
@@ -62,6 +63,33 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
       .getRepository(ToolConfirmationEntity)
       .findOneBy({ id });
     return record ? this.confirmationFrom(record) : undefined;
+  }
+
+  async listSessionToolViews(ownerId: string, sessionId: string) {
+    const confirmations = await this.dataSource
+      .getRepository(ToolConfirmationEntity)
+      .find({ where: { ownerId, sessionId }, order: { createdAt: 'ASC' } });
+    if (confirmations.length === 0) return [];
+    const receipts = await this.dataSource
+      .getRepository(ToolExecutionReceiptEntity)
+      .find({
+        where: {
+          ownerId,
+          sessionId,
+          confirmationId: In(confirmations.map((record) => record.id)),
+        },
+      });
+    return confirmations.map((record) =>
+      sessionToolViewFrom(
+        this.confirmationFrom(record),
+        receipts.find((receipt) => receipt.confirmationId === record.id)
+          ? {
+              ...receipts.find((receipt) => receipt.confirmationId === record.id)!,
+              undoPayload: undefined,
+            }
+          : undefined,
+      ),
+    );
   }
 
   async claimConfirmation(
@@ -145,7 +173,7 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
       if (records.length === 0) return [];
       await repository.update(
         { id: In(records.map((record) => record.id)), status: 'pending' },
-        { status: 'expired' },
+        { status: 'expired', version: () => 'version + 1' },
       );
       return records.map(
         (record) =>
@@ -213,12 +241,14 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
             {
               status: 'indeterminate',
               reconciliationSnapshotJson: snapshot,
+              version: () => 'version + 1',
             },
           );
           if (updated.affected !== 1) {
             throw new ToolReconciliationError('核对记录状态已变化');
           }
           record.reconciliationSnapshotJson = snapshot;
+          record.version += 1;
         }
       }
       return records.map(
@@ -375,10 +405,22 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
   }
 
   async claimReceiptForUndo(id: string): Promise<boolean> {
-    const result = await this.dataSource
-      .getRepository(ToolExecutionReceiptEntity)
-      .update({ id, status: 'applied' }, { status: 'undoing' });
-    return result.affected === 1;
+    return this.dataSource.transaction(async (manager) => {
+      const receipts = manager.getRepository(ToolExecutionReceiptEntity);
+      const receipt = await receipts.findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+      if (!receipt || receipt.status !== 'applied') return false;
+      const confirmations = manager.getRepository(ToolConfirmationEntity);
+      const confirmation = await confirmations.findOne({
+        where: { id: receipt.confirmationId, ownerId: receipt.ownerId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!confirmation) return false;
+      receipt.status = 'undoing';
+      confirmation.version += 1;
+      await receipts.save(receipt);
+      await confirmations.save(confirmation);
+      return true;
+    });
   }
 
   private resultFrom(value: unknown): ToolConfirmationRecord['result'] {
@@ -449,9 +491,17 @@ export class TypeOrmToolOperationStore extends ToolOperationStore {
           : JSON.stringify(updates.undoPayload),
     };
     delete (entityUpdates as { undoPayload?: unknown }).undoPayload;
-    await this.dataSource
-      .getRepository(ToolExecutionReceiptEntity)
-      .update({ id }, entityUpdates);
+    await this.dataSource.transaction(async (manager) => {
+      const receipts = manager.getRepository(ToolExecutionReceiptEntity);
+      const receipt = await receipts.findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+      if (!receipt) return;
+      await receipts.update({ id }, entityUpdates);
+      await manager.getRepository(ToolConfirmationEntity).increment(
+        { id: receipt.confirmationId, ownerId: receipt.ownerId },
+        'version',
+        1,
+      );
+    });
   }
 
   async completeUndo(executionId: string): Promise<void> {

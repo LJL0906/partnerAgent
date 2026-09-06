@@ -7,9 +7,13 @@ import {
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
   type RejectInputAnalysisCommand,
+  type AssistantCompletionCommand,
+  type AssistantProgressCommand,
+  type IdempotentCommand,
   type StoredChatTask,
   type SubmitTextCommand,
 } from './chat-task.store.js';
+import { parseChatPreviewsV1 } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import {
   copyStoredChatTask,
@@ -45,6 +49,28 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     private readonly maxSessionsPerUser = 100,
   ) {
     super();
+  }
+
+  async executeIdempotentCommand<T extends Record<string, unknown>>(
+    command: IdempotentCommand,
+    execute: () => Promise<T>,
+  ): Promise<T> {
+    const operationKey = memoryTaskKey(command.ownerId, command.operationId);
+    const prior = this.operations.get(operationKey);
+    if (prior) {
+      if (
+        prior.commandName !== command.commandName ||
+        prior.fingerprint !== command.requestFingerprint
+      ) throw new ChatTaskConflictError();
+      return structuredClone(prior.result) as T;
+    }
+    const result = await execute();
+    this.operations.set(operationKey, {
+      commandName: command.commandName,
+      fingerprint: command.requestFingerprint,
+      result: structuredClone(result),
+    });
+    return result;
   }
 
   async rejectInputAnalysis(command: RejectInputAnalysisCommand) {
@@ -118,7 +144,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     );
     const session = await this.sessions.find(sessionId, command.ownerId);
     const sequence = session?.messages.at(-1)?.sequence ?? 1;
-    const messageId = randomUUID();
+    const messageId = session?.messages.at(-1)?.id ?? randomUUID();
     this.messageIds.set(`${sessionId}:${sequence}`, messageId);
     const now = new Date();
     const task: StoredChatTask = {
@@ -129,6 +155,8 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       inputId: command.inputId,
       modelConfigId: command.modelConfigId ?? `${process.env.DEFAULT_PROVIDER ?? 'deepseek'}:${process.env.DEFAULT_MODEL ?? ''}`,
       reasoningLevel: command.reasoningLevel ?? 'medium',
+      outputMode: command.outputMode ?? 'chat',
+      ...(command.previewKind ? { previewKind: command.previewKind } : {}),
       text: command.text,
       state: 'queued',
       originalRecordId: randomUUID(),
@@ -302,7 +330,9 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       !task ||
       task.ownerId !== ownerId ||
       task.state !== 'running' ||
-      task.leaseOwner !== leaseOwner
+      task.leaseOwner !== leaseOwner ||
+      !task.leaseExpiresAt ||
+      task.leaseExpiresAt.getTime() <= Date.now()
     ) {
       return false;
     }
@@ -454,9 +484,12 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (
       ['completed', 'failed', 'cancelled'].includes(task.state) ||
       (leaseOwner !== undefined &&
-        (task.state !== 'running' || task.leaseOwner !== leaseOwner))
+        (task.state !== 'running' || task.leaseOwner !== leaseOwner ||
+          !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now()))
     ) {
-      return copyStoredChatTask(task);
+      return ['completed', 'failed', 'cancelled'].includes(task.state)
+        ? copyStoredChatTask(task)
+        : undefined;
     }
     const session = await this.sessions.find(task.sessionId, ownerId);
     const last = session?.messages.at(-1);
@@ -486,9 +519,12 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (
       ['completed', 'failed', 'cancelled'].includes(task.state) ||
       (leaseOwner !== undefined &&
-        (task.state !== 'running' || task.leaseOwner !== leaseOwner))
+        (task.state !== 'running' || task.leaseOwner !== leaseOwner ||
+          !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now()))
     ) {
-      return copyStoredChatTask(task);
+      return ['completed', 'failed', 'cancelled'].includes(task.state)
+        ? copyStoredChatTask(task)
+        : undefined;
     }
     task.state = 'failed';
     delete task.waitingToolConfirmationId;
@@ -500,8 +536,178 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     task.updatedAt = task.completedAt;
     return copyStoredChatTask(task);
   }
+
+  async appendAssistantProgress(command: AssistantProgressCommand) {
+    const task = this.tasks.get(command.taskId);
+    if (!this.hasCurrentLease(task, command)) return { outcome: 'fence_rejected' as const };
+    const session = await this.sessions.find(command.sessionId, command.ownerId);
+    const existing = session?.messages.find(
+      (message) => message.role === 'assistant' && message.taskId === task.taskId,
+    );
+    const revision = existing?.revision ?? 0;
+    const content = existing?.content ?? '';
+    if (
+      command.expectedRevision !== revision ||
+      command.textOffset !== content.length ||
+      command.delta.length === 0
+    ) return { outcome: 'conflict' as const };
+    const messageId = existing?.id ?? task.resultMessageId ?? randomUUID();
+    const written = await this.sessions.saveTaskAssistantMessage(
+      task.sessionId,
+      task.ownerId,
+      {
+        id: messageId,
+        taskId: task.taskId,
+        operationId: task.operationId,
+        modelConfigId: task.modelConfigId,
+        reasoningLevel: task.reasoningLevel,
+        content: content + command.delta,
+        status: 'streaming',
+        revision: revision + 1,
+      },
+    );
+    task.resultMessageId = messageId;
+    task.updatedAt = new Date();
+    return {
+      outcome: 'committed' as const,
+      textOffset: command.textOffset,
+      message: this.messageDto(task, written.sequence, written.createdAt, {
+        id: messageId,
+        content: content + command.delta,
+        status: 'streaming',
+        revision: revision + 1,
+      }),
+    };
+  }
+
+  async completeAssistantOutput(command: AssistantCompletionCommand) {
+    const task = this.tasks.get(command.taskId);
+    if (!task || task.ownerId !== command.ownerId || task.sessionId !== command.sessionId || task.operationId !== command.operationId) {
+      return { outcome: 'fence_rejected' as const };
+    }
+    if (task.state === 'completed' && task.resultMessageId) {
+      const session = await this.sessions.find(task.sessionId, task.ownerId);
+      const existing = session?.messages.find((message) => message.id === task.resultMessageId);
+      if (!existing) return { outcome: 'conflict' as const };
+      const existingId = existing.id ?? task.resultMessageId;
+      existing.id = existingId;
+      return {
+        outcome: 'already_completed' as const,
+        task: copyStoredChatTask(task),
+        message: this.messageDto(task, existing.sequence, new Date(existing.timestamp), {
+          id: existingId,
+          content: existing.content,
+          status: 'complete',
+          revision: existing.revision ?? 1,
+        }),
+      };
+    }
+    if (!this.hasCurrentLease(task, command)) return { outcome: 'fence_rejected' as const };
+    const previews = command.chatPreviews.length
+      ? parseChatPreviewsV1(command.chatPreviews)
+      : [];
+    const session = await this.sessions.find(task.sessionId, task.ownerId);
+    const existing = session?.messages.find(
+      (message) => message.role === 'assistant' && message.taskId === task.taskId,
+    );
+    if (command.expectedRevision !== (existing?.revision ?? 0)) {
+      return { outcome: 'conflict' as const };
+    }
+    const messageId = existing?.id ?? task.resultMessageId ?? randomUUID();
+    const revision = (existing?.revision ?? 0) + 1;
+    const written = await this.sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
+      id: messageId,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      modelConfigId: task.modelConfigId,
+      reasoningLevel: task.reasoningLevel,
+      content: command.content,
+      status: 'complete',
+      revision,
+      ...(previews.length ? { metadata: { chat_previews: previews } } : {}),
+    });
+    await this.sessions.saveContextSnapshot(
+      task.sessionId,
+      task.ownerId,
+      command.contextMessages,
+      written.sequence,
+    );
+    task.resultMessageId = messageId;
+    task.state = 'completed';
+    delete task.waitingToolConfirmationId;
+    delete task.leaseOwner;
+    delete task.leaseExpiresAt;
+    task.completedAt = new Date();
+    task.updatedAt = task.completedAt;
+    return {
+      outcome: 'committed' as const,
+      task: copyStoredChatTask(task),
+      message: this.messageDto(task, written.sequence, written.createdAt, {
+        id: messageId,
+        content: command.content,
+        status: 'complete',
+        revision,
+      }),
+    };
+  }
+
   async listSessionMessages(ownerId: string, sessionId: string) {
     const session = await this.sessions.find(sessionId, ownerId);
     return memorySessionMessageViews(session, this.messageIds);
+  }
+
+  async listSessionChatPreviews(ownerId: string, sessionId: string) {
+    const session = await this.sessions.find(sessionId, ownerId);
+    if (!session) return [];
+    return session.messages.flatMap((message) => {
+      const messageId = message.id;
+      if (message.role !== 'assistant' || !messageId || !message.taskId || !message.operationId) return [];
+      const taskId = message.taskId;
+      const operationId = message.operationId;
+      const previews = message.metadata?.chat_previews;
+      if (!Array.isArray(previews)) return [];
+      return previews.map((preview) => ({
+        session_id: sessionId,
+        task_id: taskId,
+        operation_id: operationId,
+        message_id: messageId,
+        message_revision: message.revision ?? 1,
+        preview: structuredClone(preview) as import('@partner-agent/contracts').ChatPreviewV1,
+      }));
+    });
+  }
+
+  private hasCurrentLease(
+    task: StoredChatTask | undefined,
+    command: { ownerId: string; sessionId: string; operationId: string; leaseToken: string },
+  ): task is StoredChatTask {
+    return Boolean(
+      task && task.ownerId === command.ownerId && task.sessionId === command.sessionId &&
+      task.operationId === command.operationId && task.state === 'running' &&
+      task.leaseOwner === command.leaseToken && task.leaseExpiresAt &&
+      task.leaseExpiresAt.getTime() > Date.now(),
+    );
+  }
+
+  private messageDto(
+    task: StoredChatTask,
+    sequence: number,
+    createdAt: Date,
+    message: { id: string; content: string; status: 'streaming' | 'complete'; revision: number },
+  ) {
+    return {
+      id: message.id,
+      session_id: task.sessionId,
+      sequence,
+      role: 'assistant' as const,
+      content: message.content,
+      status: message.status,
+      revision: message.revision,
+      task_id: task.taskId,
+      operation_id: task.operationId,
+      model_config_id: task.modelConfigId,
+      reasoning_level: task.reasoningLevel,
+      created_at: createdAt.toISOString(),
+    };
   }
 }

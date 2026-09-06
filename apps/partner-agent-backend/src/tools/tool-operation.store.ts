@@ -1,4 +1,4 @@
-import type { ToolRiskLevel } from '@partner-agent/contracts';
+import type { SessionToolView, ToolRiskLevel } from '@partner-agent/contracts';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { TypeOrmToolControlOutbox } from './tool-control-outbox.js';
 
@@ -225,6 +225,10 @@ export abstract class ToolOperationStore {
   abstract findConfirmation(
     id: string,
   ): Promise<ToolConfirmationRecord | undefined>;
+  abstract listSessionToolViews(
+    ownerId: string,
+    sessionId: string,
+  ): Promise<SessionToolView[]>;
   abstract claimConfirmation(
     id: string,
     decision?: ToolApprovalDecision,
@@ -264,4 +268,42 @@ export abstract class ToolOperationStore {
     updates: Partial<ToolExecutionReceipt>,
   ): Promise<void>;
   abstract completeUndo(executionId: string): Promise<void>;
+}
+
+export function sessionToolViewFrom(
+  confirmation: ToolConfirmationRecord,
+  receipt: ToolExecutionReceipt | undefined,
+  now = new Date(),
+): SessionToolView {
+  const status = receipt?.status === 'undone' ? 'undone' : confirmation.status;
+  const allowedActions: SessionToolView['allowed_actions'] = [];
+  if (status === 'pending' && confirmation.expiresAt.getTime() > now.getTime()) {
+    allowedActions.push('confirm', 'dismiss');
+  }
+  if (
+    status === 'succeeded' &&
+    receipt?.status === 'applied' &&
+    receipt.undoExpiresAt.getTime() > now.getTime()
+  ) allowedActions.push('undo');
+  return {
+    session_id: confirmation.sessionId,
+    tool_call_id: confirmation.toolCallId,
+    confirmation_id: confirmation.id,
+    ...(receipt ? { execution_id: receipt.id } : {}),
+    ...(confirmation.taskId ? { task_id: confirmation.taskId } : {}),
+    ...(confirmation.operationId
+      ? { operation_id: confirmation.operationId }
+      : {}),
+    tool_name: confirmation.toolName,
+    status,
+    version: confirmation.version ?? 1,
+    request_summary: confirmation.requestSummary,
+    ...(confirmation.resultSummary
+      ? { result_summary: confirmation.resultSummary }
+      : {}),
+    risk_level: confirmation.riskLevel,
+    expires_at: confirmation.expiresAt.toISOString(),
+    ...(receipt ? { undo_expires_at: receipt.undoExpiresAt.toISOString() } : {}),
+    allowed_actions: allowedActions,
+  };
 }

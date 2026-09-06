@@ -50,7 +50,7 @@ describe('specialized chat item cards', () => {
   });
 
   it('does not allow repeating an undo when its result is uncertain', () => {
-    const element = ToolCallCard({ toolName: '工具', state: 'completed', undoAvailable: true, onUndo: vi.fn(),
+    const element = ToolCallCard({ toolName: '工具', state: 'succeeded', undoAvailable: true, onUndo: vi.fn(),
       feedback: { phase: 'unknown', message: '操作结果未知，请刷新状态。' } });
     expect(markup(element)).toContain('操作结果未知');
     expect(findElements(element, (node) => (node.props as { children?: unknown }).children === '撤销')).toHaveLength(0);
@@ -67,7 +67,7 @@ describe('specialized chat item cards', () => {
   it('distinguishes tool state and keeps input/output previews available', () => {
     const html = markup(React.createElement(ToolCallCard, {
       toolName: '搜索知识库',
-      state: 'running',
+      state: 'executing',
       inputPreview: '{"query":"合同"}',
       outputPreview: '等待工具返回',
     }));
@@ -115,14 +115,12 @@ describe('specialized chat item cards', () => {
 
   it.each([
     ['pending', '待确认'],
-    ['queued', '排队中'],
-    ['streaming', '处理中'],
-    ['running', '处理中'],
-    ['paused', '已暂停'],
-    ['completed', '已确认'],
+    ['executing', '执行中'],
+    ['succeeded', '已完成'],
     ['dismissed', '已拒绝'],
     ['expired', '已过期'],
-    ['cancelled', '已取消'],
+    ['indeterminate', '结果待核对'],
+    ['undone', '已撤销'],
     ['failed', '失败'],
   ] as const)('renders approval status %s and only permits pending decisions', (status, label) => {
     const element = ApprovalCard({
@@ -155,17 +153,14 @@ describe('specialized chat item cards', () => {
   });
 
   it.each([
-    ['queued', '排队中', false],
-    ['pending', '可撤销', true],
-    ['streaming', '执行中', false],
-    ['running', '执行中', false],
-    ['paused', '已暂停', false],
-    ['succeeded', '已完成', true],
-    ['completed', '已完成', true],
+    ['pending', '待处理', false],
+    ['executing', '执行中', false],
+    ['indeterminate', '结果待核对', false],
+    ['succeeded', '可撤销', true],
     ['failed', '失败', false],
-    ['cancelled', '已取消', false],
     ['dismissed', '已拒绝', false],
     ['expired', '已过期', false],
+    ['undone', '已撤销', false],
   ] as const)('gates undo by tool state %s even when available', (state, label, canUndo) => {
     const onUndo = vi.fn();
     const element = ToolCallCard({ toolName: '写入文件', state, undoAvailable: true, onUndo });
@@ -196,7 +191,7 @@ describe('specialized chat item cards', () => {
   });
 
   it.each([
-    ['completed', '工具操作已撤销'],
+    ['undone', '工具操作已撤销'],
     ['failed', '工具操作撤销失败'],
   ] as const)('keeps the server undo result for %s without a repeat undo button', (state, outputPreview) => {
     const element = ToolCallCard({
@@ -229,7 +224,11 @@ describe('specialized chat item cards', () => {
   });
 
   it.each([
+    ['queued', '排队中'],
     ['running', '运行中'],
+    ['waiting_privacy_decision', '等待隐私确认'],
+    ['waiting_tool_approval', '等待工具审批'],
+    ['cancelled', '已取消'],
     ['completed', '已完成'],
     ['failed', '失败'],
   ] as const)('renders runtime state label: %s', (state, label) => {
@@ -271,7 +270,8 @@ describe('specialized chat item cards', () => {
     }));
     expect(html).toContain('项目文档');
     expect(html).toContain('accessibilityRole="link"');
-    expect(html).toContain('accessibilityRole="table"');
+    expect(html).toContain('accessibilityLabel="消息表格"');
+    expect(html).not.toContain('accessibilityRole="table"');
     expect(html).toContain('API');
     expect(html).toContain('&quot;ok&quot;: true');
   });

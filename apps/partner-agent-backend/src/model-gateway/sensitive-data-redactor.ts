@@ -9,6 +9,7 @@ import {
 } from './sensitive-data.types.js';
 import {
   isSafeSensitivePlaceholder,
+  parseJsonContainer,
   passesLuhn,
   sensitiveFieldRule,
 } from './sensitive-data-scanner.js';
@@ -63,6 +64,10 @@ export class SensitiveDataRedactor {
         return item;
       if (typeof item === 'string') {
         countString(item);
+        const parsed = parseJsonContainer(item);
+        if (parsed !== undefined) {
+          return JSON.stringify(clone(parsed, depth + 1));
+        }
         return redactText(item);
       }
       if (typeof item === 'number') {
@@ -163,17 +168,17 @@ function redactText(original: string): string {
   );
   text = redactExpression(
     text,
-    /((?:password|passwd|pwd|密码)\s*(?:是|为|[:=])\s*)(?!\[REDACTED:)[^\s,，;；}"']+/giu,
+    /((?:password|passwd|pwd|密码)(?:["']\s*)?(?:是|为|[:=])\s*)(["']?)(?!\[REDACTED:)[^\s,，;；}"']+\2/giu,
     SENSITIVE_PLACEHOLDERS.password,
   );
   text = redactExpression(
     text,
-    /((?:api[\s_-]*key|api\s*密钥|API密钥)\s*(?:是|为|[:=])\s*)(?!\[REDACTED:)[^\s,，;；}"']+/giu,
+    /((?:api[\s_-]*key|api\s*密钥|API密钥)(?:["']\s*)?(?:是|为|[:=])\s*)(["']?)(?!\[REDACTED:)[^\s,，;；}"']+\2/giu,
     SENSITIVE_PLACEHOLDERS.api_key,
   );
   text = redactExpression(
     text,
-    /((?:client[\s_-]*secret|private[\s_-]*key|secret|token|(?<!API)(?<!API )密钥|令牌)\s*(?:是|为|[:=])\s*)(?!\[REDACTED:)[^\s,，;；}"']+/giu,
+    /((?:client[\s_-]*secret|private[\s_-]*key|secret|token|(?<!API)(?<!API )密钥|令牌)(?:["']\s*)?(?:是|为|[:=])\s*)(["']?)(?!\[REDACTED:)[^\s,，;；}"']+\2/giu,
     SENSITIVE_PLACEHOLDERS.secret,
   );
   text = text.replace(
@@ -194,7 +199,8 @@ function redactExpression(
 ): string {
   return text.replace(
     pattern,
-    (_match, prefix: string) => `${prefix}${placeholder}`,
+    (_match, prefix: string, quote = '') =>
+      `${prefix}${quote}${placeholder}${quote}`,
   );
 }
 

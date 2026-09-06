@@ -7,11 +7,7 @@ import { ObservabilityModule } from '../observability/observability.module.js';
 
 @Module({
   imports: [DatabaseModule, ObservabilityModule],
-  providers: [
-    ExternalRequestBuilder,
-    EgressPolicyGateway,
-    ModelGatewayService,
-  ],
-  exports: [ModelGatewayService, EgressPolicyGateway],
+  providers: [ExternalRequestBuilder, EgressPolicyGateway, ModelGatewayService],
+  exports: [ModelGatewayService],
 })
 export class ModelGatewayModule {}

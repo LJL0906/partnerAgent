@@ -1,9 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import type { SessionMessage } from '@partner-agent/contracts';
 function compactTitle(content: string): string {
   return content.replace(/\s+/g, ' ').trim().slice(0, 48) || '新对话';
 }
 
-import { SessionStore, type StoredSession } from './session-store.js';
+import {
+  SessionStore,
+  type StoredSession,
+  type TaskAssistantMessageWrite,
+} from './session-store.js';
 
 export class MemorySessionStore extends SessionStore {
   private readonly sessions = new Map<string, StoredSession>();
@@ -81,6 +86,7 @@ export class MemorySessionStore extends SessionStore {
     const session = this.requireOwned(sessionId, ownerId);
     if (role === 'user' && session.title === null) session.title = compactTitle(content);
     session.messages.push({
+      id: randomUUID(),
       sequence: (session.messages.at(-1)?.sequence ?? 0) + 1,
       role,
       content,
@@ -89,10 +95,14 @@ export class MemorySessionStore extends SessionStore {
     session.lastActiveAt = new Date();
   }
 
-  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }): Promise<void> {
+  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }) {
     const session = this.requireOwned(sessionId, ownerId);
-    session.messages.push({ sequence: (session.messages.at(-1)?.sequence ?? 0) + 1, role: 'system', content, timestamp: Date.now(), metadata });
+    const id = randomUUID();
+    const sequence = (session.messages.at(-1)?.sequence ?? 0) + 1;
+    const createdAt = new Date();
+    session.messages.push({ id, sequence, role: 'system', content, timestamp: createdAt.getTime(), metadata });
     session.lastActiveAt = new Date();
+    return { id, sequence, createdAt };
   }
 
   async completeAssistantTurn(
@@ -104,6 +114,7 @@ export class MemorySessionStore extends SessionStore {
     const session = this.requireOwned(sessionId, ownerId);
     if (content) {
       session.messages.push({
+        id: randomUUID(),
         sequence: (session.messages.at(-1)?.sequence ?? 0) + 1,
         role: 'assistant',
         content,
@@ -112,6 +123,58 @@ export class MemorySessionStore extends SessionStore {
     }
     session.contextMessages = structuredClone(contextMessages);
     session.contextRevision = session.messages.at(-1)?.sequence ?? 0;
+    session.lastActiveAt = new Date();
+  }
+
+  async saveTaskAssistantMessage(
+    sessionId: string,
+    ownerId: string,
+    message: TaskAssistantMessageWrite,
+  ) {
+    const session = this.requireOwned(sessionId, ownerId);
+    const existing = session.messages.find(
+      (candidate) => candidate.role === 'assistant' && candidate.taskId === message.taskId,
+    );
+    const createdAt = existing ? new Date(existing.timestamp) : new Date();
+    if (existing) {
+      existing.id ??= message.id;
+      Object.assign(existing, {
+        content: message.content,
+        status: message.status,
+        revision: message.revision,
+        metadata: structuredClone(message.metadata),
+      });
+      session.lastActiveAt = new Date();
+      return { id: existing.id, sequence: existing.sequence, createdAt };
+    }
+    const sequence = (session.messages.at(-1)?.sequence ?? 0) + 1;
+    session.messages.push({
+      id: message.id,
+      sequence,
+      role: 'assistant',
+      content: message.content,
+      timestamp: createdAt.getTime(),
+      status: message.status,
+      revision: message.revision,
+      taskId: message.taskId,
+      operationId: message.operationId,
+      modelConfigId: message.modelConfigId,
+      reasoningLevel: message.reasoningLevel,
+      ...(message.metadata ? { metadata: structuredClone(message.metadata) } : {}),
+    });
+    session.lastActiveAt = new Date();
+    return { id: message.id, sequence, createdAt };
+  }
+
+  async saveContextSnapshot(
+    sessionId: string,
+    ownerId: string,
+    contextMessages: unknown[],
+    contextRevision: number,
+  ): Promise<void> {
+    const session = this.requireOwned(sessionId, ownerId);
+    session.contextMessages = structuredClone(contextMessages);
+    session.contextRevision = contextRevision;
     session.lastActiveAt = new Date();
   }
 

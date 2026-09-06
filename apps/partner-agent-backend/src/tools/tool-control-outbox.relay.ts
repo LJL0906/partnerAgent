@@ -51,6 +51,11 @@ export class ToolControlOutboxRelay {
         if (await this.relay(event)) delivered += 1;
       }
       return delivered;
+    } catch (error) {
+      this.logger.warn(
+        `Tool control outbox poll failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 0;
     } finally {
       this.relaying = false;
     }
@@ -84,7 +89,13 @@ export class ToolControlOutboxRelay {
       }
       return await outbox.acknowledge(event);
     } catch {
-      await outbox.fail(event, RETRY_DELAY_MS);
+      try {
+        await outbox.fail(event, RETRY_DELAY_MS);
+      } catch (error) {
+        this.logger.warn(
+          `Tool control outbox failure update failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       if (event.attemptCount >= TOOL_CONTROL_OUTBOX_MAX_ATTEMPTS) {
         this.logger.error('Tool control outbox event exhausted attempts');
       }

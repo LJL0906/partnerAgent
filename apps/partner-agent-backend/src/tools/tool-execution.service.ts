@@ -37,9 +37,16 @@ export class ToolExecutionService {
     );
   }
 
-  createAgentTools(context: ToolExecutionContext): AgentTool[] {
+  createAgentTools(
+    context: ToolExecutionContext,
+    options: { readOnlyOnly?: boolean } = {},
+  ): AgentTool[] {
     return this.registry
       .list()
+      .filter(
+        (definition) =>
+          !options.readOnlyOnly || definition.effect === 'read_only',
+      )
       .filter((definition) => this.hasPermissions(definition, context))
       .map((definition) =>
         this.registry.toPublicTool(definition, (toolCallId, args, signal) =>

@@ -20,6 +20,11 @@ import {
 } from './agent-runtime-telemetry.js';
 import { trimCompleteTurns } from './pi-agent-context.js';
 import { buildAgentSystemPrompt } from './agent-system-prompt.js';
+import { ModelGatewayService } from '../model-gateway/model-gateway.service.js';
+import { ExternalRequestBuilder } from '../model-gateway/external-request.builder.js';
+import { EgressPolicyGateway } from '../model-gateway/egress-policy.gateway.js';
+import { MemoryEgressDecisionStore } from '../model-gateway/memory-egress-decision.store.js';
+import { MemoryEgressAuditStore } from '../database/egress-audit.store.js';
 
 const fakeModel = {
   id: 'fake-model',
@@ -84,7 +89,10 @@ function mockGateway(legacy: {
 
 describe('PiAgentService', () => {
   it('assembles the versioned chat workspace system prompt into each Pi agent', async () => {
-    const sessions = new SessionManager(new ConfigService(), new MemorySessionStore());
+    const sessions = new SessionManager(
+      new ConfigService(),
+      new MemorySessionStore(),
+    );
     const tools = createToolServices();
     let systemPrompt = '';
     const service = new PiAgentService(
@@ -96,7 +104,11 @@ describe('PiAgentService', () => {
           const stream = new AssistantMessageEventStream();
           queueMicrotask(() => {
             stream.push({ type: 'start', partial: assistantMessage });
-            stream.push({ type: 'done', reason: 'stop', message: assistantMessage });
+            stream.push({
+              type: 'done',
+              reason: 'stop',
+              message: assistantMessage,
+            });
             stream.end(assistantMessage);
           });
           return stream;
@@ -107,7 +119,11 @@ describe('PiAgentService', () => {
       tools.registry,
     );
 
-    for await (const _event of service.chat('prompt-session', '你好', 'user-a')) {
+    for await (const _event of service.chat(
+      'prompt-session',
+      '你好',
+      'user-a',
+    )) {
       // Consume the run.
     }
 
@@ -834,6 +850,127 @@ describe('PiAgentService', () => {
     ).toBe(true);
   });
 
+  it('collects structured preview tool output and returns it for atomic task completion', async () => {
+    const store = new MemorySessionStore();
+    const sessions = new SessionManager(new ConfigService(), store);
+    await sessions.getOrCreate('preview-agent-session', 'user-a');
+    const tools = createToolServices();
+    tools.registry.register({
+      tool: {
+        name: 'external-preview-forbidden',
+        label: '禁止的外部写入',
+        description: '结构化预览模式不应暴露此外部工具。',
+        parameters: Type.Object({}),
+        execute: async () => ({ content: [], details: {} }),
+      },
+      riskLevel: 'high',
+      effect: 'external_side_effect',
+      capabilities: ['external_api'],
+      requiredPermissions: [],
+      requiresToolApproval: true,
+    });
+    const forbiddenFormalExecute = vi.fn();
+    const forbiddenCandidateWrite = vi.fn(async () => ({
+      content: [],
+      details: {
+        status: 'candidate_staged' as const,
+        batch_id: 'forbidden-batch',
+        candidate_ids: [],
+      },
+    }));
+    tools.registry.register({
+      tool: {
+        name: 'formal-preview-forbidden',
+        label: '禁止的正式业务写入',
+        description: '结构化预览模式不应暴露此正式业务工具。',
+        parameters: Type.Object({}),
+        execute: forbiddenFormalExecute,
+      },
+      riskLevel: 'medium',
+      effect: 'formal_business_data',
+      capabilities: ['generate_candidate_batch'],
+      requiredPermissions: [],
+      requiresToolApproval: false,
+      createCandidateBatch: forbiddenCandidateWrite,
+    });
+    let streamCalls = 0;
+    let exposedTools: string[] = [];
+    const service = new PiAgentService(
+      new ConfigService({ DEFAULT_PROVIDER: 'deepseek', DEFAULT_MODEL: 'fake-model' }),
+      mockGateway({
+        getModel: () => fakeModel,
+        getModels: () => [fakeModel],
+        streamSimple: (_model, context) => {
+          streamCalls += 1;
+          exposedTools = [...new Set([
+            ...exposedTools,
+            ...(context.tools?.map((tool) => tool.name) ?? []),
+          ])];
+          const stream = new AssistantMessageEventStream();
+          const isToolCall = streamCalls === 1;
+          const message = {
+            ...assistantMessage,
+            content: isToolCall
+              ? [{
+                  type: 'toolCall' as const,
+                  id: 'preview-call-1',
+                  name: 'emit_chat_preview',
+                  arguments: {
+                    schema_version: 1,
+                    kind: 'action',
+                    content: { title: '提交周报', confidence: 0.9 },
+                  },
+                }]
+              : [{ type: 'text' as const, text: '已整理为预览。' }],
+            stopReason: isToolCall ? ('toolUse' as const) : ('stop' as const),
+          };
+          queueMicrotask(() => {
+            stream.push({ type: 'start', partial: message });
+            if (!isToolCall) stream.push({
+              type: 'text_delta', contentIndex: 0, delta: '已整理为预览。', partial: message,
+            });
+            stream.push({ type: 'done', reason: message.stopReason, message });
+            stream.end(message);
+          });
+          return stream;
+        },
+      }),
+      sessions,
+      tools.execution,
+      tools.registry,
+    );
+
+    const events = [];
+    for await (const event of service.resumeTask(
+      'preview-agent-session', '生成行动', 'user-a', {
+        taskId: 'task-preview', operationId: 'operation-preview',
+        outputMode: 'structured_preview', previewKind: 'action',
+        originalRecordId: 'record-preview', userMessageId: 'message-preview',
+      },
+    )) events.push(event);
+
+    expect(exposedTools).toContain('emit_chat_preview');
+    expect(exposedTools).not.toContain('external-preview-forbidden');
+    expect(exposedTools).not.toContain('formal-preview-forbidden');
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'assistant_output_complete',
+      data: expect.objectContaining({
+        content: '已整理为预览。',
+        chatPreviews: [expect.objectContaining({
+          kind: 'action', confirmation_status: 'unconfirmed', applied: false,
+          source_refs: [
+            { kind: 'original_record', id: 'record-preview' },
+            { kind: 'chat_message', id: 'message-preview' },
+          ],
+        })],
+      }),
+    }));
+    expect((await sessions.getHistory('preview-agent-session', 'user-a'))
+      .filter((message) => message.role === 'assistant')).toHaveLength(0);
+    expect(forbiddenFormalExecute).not.toHaveBeenCalled();
+    expect(forbiddenCandidateWrite).not.toHaveBeenCalled();
+  });
+
   it('replaces a persisted pending tool result and continues after approval', async () => {
     const store = new MemorySessionStore();
     const preparingManager = new SessionManager(new ConfigService(), store);
@@ -1067,6 +1204,120 @@ describe('PiAgentService', () => {
     ]);
   });
 
+  it('resumes the same semantic privacy request through the real model gateway', async () => {
+    const config = new ConfigService({
+      DEFAULT_PROVIDER: 'deepseek',
+      DEFAULT_MODEL: 'fake-model',
+      EGRESS_SENSITIVE_ACTION: 'ask',
+    });
+    const decisions = new MemoryEgressDecisionStore();
+    const audit = new MemoryEgressAuditStore();
+    const policy = new EgressPolicyGateway(config, audit, decisions);
+    const gateway = new ModelGatewayService(
+      config,
+      new ExternalRequestBuilder(),
+      policy,
+    );
+    let providerCalls = 0;
+    (
+      gateway as unknown as {
+        models: {
+          getModels: () => (typeof fakeModel)[];
+          getModel: () => typeof fakeModel;
+          streamSimple: () => AssistantMessageEventStream;
+        };
+      }
+    ).models = {
+      getModels: () => [fakeModel],
+      getModel: () => fakeModel,
+      streamSimple: () => {
+        providerCalls += 1;
+        const stream = new AssistantMessageEventStream();
+        const message = {
+          ...assistantMessage,
+          content: [{ type: 'text' as const, text: '审批后继续成功' }],
+        };
+        queueMicrotask(() => {
+          stream.push({ type: 'start', partial: message });
+          stream.push({
+            type: 'text_delta',
+            contentIndex: 0,
+            delta: '审批后继续成功',
+            partial: message,
+          });
+          stream.push({ type: 'done', reason: 'stop', message });
+          stream.end(message);
+        });
+        return stream;
+      },
+    };
+    const sessions = new SessionManager(config, new MemorySessionStore());
+    await sessions.getOrCreate('privacy-gateway-session', 'user-a');
+    await sessions.saveMessage(
+      'privacy-gateway-session',
+      'user-a',
+      'user',
+      'password=hunter2',
+    );
+    const tools = createToolServices();
+    const service = new PiAgentService(
+      config,
+      gateway,
+      sessions,
+      tools.execution,
+      tools.registry,
+    );
+    const runContext = {
+      taskId: 'privacy-task',
+      operationId: 'privacy-operation',
+      source: 'privacy_resume',
+    };
+
+    const firstEvents = [];
+    for await (const event of service.chat(
+      'privacy-gateway-session',
+      'password=hunter2',
+      'user-a',
+      runContext,
+    )) {
+      firstEvents.push(event);
+    }
+    expect(providerCalls).toBe(0);
+    expect(firstEvents).toContainEqual(
+      expect.objectContaining({ type: 'privacy_decision_required' }),
+    );
+    const pending = await decisions.findCurrentForTask(
+      'privacy-task',
+      'user-a',
+    );
+    await decisions.submitDecision({
+      ownerId: 'user-a',
+      egressId: pending!.id,
+      decision: 'allow',
+      commandOperationId: 'approve-privacy-operation',
+      commandRequestFingerprint: 'approve-privacy-fingerprint',
+    });
+
+    const resumedEvents = [];
+    for await (const event of service.resumeTask(
+      'privacy-gateway-session',
+      'password=hunter2',
+      'user-a',
+      runContext,
+    )) {
+      resumedEvents.push(event);
+    }
+
+    expect(providerCalls).toBe(1);
+    expect(resumedEvents).toContainEqual(
+      expect.objectContaining({ type: 'text_delta', data: '审批后继续成功' }),
+    );
+    expect(audit.records.map((record) => record.decision)).toEqual([
+      'pending_user_decision',
+      'allowed',
+    ]);
+  });
+
   it('trims context only at a complete user-turn boundary', () => {
     const firstToolTurn = [
       { role: 'user', content: '旧回合', timestamp: 1 },
@@ -1105,4 +1356,3 @@ describe('PiAgentService', () => {
     );
   });
 });
-

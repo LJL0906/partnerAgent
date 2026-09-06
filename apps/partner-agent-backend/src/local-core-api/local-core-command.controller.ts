@@ -10,6 +10,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { isOperationId } from '@partner-agent/contracts';
 import { CommandStatusInterceptor } from './command-status.interceptor.js';
 import { HttpAuthGuard } from './http-auth.guard.js';
 import { LocalCoreApplicationPort } from './local-core-application.port.js';
@@ -81,8 +82,7 @@ export class LocalCoreCommandController {
       String(envelope.client_source),
     );
     if (
-      typeof envelope.operation_id !== 'string' ||
-      !envelope.operation_id.trim() ||
+      !isOperationId(envelope.operation_id) ||
       typeof envelope.request_fingerprint !== 'string' ||
       !envelope.request_fingerprint.trim() ||
       !validSource ||

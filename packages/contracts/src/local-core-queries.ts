@@ -1,11 +1,35 @@
-import type { ChatItem } from './chat-items.js';
+import {
+  isChatItem,
+  isSessionToolView,
+  SESSION_TOOL_STATUS_TO_CHAT_ITEM_STATUS,
+  type ChatItem,
+  type SessionToolView,
+} from './chat-items.js';
+import {
+  SESSION_MESSAGE_STATUSES,
+  isOperationId,
+  sessionMessageStatusToChatItemStatus,
+  TASK_STATES,
+  type SessionMessageStatus,
+  type TaskState,
+} from './chat-item-identity.js';
 import type {
   BusinessObjectKind,
   CandidateStatus,
+  ErrorCode,
   ResourceRef,
 } from './local-core.js';
 import type { AnalysisRunResult } from './local-core-analysis.js';
-import type { PrivacyDecisionStatus } from './local-core-model.js';
+import type {
+  PrivacyDecisionStatus,
+  ReasoningLevel,
+  ResolvedModelSelection,
+} from './local-core-model.js';
+
+export { TASK_STATES } from './chat-item-identity.js';
+export type { TaskState } from './chat-item-identity.js';
+export { SESSION_MESSAGE_STATUSES } from './chat-item-identity.js';
+export type { SessionMessageStatus } from './chat-item-identity.js';
 
 /** 统一查询分页 / 游标 / 排序 / 过滤。 */
 export interface QueryParams {
@@ -47,8 +71,8 @@ export interface ListChatSessionsResult {
   items: ChatSessionListItem[];
 }
 export interface ChatSessionSummary extends ChatSessionListItem {
-  /** Presence is authoritative, including an empty array; absent on legacy responses. */
-  items?: ChatItem[];
+  /** 完整可恢复展示快照；空数组也是权威结果。 */
+  items: ChatItem[];
   id: string;
   title?: string;
   created_at: string;
@@ -56,15 +80,163 @@ export interface ChatSessionSummary extends ChatSessionListItem {
   message_count: number;
   last_message_preview?: string;
   /** REST 恢复所需的已持久化消息，按 created_at 升序返回。 */
-  messages: Array<{
-    id: string;
-    role: 'user' | 'assistant' | 'system';
-    content: string;
-    model_config_id?: string;
-    reasoning_level?: 'low' | 'medium' | 'high';
-    metadata?: Record<string, unknown>;
-    created_at: string;
-  }>;
+  messages: SessionMessageDto[];
+  /** 工具权威状态的安全投影，不得由 message metadata 代替。 */
+  tool_views: SessionToolView[];
+}
+
+const isChatSessionTaskRef = (value: unknown): value is ChatSessionTaskRef =>
+  isRecord(value)
+  && hasText(value.task_id)
+  && isOperationId(value.operation_id)
+  && (TASK_STATES as readonly unknown[]).includes(value.state);
+
+export function isChatSessionSummary(value: unknown): value is ChatSessionSummary {
+  if (!isRecord(value)
+    || !Object.keys(value).every((key) => [
+      'id', 'title', 'created_at', 'updated_at', 'message_count',
+      'last_message_preview', 'active_task', 'latest_task', 'items',
+      'messages', 'tool_views',
+    ].includes(key))
+    || !hasText(value.id)
+    || (value.title !== undefined && typeof value.title !== 'string')
+    || typeof value.created_at !== 'string'
+    || !Number.isFinite(Date.parse(value.created_at))
+    || typeof value.updated_at !== 'string'
+    || !Number.isFinite(Date.parse(value.updated_at))
+    || typeof value.message_count !== 'number'
+    || !Number.isSafeInteger(value.message_count)
+    || value.message_count < 0
+    || (value.last_message_preview !== undefined && typeof value.last_message_preview !== 'string')
+    || (value.active_task !== undefined && !isChatSessionTaskRef(value.active_task))
+    || (value.latest_task !== undefined && !isChatSessionTaskRef(value.latest_task))
+    || !Array.isArray(value.items)
+    || !value.items.every(isChatItem)
+    || !Array.isArray(value.messages)
+    || !value.messages.every(isSessionMessageDto)
+    || value.message_count < value.messages.length
+    || !Array.isArray(value.tool_views)
+    || !value.tool_views.every(isSessionToolView)) return false;
+
+  const sessionId = value.id;
+  const messages = value.messages as SessionMessageDto[];
+  const items = value.items as ChatItem[];
+  const toolViews = value.tool_views as SessionToolView[];
+  if (!messages.every((message) => message.session_id === sessionId)
+    || !items.every((item) => item.session_id === sessionId)
+    || !toolViews.every((tool) => tool.session_id === sessionId)
+    || new Set(messages.map((message) => message.id)).size !== messages.length
+    || new Set(messages.map((message) => message.sequence)).size !== messages.length
+    || messages.some((message, index) => index > 0 && message.sequence <= messages[index - 1].sequence)
+    || new Set(items.map((item) => item.id)).size !== items.length
+    || new Set(toolViews.map((tool) => tool.tool_call_id)).size !== toolViews.length
+    || new Set(toolViews.flatMap((tool) => tool.confirmation_id ? [tool.confirmation_id] : [])).size
+      !== toolViews.filter((tool) => tool.confirmation_id !== undefined).length
+    || new Set(toolViews.flatMap((tool) => tool.execution_id ? [tool.execution_id] : [])).size
+      !== toolViews.filter((tool) => tool.execution_id !== undefined).length) return false;
+
+  const itemsValid = items.every((item) => {
+    if (item.type === 'message') {
+      const message = messages.find((candidate) => candidate.id === item.message_id);
+      return message !== undefined
+        && message.revision === item.revision
+        && message.sequence === item.sequence
+        && item.status === sessionMessageStatusToChatItemStatus(message.status)
+        && message.role === item.payload.role
+        && message.content === item.payload.content
+        && message.task_id === item.task_id
+        && message.operation_id === item.operation_id
+        && message.model_config_id === item.payload.model_config_id
+        && message.reasoning_level === item.payload.reasoning_level;
+    }
+    if (item.type === 'tool' || item.type === 'approval') {
+      if (item.tool_call_id === undefined) return false;
+      const tool = toolViews.find((candidate) => candidate.tool_call_id === item.tool_call_id);
+      if (tool === undefined) return false;
+      const baseMatches = item.status === SESSION_TOOL_STATUS_TO_CHAT_ITEM_STATUS[tool.status]
+        && tool.task_id === item.task_id
+        && tool.operation_id === item.operation_id
+        && tool.execution_id === item.execution_id
+        && item.payload.tool === tool.tool_name;
+      if (!baseMatches) return false;
+      if (item.type === 'tool') {
+        return item.id === `tool:${tool.tool_call_id}`
+          && (item.payload.risk_level === undefined || item.payload.risk_level === tool.risk_level)
+          && (item.payload.input_summary === undefined || item.payload.input_summary === tool.request_summary)
+          && (item.payload.output_summary === undefined || item.payload.output_summary === tool.result_summary);
+      }
+      return item.id === `approval:${tool.confirmation_id}`
+        && tool.confirmation_id === item.approval_id
+        && item.payload.approval_id === item.approval_id
+        && item.payload.risk_level === tool.risk_level
+        && item.payload.request_summary === tool.request_summary;
+    }
+    return true;
+  });
+  if (!itemsValid) return false;
+  return messages.every((message) => {
+    const expectedItemId = message.role === 'assistant' && message.task_id
+      ? `task:${message.task_id}:assistant`
+      : `message:${message.id}`;
+    return items.some((item) => item.type === 'message'
+      && item.id === expectedItemId
+      && item.message_id === message.id);
+  });
+}
+
+export function parseChatSessionSummary(value: unknown): ChatSessionSummary {
+  if (!isChatSessionSummary(value)) throw new TypeError('Invalid ChatSessionSummary');
+  return value;
+}
+
+export interface SessionMessageDto {
+  id: string;
+  session_id: string;
+  sequence: number;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  status: SessionMessageStatus;
+  revision: number;
+  task_id?: string;
+  operation_id?: string;
+  model_config_id?: string;
+  reasoning_level?: ReasoningLevel;
+  created_at: string;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const hasText = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+const isPositiveInteger = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+const SESSION_MESSAGE_FIELDS = [
+  'id', 'session_id', 'sequence', 'role', 'content', 'status', 'revision',
+  'task_id', 'operation_id', 'model_config_id', 'reasoning_level', 'created_at',
+] as const;
+
+export function isSessionMessageDto(value: unknown): value is SessionMessageDto {
+  return isRecord(value)
+    && Object.keys(value).every((key) => (SESSION_MESSAGE_FIELDS as readonly string[]).includes(key))
+    && hasText(value.id)
+    && hasText(value.session_id)
+    && isPositiveInteger(value.sequence)
+    && (value.role === 'user' || value.role === 'assistant' || value.role === 'system')
+    && typeof value.content === 'string'
+    && (SESSION_MESSAGE_STATUSES as readonly unknown[]).includes(value.status)
+    && isPositiveInteger(value.revision)
+    && (value.task_id === undefined || hasText(value.task_id))
+    && (value.operation_id === undefined || isOperationId(value.operation_id))
+    && (value.model_config_id === undefined || hasText(value.model_config_id))
+    && (value.reasoning_level === undefined
+      || ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value.reasoning_level as string))
+    && typeof value.created_at === 'string'
+    && Number.isFinite(Date.parse(value.created_at));
+}
+
+export function parseSessionMessageDto(value: unknown): SessionMessageDto {
+  if (!isSessionMessageDto(value)) throw new TypeError('Invalid SessionMessageDto');
+  return value;
 }
 
 export interface GetOriginalRecordQuery {
@@ -88,24 +260,19 @@ export type GetAnalysisRunResult = AnalysisRunResult;
 export interface GetTaskStatusQuery {
   task_id: string;
 }
-export const TASK_STATES = [
-  'queued',
-  'running',
-  'completed',
-  'failed',
-  'cancelled',
-  'waiting_privacy_decision',
-  'waiting_tool_approval',
-] as const;
-export type TaskState = (typeof TASK_STATES)[number];
 export interface TaskStatus {
   task_id: string;
   state: TaskState;
   progress?: number;
   error?: string;
+  error_code?: ErrorCode;
   result_ref?: ResourceRef;
   /** 仅 waiting_privacy_decision 状态返回；不得包含命中明文或完整请求。 */
   privacy_decision?: PrivacyDecisionStatus;
+  /** 任务已成功受理时的权威模型选择。 */
+  resolved_model?: ResolvedModelSelection;
+  created_at: string;
+  updated_at: string;
 }
 export interface GetCoreHealthQuery {}
 export interface CoreHealth {
@@ -115,9 +282,7 @@ export interface CoreHealth {
 }
 
 // 确认中心
-export interface ListPendingConfirmationBatchesQuery {
-  user_id?: string;
-}
+export interface ListPendingConfirmationBatchesQuery {}
 export interface PendingConfirmationBatchSummary {
   batch_id: string;
   item_count: number;
@@ -140,10 +305,7 @@ export interface CandidateDetail {
   sensitive_marks: string[];
   status: CandidateStatus;
 }
-export interface GetConfirmationHistoryQuery {
-  user_id?: string;
-  cursor?: string;
-}
+export interface GetConfirmationHistoryQuery { cursor?: string; }
 export interface GetUndoEligibilityQuery {
   object_kind: BusinessObjectKind;
   object_id: string;
@@ -215,9 +377,7 @@ export interface ListDecisionsQuery extends QueryParams {}
 export interface GetDecisionQuery {
   decision_id: string;
 }
-export interface GetContextSnapshotQuery {
-  user_id?: string;
-}
+export interface GetContextSnapshotQuery {}
 export interface GetChangeHistoryQuery {
   object_kind: BusinessObjectKind;
   object_id: string;

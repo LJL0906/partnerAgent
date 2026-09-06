@@ -7,6 +7,7 @@ import { ConnectionLoadingScreen } from '@/components/ui/connection-loading-scre
 import { AppThemeProvider, ToastProvider } from '@/components/ui/toast';
 import { FloatingNavigation } from '@/components/navigation/floating-menu';
 import { bootstrapAuth, registerAuthTeardown, useAuthStore } from '@/features/auth';
+import { getAuthRouteRedirect } from '@/features/auth/auth-route';
 import { resetChatRuntime } from '@/features/chat/use-chat';
 import { resetSessionManagement } from '@/features/chat/session-management';
 import { colors } from '@/theme/colors';
@@ -28,8 +29,10 @@ function RootLayoutContent() {
   const [firstSegment] = useSegments();
 
   useEffect(() => {
-    if (status === 'authenticated' && firstSegment === 'auth') router.replace('/chat');
-  }, [firstSegment, router, status]);
+    if (!isReady) return;
+    const redirect = getAuthRouteRedirect(status, firstSegment);
+    if (redirect) router.replace(redirect);
+  }, [firstSegment, isReady, router, status]);
 
   useEffect(() => {
     const unregisterTeardown = registerAuthTeardown(async () => {

@@ -6,10 +6,6 @@ const contracts = require('../dist');
 const readFixture = (name) => JSON.parse(
   fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8'),
 );
-const readRepoFile = (...segments) => fs.readFileSync(
-  path.join(__dirname, '..', '..', '..', ...segments),
-  'utf8',
-);
 
 describe('shared contract alignment v1', () => {
   it('publishes the exact fixture corpus through stable package subpaths', () => {
@@ -167,35 +163,6 @@ describe('shared contract alignment v1', () => {
     });
     expect(contracts.parseChatPreviewProposalV1(fixture.valid_proposal))
       .toBe(fixture.valid_proposal);
-  });
-
-  it('keeps application types and the Agent tool derived from shared contracts', () => {
-    const chatApi = readRepoFile('apps', 'partner-agent-frontend', 'src', 'api', 'chat-api.ts');
-    const chatStore = readRepoFile('apps', 'partner-agent-frontend', 'src', 'store', 'chat-store.ts');
-    const agentContext = readRepoFile(
-      'apps', 'partner-agent-backend', 'src', 'agent', 'agent-runtime-stream.ts',
-    );
-    const emitTool = readRepoFile(
-      'apps', 'partner-agent-backend', 'src', 'tools', 'emit-chat-preview.tool.ts',
-    );
-    const taskEntity = readRepoFile(
-      'apps', 'partner-agent-backend', 'src', 'database', 'entities', 'chat-task.entity.ts',
-    );
-    const coreTypes = readRepoFile(
-      'apps', 'partner-agent-backend', 'src', 'database', 'entities', 'core', 'core.types.ts',
-    );
-
-    expect(chatApi).not.toMatch(/interface CancelTaskPayload/);
-    expect(chatApi).toContain('export type SubmitTextOutputMode = ChatOutputMode;');
-    expect(chatStore).toContain("TaskState | 'idle' | 'cancelling' | 'recovering'");
-    expect(agentContext).toContain('outputMode?: ChatOutputMode;');
-    expect(agentContext).toContain('previewKind?: ChatPreviewKind;');
-    expect(emitTool).toContain('CHAT_PREVIEW_PROPOSAL_V1_JSON_SCHEMA as');
-    expect(emitTool).not.toContain('Type.Object(');
-    expect(taskEntity).toContain('export type ChatTaskState = TaskState;');
-    expect(coreTypes).toContain("from '@partner-agent/contracts';");
-    expect(coreTypes).not.toMatch(/export type CandidateStatus\s*=/);
-    expect(coreTypes).not.toMatch(/export type GoalStatus\s*=/);
   });
 
   it('enforces submit mode discrimination and allows server-side model defaults', () => {

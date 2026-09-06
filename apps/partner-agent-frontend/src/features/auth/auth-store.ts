@@ -1,4 +1,9 @@
 import { create } from 'zustand';
+import {
+  isAccountIdentityConsistent,
+  isAccountPublicUser,
+  type AccountPublicUser,
+} from '@partner-agent/contracts';
 
 import { setAccessTokenProvider, setUnauthorizedHandler } from '@/api/access-token';
 
@@ -20,6 +25,7 @@ export interface AuthState {
   errorMessage?: string;
   isReady: boolean;
   authMode?: 'account';
+  user?: AccountPublicUser;
   username?: string;
 }
 
@@ -48,7 +54,7 @@ function setAuthState(state: AuthState): void {
   useAuthStore.setState(state, true);
 }
 
-function decodeJwtExpiry(token: string): number | undefined {
+function decodeJwtPayload(token: string): Record<string, unknown> {
   const segments = token.split('.');
   if (segments.length !== 3 || !segments[1]) {
     throw new Error('invalid-jwt');
@@ -56,7 +62,15 @@ function decodeJwtExpiry(token: string): number | undefined {
 
   const normalized = segments[1].replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-  const payload = JSON.parse(globalThis.atob(padded)) as { exp?: unknown };
+  const payload: unknown = JSON.parse(globalThis.atob(padded));
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error('invalid-jwt-payload');
+  }
+  return payload as Record<string, unknown>;
+}
+
+function decodeJwtExpiry(token: string): number | undefined {
+  const payload = decodeJwtPayload(token);
 
   if (payload.exp === undefined) {
     return undefined;
@@ -65,6 +79,18 @@ function decodeJwtExpiry(token: string): number | undefined {
     throw new Error('invalid-exp');
   }
   return payload.exp * 1000;
+}
+
+function validateAccountIdentity(tokens: AccountTokens): AccountPublicUser {
+  const payload = decodeJwtPayload(tokens.access_token);
+  if (
+    !isAccountPublicUser(tokens.user)
+    || typeof payload.sub !== 'string'
+    || !isAccountIdentityConsistent(tokens.user, payload.sub)
+  ) {
+    throw new Error('账户身份校验失败，请重新登录。');
+  }
+  return tokens.user;
 }
 
 function isExpired(expiresAt: number | undefined, now = Date.now()): boolean {
@@ -90,13 +116,38 @@ setUnauthorizedHandler(async (token) => {
 
 async function applyAccount(tokens: AccountTokens, generation: number): Promise<boolean> {
   if (generation !== authGeneration) return false;
+  const user = validateAccountIdentity(tokens);
+  const currentOwnerId = useAuthStore.getState().user?.id;
+  if (currentOwnerId && currentOwnerId !== user.id) {
+    setAuthState({ status: 'bootstrapping', isReady: false });
+    const teardownResults = await Promise.allSettled(
+      [...teardownCallbacks].map(async (callback) => callback()),
+    );
+    if (generation !== authGeneration) return false;
+    if (teardownResults.some((result) => result.status === 'rejected')) {
+      setAuthState({
+        status: 'error',
+        isReady: true,
+        errorMessage: '切换账户前无法完整清理旧会话，请重试。',
+      });
+      throw new Error('切换账户前无法完整清理旧会话。');
+    }
+  }
   await writeCredentials(async () => {
     if (generation !== authGeneration) return;
     if (tokens.refresh_token) await refreshStorage.set(tokens.refresh_token);
     await tokenStorage.remove();
   });
   if (generation !== authGeneration) return false;
-  setAuthState({ status: 'authenticated', isReady: true, authMode: 'account', token: tokens.access_token, expiresAt: tokens.expires_at, username: tokens.user.username });
+  setAuthState({
+    status: 'authenticated',
+    isReady: true,
+    authMode: 'account',
+    token: tokens.access_token,
+    expiresAt: tokens.expires_at,
+    user,
+    username: user.username,
+  });
   return true;
 }
 
@@ -105,7 +156,9 @@ export async function signInWithPassword(username: string, password: string, reg
   const generation = ++authGeneration;
   const { accountRequest } = await import('@/api/account-api');
   const tokens = await accountRequest<AccountTokens>(register ? 'register' : 'login', { username, password });
-  if (!await applyAccount(tokens, generation)) await accountRequest('logout', { refresh_token: tokens.refresh_token }).catch(() => undefined);
+  if (!await applyAccount(tokens, generation) && tokens.refresh_token) {
+    await accountRequest('logout', { refresh_token: tokens.refresh_token }).catch(() => undefined);
+  }
 }
 
 async function refreshAccount(): Promise<string | undefined> {
@@ -118,11 +171,14 @@ async function refreshAccount(): Promise<string | undefined> {
     try {
       const tokens = await accountRequest<AccountTokens>('refresh', refresh === '@cookie' ? {} : { refresh_token: refresh });
       if (await applyAccount(tokens, generation)) return tokens.access_token;
-      await accountRequest('logout', { refresh_token: tokens.refresh_token }).catch(() => undefined);
+      if (tokens.refresh_token) {
+        await accountRequest('logout', { refresh_token: tokens.refresh_token }).catch(() => undefined);
+      }
       return undefined;
     } catch (error) {
       if (generation === authGeneration && error instanceof AccountApiError && error.status === 401) {
         await writeCredentials(() => refreshStorage.remove());
+        if (generation !== authGeneration) return undefined;
         setAuthState({ status: 'expired', isReady: true });
         await Promise.allSettled([...teardownCallbacks].map(async (callback) => callback()));
         return undefined;

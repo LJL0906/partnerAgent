@@ -20,11 +20,18 @@ export function chatTaskEventErrorCode(data: unknown): string {
 }
 
 export function thrownChatTaskErrorCode(error: unknown): string {
-  return error &&
-    typeof error === 'object' &&
-    'code' in error &&
-    error.code === 'EGRESS_001'
-    ? 'EGRESS_001'
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return 'INTERNAL_000';
+  }
+  const safeCodes = new Set([
+    'EGRESS_001',
+    'STRUCTURED_PREVIEW_INVALID',
+    'STRUCTURED_PREVIEW_MISSING',
+    'STRUCTURED_PREVIEW_TOO_LARGE',
+    'STRUCTURED_PREVIEW_SOURCE_INVALID',
+  ]);
+  return typeof error.code === 'string' && safeCodes.has(error.code)
+    ? error.code
     : 'INTERNAL_000';
 }
 

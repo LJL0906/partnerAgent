@@ -354,6 +354,3 @@ export class ExternalToolApprovalService {
     };
   }
 }
-
-/** @deprecated 旧名称；该服务只处理外部系统副作用审批，不处理正式业务确认。 */
-export { ExternalToolApprovalService as ConfirmationCenterService };

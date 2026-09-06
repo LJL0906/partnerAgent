@@ -71,23 +71,33 @@ export async function refreshSessionList(): Promise<void> {
 export async function renameSession(id: string, title: string): Promise<boolean> {
   const normalized = title.replace(/\s+/g, ' ').trim();
   if (!normalized) return false;
+  const version = generation;
+  const ownerScope = scope;
   try {
     const updated = await renameChatSession(id, normalized);
+    if (version !== generation) return false;
     useConversationStore.setState((state) => ({ sessions: state.sessions.map((item) => item.id === id ? updated : item), error: undefined }));
     return true;
   } catch (error) {
-    useConversationStore.setState({ error: error instanceof Error ? error.message : '修改会话名称失败。' });
+    if (version === generation && scope === ownerScope) {
+      useConversationStore.setState({ error: error instanceof Error ? error.message : '修改会话名称失败。' });
+    }
     return false;
   }
 }
 
 export async function archiveSession(id: string): Promise<boolean> {
+  const version = generation;
+  const ownerScope = scope;
   try {
     await archiveChatSession(id);
+    if (version !== generation) return false;
     useConversationStore.setState((state) => ({ sessions: state.sessions.filter((item) => item.id !== id), error: undefined }));
     return true;
   } catch (error) {
-    useConversationStore.setState({ error: error instanceof Error ? error.message : '归档会话失败。' });
+    if (version === generation && scope === ownerScope) {
+      useConversationStore.setState({ error: error instanceof Error ? error.message : '归档会话失败。' });
+    }
     return false;
   }
 }

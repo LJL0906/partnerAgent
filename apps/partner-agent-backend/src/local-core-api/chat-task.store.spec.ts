@@ -262,4 +262,79 @@ describe('ChatTaskStore', () => {
       state: 'cancelled',
     });
   });
+
+  it('persists assistant progress with stable identity, revision and UTF-16 offsets', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    await store.submitText({ ...base, operationId: '00000000-0000-4000-8000-000000000010' });
+    const task = await store.claimNextRunnable('worker-progress', 30_000);
+    const identity = { ownerId: task!.ownerId, sessionId: task!.sessionId, taskId: task!.taskId, operationId: task!.operationId, leaseToken: 'worker-progress' };
+
+    const first = await store.appendAssistantProgress({ ...identity, expectedRevision: 0, textOffset: 0, delta: '你🙂' });
+    const second = await store.appendAssistantProgress({ ...identity, expectedRevision: 1, textOffset: 3, delta: '好' });
+
+    expect(first).toMatchObject({ outcome: 'committed', textOffset: 0, message: { content: '你🙂', revision: 1, status: 'streaming' } });
+    expect(second).toMatchObject({ outcome: 'committed', textOffset: 3, message: { content: '你🙂好', revision: 2 } });
+    expect(second.outcome === 'committed' && first.outcome === 'committed' ? second.message.id : undefined)
+      .toBe(first.outcome === 'committed' ? first.message.id : undefined);
+    await expect(store.appendAssistantProgress({ ...identity, expectedRevision: 1, textOffset: 3, delta: '旧写入' }))
+      .resolves.toEqual({ outcome: 'conflict' });
+    expect((await store.listSessionMessages(task!.ownerId, task!.sessionId)).at(-1)).toMatchObject({
+      session_id: task!.sessionId, sequence: 2, role: 'assistant', content: '你🙂好',
+      status: 'streaming', revision: 2, task_id: task!.taskId, operation_id: task!.operationId,
+    });
+  });
+
+  it('completes an attachment-only response once and rejects a cancelled worker', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    await store.submitText({ ...base, operationId: '00000000-0000-4000-8000-000000000020' });
+    const task = await store.claimNextRunnable('worker-complete', 30_000);
+    const preview = {
+      schema_version: 1 as const, preview_id: 'preview-1', kind: 'action' as const,
+      confirmation_status: 'unconfirmed' as const, applied: false as const,
+      source_refs: [{ kind: 'chat_message' as const, id: task!.userMessageId }],
+      content: { title: '整理资料', confidence: 0.9 }, warnings: [],
+    };
+    const command = {
+      ownerId: task!.ownerId, sessionId: task!.sessionId, taskId: task!.taskId,
+      operationId: task!.operationId, leaseToken: 'worker-complete', expectedRevision: 0,
+      content: '', chatPreviews: [preview], contextMessages: [{ role: 'assistant', content: [] }],
+    };
+
+    const completed = await store.completeAssistantOutput(command);
+    const replayed = await store.completeAssistantOutput(command);
+    expect(completed).toMatchObject({ outcome: 'committed', task: { state: 'completed' }, message: { content: '', status: 'complete', revision: 1 } });
+    expect(replayed).toMatchObject({ outcome: 'already_completed' });
+    expect((await store.listSessionMessages(task!.ownerId, task!.sessionId)).filter((message) => message.role === 'assistant')).toHaveLength(1);
+    expect(await store.listSessionChatPreviews(task!.ownerId, task!.sessionId)).toEqual([
+      expect.objectContaining({ task_id: task!.taskId, preview }),
+    ]);
+
+    const cancelled = await store.submitText({ ...base, operationId: '00000000-0000-4000-8000-000000000021', inputId: 'input-cancelled-output', requestFingerprint: 'cancelled-output', sessionId: 'cancelled-output-session' });
+    await store.claimNextRunnable('worker-stale', 30_000);
+    await store.cancelTask(base.ownerId, { operation_id: 'cancel-stale-output', request_fingerprint: 'cancel-stale-output', payload: { task_id: cancelled.task!.taskId } });
+    await expect(store.completeAssistantOutput({ ...command, sessionId: cancelled.task!.sessionId, taskId: cancelled.task!.taskId, operationId: cancelled.task!.operationId, leaseToken: 'worker-stale', chatPreviews: [] }))
+      .resolves.toEqual({ outcome: 'fence_rejected' });
+  });
+
+  it('keeps structured preview mode on the accepted and claimed task', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    const accepted = await store.submitText({
+      ...base,
+      operationId: '00000000-0000-4000-8000-000000000030',
+      inputId: 'input-preview-mode',
+      requestFingerprint: 'preview-mode',
+      outputMode: 'structured_preview',
+      previewKind: 'action',
+    });
+
+    expect(accepted.task).toMatchObject({
+      outputMode: 'structured_preview',
+      previewKind: 'action',
+    });
+    await expect(store.claimNextRunnable('worker-preview-mode', 30_000))
+      .resolves.toMatchObject({
+        outputMode: 'structured_preview',
+        previewKind: 'action',
+      });
+  });
 });

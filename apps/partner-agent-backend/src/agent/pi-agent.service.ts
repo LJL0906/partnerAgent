@@ -27,6 +27,8 @@ import {
 } from './agent-runtime-telemetry.js';
 import { mapPiAgentEvent, type BackendAgentEvent } from './pi-agent-events.js';
 import { buildAgentSystemPrompt } from './agent-system-prompt.js';
+import { ChatPreviewOutputCollector } from './chat-preview-output.js';
+import { createEmitChatPreviewTool } from '../tools/emit-chat-preview.tool.js';
 import {
   createBudgetedAgentStream,
   startAgentRunTrace,
@@ -43,6 +45,7 @@ export type { PiChatContext } from './agent-runtime-stream.js';
 export class PiAgentService implements OnModuleInit {
   private readonly logger = new Logger(PiAgentService.name);
   private readonly runtimePolicy: AgentRuntimePolicy;
+  private readonly egressErrors = new WeakMap<Agent, EgressDecisionError>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -75,7 +78,9 @@ export class PiAgentService implements OnModuleInit {
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
     const selected = context.modelConfigId?.split(':');
     const selectedProvider = selected?.[0] ?? provider;
-    const selectedModelId = selected?.slice(1).join(':') || this.configService.get<string>('DEFAULT_MODEL');
+    const selectedModelId =
+      selected?.slice(1).join(':') ||
+      this.configService.get<string>('DEFAULT_MODEL');
     const model = this.resolveModel(selectedProvider, selectedModelId);
 
     if (!model) {
@@ -102,7 +107,7 @@ export class PiAgentService implements OnModuleInit {
       context,
       'chat',
     );
-    const agent = this.createAgent(
+    const created = this.createAgent(
       sessionId,
       contextMessages,
       model,
@@ -110,12 +115,13 @@ export class PiAgentService implements OnModuleInit {
       context,
       trace,
     );
+    const { agent } = created;
     await this.sessionManager.setAgent(sessionId, userId, agent);
     if (!context.taskId) {
       await this.sessionManager.saveMessage(sessionId, userId, 'user', message);
     }
 
-    yield* this.runAgent(agent, sessionId, userId, trace, () =>
+    yield* this.runAgent(agent, sessionId, userId, trace, context, created.previewOutput, () =>
       agent.prompt(message),
     );
   }
@@ -130,7 +136,9 @@ export class PiAgentService implements OnModuleInit {
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
     const selected = context.modelConfigId?.split(':');
     const selectedProvider = selected?.[0] ?? provider;
-    const selectedModelId = selected?.slice(1).join(':') || this.configService.get<string>('DEFAULT_MODEL');
+    const selectedModelId =
+      selected?.slice(1).join(':') ||
+      this.configService.get<string>('DEFAULT_MODEL');
     const model = this.resolveModel(selectedProvider, selectedModelId);
     if (!model) throw new Error('模型未配置，无法继续工具审批后的 Agent 回合');
 
@@ -149,7 +157,7 @@ export class PiAgentService implements OnModuleInit {
       context,
       'tool_decision',
     );
-    const agent = this.createAgent(
+    const created = this.createAgent(
       sessionId,
       contextMessages,
       model,
@@ -157,6 +165,7 @@ export class PiAgentService implements OnModuleInit {
       context,
       trace,
     );
+    const { agent } = created;
     await this.sessionManager.setAgent(sessionId, userId, agent);
 
     const messages = replaceToolDecision(agent.state.messages, decision);
@@ -170,7 +179,7 @@ export class PiAgentService implements OnModuleInit {
       messages,
     );
 
-    yield* this.runAgent(agent, sessionId, userId, trace, () =>
+    yield* this.runAgent(agent, sessionId, userId, trace, context, created.previewOutput, () =>
       agent.continue(),
     );
   }
@@ -189,7 +198,9 @@ export class PiAgentService implements OnModuleInit {
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
     const selected = context.modelConfigId?.split(':');
     const selectedProvider = selected?.[0] ?? provider;
-    const selectedModelId = selected?.slice(1).join(':') || this.configService.get<string>('DEFAULT_MODEL');
+    const selectedModelId =
+      selected?.slice(1).join(':') ||
+      this.configService.get<string>('DEFAULT_MODEL');
     const model = this.resolveModel(selectedProvider, selectedModelId);
     if (!model) {
       yield* this.chat(sessionId, message, userId, context);
@@ -216,7 +227,7 @@ export class PiAgentService implements OnModuleInit {
       context,
       'resume',
     );
-    const agent = this.createAgent(
+    const created = this.createAgent(
       sessionId,
       contextMessages,
       model,
@@ -224,8 +235,9 @@ export class PiAgentService implements OnModuleInit {
       context,
       trace,
     );
+    const { agent } = created;
     await this.sessionManager.setAgent(sessionId, userId, agent);
-    yield* this.runAgent(agent, sessionId, userId, trace, () =>
+    yield* this.runAgent(agent, sessionId, userId, trace, context, created.previewOutput, () =>
       agent.continue(),
     );
   }
@@ -235,6 +247,8 @@ export class PiAgentService implements OnModuleInit {
     sessionId: string,
     userId: string,
     trace: AgentRunTrace,
+    context: PiChatContext,
+    previewOutput: ChatPreviewOutputCollector | undefined,
     start: () => Promise<void>,
   ): AsyncGenerator<BackendAgentEvent> {
     const pending: BackendAgentEvent[] = [];
@@ -246,6 +260,7 @@ export class PiAgentService implements OnModuleInit {
     let waitingForToolApproval = false;
     let waitingForPrivacyDecision = false;
     let cancelled = false;
+    let missingCorrectionQueued = false;
 
     const push = (event: BackendAgentEvent): void => {
       pending.push(event);
@@ -255,11 +270,47 @@ export class PiAgentService implements OnModuleInit {
 
     const unsubscribe = agent.subscribe(async (event, signal) => {
       trace.budget.hooks().observeAgentEvent(event, signal);
+      const egressError = this.egressErrors.get(agent);
+      if (
+        event.type === 'message_end' &&
+        event.message.role === 'assistant' &&
+        event.message.stopReason === 'error' &&
+        egressError?.decision === 'pending_user_decision'
+      ) {
+        failed = true;
+        waitingForPrivacyDecision = true;
+        push({
+          type: 'privacy_decision_required',
+          data: {
+            result: egressError.decision,
+            categories: egressError.categories,
+          },
+          timestamp: Date.now(),
+        });
+        return;
+      }
       if (event.type === 'tool_execution_start') {
         trace.toolStarted(event.toolCallId, event.toolName);
       }
       if (event.type === 'tool_execution_end') {
         trace.toolFinished(event.toolCallId, event.toolName, !event.isError);
+      }
+      if (
+        event.type === 'turn_end' &&
+        previewOutput &&
+        previewOutput.count === 0 &&
+        event.toolResults.length === 0 &&
+        !missingCorrectionQueued &&
+        previewOutput.canRequestMissingCorrection() &&
+        !trace.budget.termination()
+      ) {
+        missingCorrectionQueued = true;
+        agent.followUp({
+          role: 'user',
+          content:
+            '上一次响应没有调用 emit_chat_preview。请仅按工具 Schema 提交行动预览；这是唯一一次纠正机会。',
+          timestamp: Date.now(),
+        });
       }
       if (
         event.type === 'message_end' &&
@@ -268,10 +319,18 @@ export class PiAgentService implements OnModuleInit {
       ) {
         cancelled = !trace.budget.termination();
       }
-      const mapped = mapPiAgentEvent(event, {
+      const isPreviewToolEvent =
+        (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') &&
+        event.toolName === 'emit_chat_preview';
+      const mapped = isPreviewToolEvent ? undefined : mapPiAgentEvent(event, {
         isApprovalRequired: (toolName) =>
-          this.toolRegistry.isToolApprovalRequired(toolName),
-        riskLevelFor: (toolName) => this.toolRegistry.get(toolName).riskLevel,
+          toolName === 'emit_chat_preview'
+            ? false
+            : this.toolRegistry.isToolApprovalRequired(toolName),
+        riskLevelFor: (toolName) =>
+          toolName === 'emit_chat_preview'
+            ? 'read_only'
+            : this.toolRegistry.get(toolName).riskLevel,
         markFailed: () => {
           failed = true;
         },
@@ -284,7 +343,7 @@ export class PiAgentService implements OnModuleInit {
       if (mapped?.type === 'tool_confirmation_pending') {
         waitingForToolApproval = true;
       }
-      if (mapped && !(event.type === 'agent_end' && failed)) {
+      if (mapped && event.type !== 'agent_end') {
         push(mapped);
       }
       if (
@@ -370,15 +429,34 @@ export class PiAgentService implements OnModuleInit {
         return;
       }
 
-      if (!failed) {
+      if (
+        !failed &&
+        !waitingForToolApproval &&
+        !waitingForPrivacyDecision &&
+        !cancelled
+      ) {
         await agent.waitForIdle();
         agent.state.messages = trimCompleteTurns(agent.state.messages);
-        await this.sessionManager.completeAssistantTurn(
-          sessionId,
-          userId,
-          assistantText || undefined,
-          agent.state.messages,
-        );
+        const chatPreviews = previewOutput?.complete() ?? [];
+        if (context.taskId && context.outputMode) {
+          yield {
+            type: 'assistant_output_complete',
+            data: {
+              content: assistantText,
+              chatPreviews,
+              contextMessages: agent.state.messages,
+            },
+            timestamp: Date.now(),
+          };
+        } else {
+          await this.sessionManager.completeAssistantTurn(
+            sessionId,
+            userId,
+            assistantText || undefined,
+            agent.state.messages,
+          );
+        }
+        yield { type: 'done', timestamp: Date.now() };
       }
     } finally {
       clearTimeout(deadlineTimer);
@@ -387,6 +465,7 @@ export class PiAgentService implements OnModuleInit {
         agent.abort();
       }
       this.sessionManager.clearAgent(sessionId);
+      this.egressErrors.delete(agent);
       trace.finish(
         waitingForToolApproval
           ? 'waiting_tool_approval'
@@ -435,19 +514,28 @@ export class PiAgentService implements OnModuleInit {
     ownerId: string,
     context: PiChatContext,
     trace: AgentRunTrace,
-  ): Agent {
-    return new Agent({
+  ): { agent: Agent; previewOutput?: ChatPreviewOutputCollector } {
+    const previewOutput = this.createPreviewOutput(context);
+    const tools = this.toolExecution.createAgentTools(
+      {
+        ownerId,
+        sessionId,
+        taskId: context.taskId,
+        operationId: context.operationId,
+      },
+      { readOnlyOnly: context.outputMode === 'structured_preview' },
+    );
+    if (previewOutput) tools.push(createEmitChatPreviewTool(previewOutput));
+    let agent: Agent;
+    agent = new Agent({
       sessionId,
       initialState: {
-        systemPrompt: buildAgentSystemPrompt(),
+        systemPrompt: buildAgentSystemPrompt({
+          structuredPreview: Boolean(previewOutput),
+        }),
         model,
         messages,
-        tools: this.toolExecution.createAgentTools({
-          ownerId,
-          sessionId,
-          taskId: context.taskId,
-          operationId: context.operationId,
-        }),
+        tools,
       },
       streamFn: createBudgetedAgentStream(
         this.modelGateway,
@@ -455,13 +543,40 @@ export class PiAgentService implements OnModuleInit {
         sessionId,
         context,
         trace,
+        (error) => this.egressErrors.set(agent, error),
       ),
       beforeToolCall: async (toolContext, signal) =>
         (await trace.budget.hooks().beforeToolCall(toolContext, signal)) ??
         guardApprovalToolBatch(toolContext, (toolName) =>
-          this.toolRegistry.isToolApprovalRequired(toolName),
+          toolName === 'emit_chat_preview'
+            ? false
+            : this.toolRegistry.isToolApprovalRequired(toolName),
         ),
-      shouldStopAfterTurn: trace.budget.hooks().shouldStopAfterTurn,
+      shouldStopAfterTurn: async (turnContext) =>
+        (await trace.budget.hooks().shouldStopAfterTurn(turnContext)) ||
+        Boolean(previewOutput?.shouldTerminateCorrection()),
+    });
+    return { agent, ...(previewOutput ? { previewOutput } : {}) };
+  }
+
+  private createPreviewOutput(
+    context: PiChatContext,
+  ): ChatPreviewOutputCollector | undefined {
+    if (context.outputMode !== 'structured_preview') return undefined;
+    if (
+      context.previewKind !== 'action' ||
+      !context.taskId ||
+      !context.originalRecordId ||
+      !context.userMessageId
+    ) {
+      throw new Error('结构化预览任务上下文不完整');
+    }
+    return new ChatPreviewOutputCollector({
+      taskId: context.taskId,
+      allowedSourceRefs: [
+        { kind: 'original_record', id: context.originalRecordId },
+        { kind: 'chat_message', id: context.userMessageId },
+      ],
     });
   }
 
@@ -484,4 +599,3 @@ export class PiAgentService implements OnModuleInit {
     return buildDirectChatContext(session, acceptedPrompt, model);
   }
 }
-

@@ -2,19 +2,19 @@ import { ScrollView, Text, View } from 'react-native';
 
 import { AppButton } from '@/components/ui/app-button';
 import { EmptyChatState } from './empty-chat-state';
-import type { ChatItem, PrivacyDecisionStatus } from '@partner-agent/contracts';
-import type { ChatMessage } from '@/store/chat-store';
+import type { ChatItem, PrivacyDecisionStatus, SessionToolView } from '@partner-agent/contracts';
+import { findSessionToolViewForItem } from '@/store/chat-store';
 import { colors } from '@/theme/colors';
 import { radius } from '@/theme/radius';
 import { spacing } from '@/theme/spacing';
 import { typography } from '@/theme/typography';
 
-import { ChatItemBubble, MessageBubble, type ChatItemBubbleActions } from './message-bubble';
+import { ChatItemBubble, type ChatItemBubbleActions } from './message-bubble';
 import type { MessageScrollController } from '../use-message-scroll';
 
 interface ChatMessageListProps {
-  messages: ChatMessage[];
-  items?: ChatItem[];
+  items: ChatItem[];
+  toolViews: SessionToolView[];
   privacyDecision?: PrivacyDecisionStatus;
   horizontalPadding: number;
   scroll: MessageScrollController;
@@ -22,7 +22,7 @@ interface ChatMessageListProps {
   itemActions?: ChatItemBubbleActions;
 }
 
-export function ChatMessageList({ messages, items, privacyDecision, horizontalPadding, scroll, onPrivacyPress, itemActions }: ChatMessageListProps) {
+export function ChatMessageList({ items, toolViews, privacyDecision, horizontalPadding, scroll, onPrivacyPress, itemActions }: ChatMessageListProps) {
   return (
     <ScrollView
       ref={(node) => scroll.attachScrollView(node)}
@@ -45,13 +45,20 @@ export function ChatMessageList({ messages, items, privacyDecision, horizontalPa
         ) : null}
       </View>
 
-      {(items?.length ?? messages.length) === 0 ? (
+      {items.length === 0 ? (
         <View style={{ flex: 1, justifyContent: 'center', paddingBottom: 56 }}>
           <EmptyChatState />
         </View>
       ) : null}
 
-      {items !== undefined ? items.map((item) => <ChatItemBubble key={item.id} item={item} actions={itemActions} />) : messages.map((item) => <MessageBubble key={item.id} message={item} />)}
+      {items.map((item) => (
+        <ChatItemBubble
+          key={item.id}
+          item={item}
+          actions={itemActions}
+          toolView={findSessionToolViewForItem(toolViews, item)}
+        />
+      ))}
 
     </ScrollView>
   );

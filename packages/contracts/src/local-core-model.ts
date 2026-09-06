@@ -1,29 +1,87 @@
 // 模型和隐私命令（第 8.4 节）
 
+import type { ResourceRef } from './local-core.js';
+
 export type ProviderId = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'local';
 
 export const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 
+export interface ResolvedModelSelection {
+  model_config_id: string;
+  reasoning_level: ReasoningLevel;
+}
+
 export interface ModelConfig {
   id: string;
   provider: ProviderId;
   base_url?: string;
-  /** API Key 仅进入安全存储，绝不进入日志、导出或事件。 */
-  api_key_ref?: string;
   model_id: string;
   /** 是否默认模型。 */
   is_default?: boolean;
   /** 排序（决定失败后的尝试顺序）。 */
   sort_order?: number;
   /** 支持的能力（能力发现）。 */
+  capabilities: Array<'chat' | 'vision' | 'embedding' | 'reasoning'>;
+  /** 服务端真实允许提交的集合；非推理模型固定为 ['off']。 */
+  reasoning_levels: ReasoningLevel[];
+  /** 服务端解析默认值，且必须包含在 reasoning_levels 中。 */
+  default_reasoning_level: ReasoningLevel;
+}
+
+/** 写入模型设置的输入；API Key 引用绝不出现在公开 ModelConfig。 */
+export interface ModelConfigInput {
+  id: string;
+  provider: ProviderId;
+  base_url?: string;
+  api_key_ref?: string;
+  model_id: string;
+  is_default?: boolean;
+  sort_order?: number;
   capabilities?: Array<'chat' | 'vision' | 'embedding' | 'reasoning'>;
   reasoning_levels?: ReasoningLevel[];
+  default_reasoning_level?: ReasoningLevel;
 }
 
 /** 新增或更新模型配置。API Key 仅进入安全存储。 */
 export interface UpsertModelConfigPayload {
-  config: ModelConfig;
+  config: ModelConfigInput;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const hasText = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
+export function isModelConfig(value: unknown): value is ModelConfig {
+  if (!isRecord(value)
+    || !Object.keys(value).every((key) => [
+      'id', 'provider', 'base_url', 'model_id', 'is_default', 'sort_order',
+      'capabilities', 'reasoning_levels', 'default_reasoning_level',
+    ].includes(key))
+    || !hasText(value.id)
+    || !hasText(value.model_id)
+    || !['anthropic', 'openai', 'deepseek', 'google', 'local'].includes(value.provider as string)
+    || (value.base_url !== undefined && !hasText(value.base_url))
+    || (value.is_default !== undefined && typeof value.is_default !== 'boolean')
+    || (value.sort_order !== undefined
+      && (typeof value.sort_order !== 'number' || !Number.isSafeInteger(value.sort_order)))
+    || !Array.isArray(value.capabilities)
+    || !value.capabilities.every((capability) =>
+      ['chat', 'vision', 'embedding', 'reasoning'].includes(capability as string))
+    || !Array.isArray(value.reasoning_levels)
+    || value.reasoning_levels.length === 0
+    || !value.reasoning_levels.every((level) =>
+      (REASONING_LEVELS as readonly unknown[]).includes(level))
+    || new Set(value.reasoning_levels).size !== value.reasoning_levels.length
+    || !(REASONING_LEVELS as readonly unknown[]).includes(value.default_reasoning_level)
+    || !value.reasoning_levels.includes(value.default_reasoning_level as ReasoningLevel)) return false;
+
+  const supportsReasoning = value.capabilities.includes('reasoning');
+  return supportsReasoning
+    || (value.reasoning_levels.length === 1
+      && value.reasoning_levels[0] === 'off'
+      && value.default_reasoning_level === 'off');
 }
 
 /** 删除或停用模型配置。设置操作，不是业务确认。 */
@@ -48,6 +106,14 @@ export interface SetMessageModelSelectionPayload {
   previous_model_config_id?: string;
   model_config_id: string;
   reasoning_level: ReasoningLevel;
+}
+
+export interface SetMessageModelSelectionResult {
+  session_id: string;
+  /** 服务端生成的唯一权威提示消息。 */
+  message_ref: ResourceRef & { kind: 'chat_message' };
+  item_id: string;
+  resolved_model: ResolvedModelSelection;
 }
 
 /** 测试地址、凭证、Model ID 和协议能力。不发送个人数据。 */

@@ -122,6 +122,50 @@ describe('EgressPolicyGateway', () => {
     expect(policy.computeRequestFingerprint(first)).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('ignores reconstructed message timestamps but binds approval to content and model', async () => {
+    const { policy, decisions } = gateway({ EGRESS_SENSITIVE_ACTION: 'ask' });
+    const firstRequest = request('password=hunter2', {
+      context: {
+        messages: [{ role: 'user', content: 'password=hunter2', timestamp: 1 }],
+      },
+    });
+    const pending = await policy.evaluate(firstRequest);
+    await decisions.submitDecision({
+      ownerId: 'owner',
+      egressId: pending.egressId!,
+      decision: 'allow',
+      commandOperationId: 'allow-reconstructed-request',
+      commandRequestFingerprint: 'command-fingerprint',
+    });
+
+    const reconstructed = request('password=hunter2', {
+      context: {
+        messages: [{ role: 'user', content: 'password=hunter2', timestamp: 2 }],
+      },
+    });
+    const approved = await policy.evaluate(reconstructed);
+    expect(approved.decision).toBe('allowed');
+    expect(approved.request?.context.messages[0]).not.toHaveProperty(
+      'timestamp',
+    );
+
+    const changedContent = request('password=changed', {
+      context: {
+        messages: [{ role: 'user', content: 'password=changed', timestamp: 2 }],
+      },
+    });
+    expect((await policy.evaluate(changedContent)).decision).toBe(
+      'pending_user_decision',
+    );
+    expect(
+      policy.computeRequestFingerprint(
+        request('password=hunter2', {
+          model: { provider: 'deepseek', id: 'different-model' },
+        }),
+      ),
+    ).not.toBe(policy.computeRequestFingerprint(reconstructed));
+  });
+
   it.each([
     [
       'circular',
@@ -270,6 +314,29 @@ describe('EgressPolicyGateway', () => {
   });
 
   it.each([
+    ['ask', 'pending_user_decision'],
+    ['block', 'blocked'],
+    ['redact', 'redacted'],
+  ])(
+    'enforces %s policy for secrets embedded in a JSON string',
+    async (action, expected) => {
+      const { policy } = gateway({ EGRESS_SENSITIVE_ACTION: action });
+      const secret = 'json-password-value';
+      const result = await policy.evaluate(
+        request(JSON.stringify({ password: secret })),
+      );
+
+      expect(result.decision).toBe(expected);
+      expect(result.categories).toContain('password');
+      if (expected === 'redacted') {
+        expect(JSON.stringify(result.request?.context)).not.toContain(secret);
+      } else {
+        expect(result.request).toBeUndefined();
+      }
+    },
+  );
+
+  it.each([
     ['block', 'blocked'],
     ['allow', 'allowed'],
   ])('maps configured %s policy to %s', async (action, expected) => {
@@ -285,6 +352,25 @@ describe('EgressPolicyGateway', () => {
     expect(result.decision).toBe('blocked');
     expect(result.request).toBeUndefined();
   });
+
+  it.each(['onPayload', 'fetch'] as const)(
+    'blocks the post-approval %s hook before provider access',
+    async (hook) => {
+      const { policy, audit } = gateway({ EGRESS_SENSITIVE_ACTION: 'allow' });
+      const result = await policy.evaluate(
+        request('普通问题', {
+          options: {
+            [hook]: vi.fn(),
+          },
+        }),
+      );
+
+      expect(result).toMatchObject({ decision: 'blocked' });
+      expect(result.request).toBeUndefined();
+      expect(audit.records).toHaveLength(1);
+      expect(audit.records[0]).toMatchObject({ decision: 'blocked' });
+    },
+  );
 
   it('does not brand or expose a request until scan, redact, rescan and audit finish', async () => {
     const order: string[] = [];
@@ -336,6 +422,49 @@ describe('EgressPolicyGateway', () => {
     ]);
   });
 
+  it('sends the immutable payload that was scanned before awaiting audit', async () => {
+    let releaseAudit: (() => void) | undefined;
+    const audit = new (class extends EgressAuditStore {
+      async record(): Promise<void> {
+        await new Promise<void>((resolve) => {
+          releaseAudit = resolve;
+        });
+      }
+    })();
+    const { policy } = gateway(
+      { EGRESS_SENSITIVE_ACTION: 'allow' },
+      new MemoryEgressDecisionStore(),
+      audit,
+    );
+    const input = request('普通问题', {
+      context: {
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: '普通问题' }],
+          },
+        ],
+      },
+    });
+
+    const evaluation = policy.evaluate(input);
+    await vi.waitFor(() => expect(releaseAudit).toBeTypeOf('function'));
+    (
+      input.context.messages[0]!.content as Array<{
+        type: string;
+        text: string;
+      }>
+    )[0]!.text = 'password=late-secret';
+    releaseAudit!();
+    const result = await evaluation;
+
+    expect(result.decision).toBe('allowed');
+    expect(JSON.stringify(result.request?.context)).toContain('普通问题');
+    expect(JSON.stringify(result.request?.context)).not.toContain(
+      'late-secret',
+    );
+  });
+
   it.each([
     ['configured allowed', 'allow', undefined],
     ['automatic redacted', 'redact', undefined],
@@ -375,7 +504,9 @@ describe('EgressPolicyGateway', () => {
       rejectAudit = true;
       const provider = vi.fn();
       const input =
-        action === 'allow' ? request('普通问题') : request(`password=${secret}`);
+        action === 'allow'
+          ? request('普通问题')
+          : request(`password=${secret}`);
 
       const attempt = callProviderAfterApproval(policy, input, provider);
       await expect(attempt).rejects.toMatchObject({

@@ -125,6 +125,10 @@ export class SensitiveDataScanner {
       if (typeof item === 'string') {
         countString(item);
         this.scanText(item, path, add);
+        const parsed = parseJsonContainer(item);
+        if (parsed !== undefined) {
+          visit(parsed, `${path}.$json`, depth + 1);
+        }
         return;
       }
       if (typeof item === 'number') {
@@ -218,17 +222,17 @@ export class SensitiveDataScanner {
       [
         'password',
         'password_expression',
-        /(?:password|passwd|pwd|密码)\s*(?:是|为|[:=])\s*(?!\[REDACTED:)[^\s,，;；}"']+/iu,
+        /(?:password|passwd|pwd|密码)(?:["']\s*)?(?:是|为|[:=])\s*["']?(?!\[REDACTED:)[^\s,，;；}"']+/iu,
       ],
       [
         'api_key',
         'api_key_expression',
-        /(?:api[\s_-]*key|api\s*密钥|API密钥)\s*(?:是|为|[:=])\s*(?!\[REDACTED:)[^\s,，;；}"']+/iu,
+        /(?:api[\s_-]*key|api\s*密钥|API密钥)(?:["']\s*)?(?:是|为|[:=])\s*["']?(?!\[REDACTED:)[^\s,，;；}"']+/iu,
       ],
       [
         'secret',
         'secret_expression',
-        /(?:client[\s_-]*secret|private[\s_-]*key|secret|token|(?<!API)(?<!API )密钥|令牌)\s*(?:是|为|[:=])\s*(?!\[REDACTED:)[^\s,，;；}"']+/iu,
+        /(?:client[\s_-]*secret|private[\s_-]*key|secret|token|(?<!API)(?<!API )密钥|令牌)(?:["']\s*)?(?:是|为|[:=])\s*["']?(?!\[REDACTED:)[^\s,，;；}"']+/iu,
       ],
       [
         'identity_document',
@@ -243,6 +247,23 @@ export class SensitiveDataScanner {
       text.match(/(?<!\d)(?:\d[\s-]?){15,18}\d(?!\d)/gu) ?? [];
     if (bankCandidates.some(passesLuhn))
       add('bank_card', path, 'bank_card_luhn');
+  }
+}
+
+export function parseJsonContainer(
+  value: string,
+): Record<string, unknown> | unknown[] | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return parsed !== null &&
+      typeof parsed === 'object' &&
+      (Array.isArray(parsed) || isPlainObject(parsed))
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 

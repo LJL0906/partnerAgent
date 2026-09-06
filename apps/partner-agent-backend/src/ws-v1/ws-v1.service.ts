@@ -42,6 +42,7 @@ export interface WsV1SubscriptionResult {
 }
 
 interface PendingSubscription {
+  generation: number;
   streamKey: string;
   buffered: Map<string, WsV1StoredEvent>;
   returnedEventIds: Set<string>;
@@ -56,6 +57,10 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
   private readonly pendingSubscriptions = new Map<
     string,
     Map<SubscriptionChannel, PendingSubscription>
+  >();
+  private readonly subscriptionGenerations = new Map<
+    string,
+    Map<SubscriptionChannel, number>
   >();
   private unsubscribeTaskEvents?: () => void;
   private taskPublishQueue = Promise.resolve();
@@ -102,12 +107,14 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     this.sockets.set(socket.id, socket);
     this.subscriptions.set(socket.id, new Set());
     this.pendingSubscriptions.set(socket.id, new Map());
+    this.subscriptionGenerations.set(socket.id, new Map());
   }
 
   disconnect(socket: Socket): void {
     this.sockets.delete(socket.id);
     this.subscriptions.delete(socket.id);
     this.pendingSubscriptions.delete(socket.id);
+    this.subscriptionGenerations.delete(socket.id);
   }
 
   async subscribe(
@@ -118,10 +125,12 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     const accepted: SubscriptionChannel[] = [];
     const rejected: SubscriptionAckV1['rejected'] = [];
     const replay: ServerPushEventV1[] = [];
-    const subscriptions = this.subscriptions.get(socket.id) ?? new Set();
-    this.subscriptions.set(socket.id, subscriptions);
-    const pending = this.pendingSubscriptions.get(socket.id) ?? new Map();
-    this.pendingSubscriptions.set(socket.id, pending);
+    const subscriptions = this.subscriptions.get(socket.id);
+    const pending = this.pendingSubscriptions.get(socket.id);
+    const generations = this.subscriptionGenerations.get(socket.id);
+    if (!subscriptions || !pending || !generations) {
+      return { ack: { request_id: request.request_id, accepted, rejected }, replay };
+    }
 
     for (const rawChannel of request.channels ?? []) {
       if (!this.isSubscriptionChannel(rawChannel)) {
@@ -133,9 +142,18 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
+      const generation = (generations.get(rawChannel) ?? 0) + 1;
+      generations.set(rawChannel, generation);
+      subscriptions.delete(rawChannel);
+      pending.delete(rawChannel);
+
       if (
         !(await this.authorizer.canSubscribe({ userId, channel: rawChannel }))
       ) {
+        if (
+          this.subscriptionGenerations.get(socket.id) !== generations ||
+          generations.get(rawChannel) !== generation
+        ) continue;
         rejected.push({
           channel: rawChannel,
           code: 'AUTH_002',
@@ -144,20 +162,32 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      subscriptions.delete(rawChannel);
+      if (
+        this.subscriptionGenerations.get(socket.id) !== generations ||
+        generations.get(rawChannel) !== generation
+      ) continue;
+
       const pendingChannel: PendingSubscription = {
+        generation,
         streamKey: this.streamKey(rawChannel, userId),
         buffered: new Map(),
         returnedEventIds: new Set(),
         replayPosition: 0,
       };
       pending.set(rawChannel, pendingChannel);
-      accepted.push(rawChannel);
       const replayResult = await this.eventStore.replayAfter(
         rawChannel,
         request.after?.[rawChannel],
         pendingChannel.streamKey,
       );
+      if (
+        this.subscriptionGenerations.get(socket.id) !== generations ||
+        generations.get(rawChannel) !== generation ||
+        pending.get(rawChannel) !== pendingChannel
+      ) {
+        continue;
+      }
+      accepted.push(rawChannel);
       pendingChannel.replayPosition = replayResult.latestPosition;
       if (replayResult.replayable) {
         const channelReplay = this.mergeReplay(
@@ -192,10 +222,14 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
   activateSubscriptions(socket: Socket, channels: SubscriptionChannel[]): void {
     const subscriptions = this.subscriptions.get(socket.id);
     const pending = this.pendingSubscriptions.get(socket.id);
-    if (!subscriptions || !pending) return;
+    const generations = this.subscriptionGenerations.get(socket.id);
+    if (!subscriptions || !pending || !generations) return;
     for (const channel of channels) {
       const pendingChannel = pending.get(channel);
-      if (!pendingChannel) continue;
+      if (
+        !pendingChannel ||
+        generations.get(channel) !== pendingChannel.generation
+      ) continue;
       pending.delete(channel);
       subscriptions.add(channel);
       for (const record of [...pendingChannel.buffered.values()].sort(
@@ -224,6 +258,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
   ): SubscriptionAckV1 {
     this.requireAuthenticated(socket);
     const subscriptions = this.subscriptions.get(socket.id) ?? new Set();
+    const generations = this.subscriptionGenerations.get(socket.id);
     const accepted: SubscriptionChannel[] = [];
     const rejected: SubscriptionAckV1['rejected'] = [];
 
@@ -235,6 +270,9 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
           message: '频道格式无效',
         });
         continue;
+      }
+      if (generations) {
+        generations.set(rawChannel, (generations.get(rawChannel) ?? 0) + 1);
       }
       subscriptions.delete(rawChannel);
       this.pendingSubscriptions.get(socket.id)?.delete(rawChannel);

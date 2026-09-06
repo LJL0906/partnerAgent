@@ -1,8 +1,34 @@
-import type { SessionMessage } from '@partner-agent/contracts';
+import type { ReasoningLevel, SessionMessage } from '@partner-agent/contracts';
 
 export interface StoredSessionMessage extends SessionMessage {
+  /** 稳定消息资源 ID。 */
+  id?: string;
   /** 会话内单调递增序号，用于把快照水位之后的消息补回 Agent 上下文。 */
   sequence: number;
+  status?: 'pending' | 'streaming' | 'complete' | 'failed' | 'cancelled';
+  revision?: number;
+  taskId?: string;
+  operationId?: string;
+  modelConfigId?: string;
+  reasoningLevel?: ReasoningLevel;
+}
+
+export interface AppendedSessionMessage {
+  id: string;
+  sequence: number;
+  createdAt: Date;
+}
+
+export interface TaskAssistantMessageWrite {
+  id: string;
+  taskId: string;
+  operationId: string;
+  modelConfigId: string;
+  reasoningLevel: ReasoningLevel;
+  content: string;
+  status: 'streaming' | 'complete';
+  revision: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface StoredSession {
@@ -43,12 +69,23 @@ export abstract class SessionStore {
     ownerId: string,
     content: string,
     metadata: { model_config_id: string; previous_model_config_id: string },
-  ): Promise<void>;
+  ): Promise<AppendedSessionMessage>;
   abstract completeAssistantTurn(
     sessionId: string,
     ownerId: string,
     content: string | undefined,
     contextMessages: unknown[],
+  ): Promise<void>;
+  abstract saveTaskAssistantMessage(
+    sessionId: string,
+    ownerId: string,
+    message: TaskAssistantMessageWrite,
+  ): Promise<AppendedSessionMessage>;
+  abstract saveContextSnapshot(
+    sessionId: string,
+    ownerId: string,
+    contextMessages: unknown[],
+    contextRevision: number,
   ): Promise<void>;
   abstract delete(sessionId: string, ownerId: string): Promise<void>;
 }

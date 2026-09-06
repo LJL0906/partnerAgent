@@ -1,104 +1,106 @@
-import * as Crypto from 'expo-crypto';
+import { SENSITIVE_CATEGORIES, type PrivacyDecisionStatus, type ServerPushEventV1 } from '@partner-agent/contracts';
 import type { MutableRefObject } from 'react';
 
-import { SENSITIVE_CATEGORIES } from '@partner-agent/contracts';
-import type { PrivacyDecisionStatus, ServerPushEventV1 } from '@partner-agent/contracts';
 import type { RecoverableTaskStatus } from '@/api/chat-api';
-import { mapServerPushEventToChatItems } from './chat-event-routing';
-
 import {
+  applyTextDeltaToStore,
+  applyThinkingDeltaToStore,
   isTerminalTaskStatus,
   useChatStore,
   type ChatTaskStatus,
 } from '@/store/chat-store';
+import { mapServerPushEventToChatItems } from './chat-event-routing';
 
 export { mapServerPushEventToChatItems } from './chat-event-routing';
+
+export interface AgentEventApplyResult {
+  recoveryRequired: boolean;
+  terminalObserved: boolean;
+}
+
+const NO_RECOVERY: AgentEventApplyResult = { recoveryRequired: false, terminalObserved: false };
 
 export function applyAgentEvent(
   event: ServerPushEventV1,
   assistantIdRef: MutableRefObject<string | undefined>,
-): void {
+): AgentEventApplyResult {
   const state = useChatStore.getState();
-  for (const item of mapServerPushEventToChatItems(event)) {
-    if (!(item.type === 'message' && event.event_type === 'text_delta') && !(item.type === 'thinking' && event.event_type === 'thinking_delta')) state.upsertItem(item);
+  if (event.operation_id) state.clearSubmissionNotice(event.operation_id);
+  if (event.event_type === 'history') {
+    state.mergeSessionMessages(event.data.messages);
+    assistantIdRef.current = findLatestAssistantId();
+    return NO_RECOVERY;
   }
+  if (event.event_type === 'text_delta') {
+    const result = applyTextDeltaToStore({
+      itemId: event.item_id, itemRevision: event.item_revision, messageId: event.message_id,
+      textOffset: event.text_offset, data: event.data, sessionId: event.session_id,
+      taskId: event.task_id, operationId: event.operation_id, timestamp: event.timestamp,
+    });
+    if (result === 'recovery_required') return { recoveryRequired: true, terminalObserved: false };
+    if (result === 'ignored' && isTerminalTaskStatus(state.taskStatus)) return NO_RECOVERY;
+    if (!state.setTaskStatus('running')) return NO_RECOVERY;
+    assistantIdRef.current = event.item_id;
+    state.setStreaming(true);
+    state.setThinking(false);
+    return NO_RECOVERY;
+  }
+  if (event.event_type === 'thinking_delta') {
+    const result = applyThinkingDeltaToStore({
+      itemId: event.item_id, itemRevision: event.item_revision, textOffset: event.text_offset,
+      data: event.data, sessionId: event.session_id, taskId: event.task_id,
+      operationId: event.operation_id, timestamp: event.timestamp,
+    });
+    if (result === 'recovery_required') return { recoveryRequired: true, terminalObserved: false };
+    if (!state.setTaskStatus('running')) return NO_RECOVERY;
+    state.setStreaming(true);
+    state.setThinking(true);
+    return NO_RECOVERY;
+  }
+
+  const mappedItems = mapServerPushEventToChatItems(event);
+  for (const item of mappedItems) state.upsertItem(item);
   switch (event.event_type) {
-    case 'history':
-      state.reconcileMessages(
-        event.data.messages.map((message, index) => ({
-          id: `history:${event.session_id ?? 'unknown'}:${message.timestamp}:${index}`,
-          role: message.role,
-          content: message.content,
-          createdAt: new Date(message.timestamp).toISOString(),
-        })),
-      );
-      assistantIdRef.current = findLatestAssistantId();
-      return;
-    case 'text_delta': {
-      if (!state.setTaskStatus('running')) return;
-      let assistantId = assistantIdRef.current;
-      if (!assistantId) {
-        assistantId = Crypto.randomUUID();
-        assistantIdRef.current = assistantId;
-        state.addMessage({ id: assistantId, role: 'assistant', content: '', createdAt: new Date().toISOString() });
-      }
-      state.setStreaming(true);
-      state.setThinking(false);
-      state.upsertItem({ schema_version: 1, id: assistantId, type: 'message', status: 'streaming', collapsed: false, created_at: Date.now(), updated_at: Date.now(), session_id: event.session_id, task_id: event.task_id, operation_id: event.operation_id, message_id: assistantId, payload: { role: 'assistant', content: event.data, format: 'markdown' } });
-      return;
-    }
-    case 'thinking_delta': {
-      if (!state.setTaskStatus('running')) return;
-      state.setStreaming(true);
-      state.setThinking(true);
-      const [item] = mapServerPushEventToChatItems(event);
-      if (item) state.upsertItem(item);
-      return;
-    }
     case 'tool_execution_start':
       state.setTaskStatus('running');
-      return;
+      return { recoveryRequired: true, terminalObserved: false };
     case 'tool_execution_end':
-      if (isTerminalTaskStatus(state.taskStatus)) return;
-      return;
-    case 'task_state':
-      applyTaskState(
-        event.data.state,
-        event.data.message,
-        assistantIdRef,
-        event.data.privacy_decision,
-      );
-      return;
+    case 'tool_undo_available':
+      return { recoveryRequired: true, terminalObserved: false };
+    case 'tool_confirmation_pending':
+      return { recoveryRequired: true, terminalObserved: false };
+    case 'tool_confirmation_confirmed':
+    case 'tool_confirmation_dismissed':
+    case 'tool_undo_completed':
+      return { recoveryRequired: true, terminalObserved: false };
+    case 'task_state': {
+      applyTaskState(event.data.state, event.data.message, assistantIdRef, event.data.privacy_decision);
+      return { recoveryRequired: event.data.state === 'waiting_tool_approval',
+        terminalObserved: isTerminalTaskStatus(event.data.state) };
+    }
     case 'done':
       applyTaskState('completed', undefined, assistantIdRef);
-      return;
-    case 'cancelled': {
-      const wasTerminal = isTerminalTaskStatus(state.taskStatus);
+      return { recoveryRequired: false, terminalObserved: true };
+    case 'cancelled':
       applyTaskState('cancelled', undefined, assistantIdRef);
-      if (!wasTerminal && useChatStore.getState().taskStatus === 'cancelled') {
-        state.addMessage({
-          id: `cancelled:${event.task_id ?? event.event_id}`,
-          role: 'system',
-          content: '已取消本次回复。',
-        });
-      }
-      return;
-    }
+      return { recoveryRequired: false, terminalObserved: true };
     case 'error':
       if (event.data.code === 'EGRESS_002') {
-        if (!state.setTaskStatus('waiting_privacy_decision')) return;
-        state.setStreaming(true);
-        state.setThinking(false);
-        return;
+        if (state.setTaskStatus('waiting_privacy_decision')) {
+          state.setStreaming(true);
+          state.setThinking(false);
+        }
+        return NO_RECOVERY;
       }
-      if (isTerminalTaskStatus(state.taskStatus)) return;
       applyTaskState('failed', event.data.message, assistantIdRef);
+      return { recoveryRequired: false, terminalObserved: true };
+    default:
+      return NO_RECOVERY;
   }
 }
 
 export function applyRecoveredTask(
-  task: RecoverableTaskStatus,
-  assistantIdRef: MutableRefObject<string | undefined>,
+  task: RecoverableTaskStatus, assistantIdRef: MutableRefObject<string | undefined>,
 ): void {
   applyTaskState(task.state, task.error, assistantIdRef, task.privacy_decision);
 }
@@ -118,13 +120,11 @@ export function toPrivacyDecisionSummary(
 }
 
 function applyTaskState(
-  taskState: RecoverableTaskStatus['state'],
-  error: string | undefined,
-  assistantIdRef: MutableRefObject<string | undefined>,
-  privacyDecision?: PrivacyDecisionStatus,
+  taskState: RecoverableTaskStatus['state'], error: string | undefined,
+  assistantIdRef: MutableRefObject<string | undefined>, privacyDecision?: PrivacyDecisionStatus,
 ): void {
   const state = useChatStore.getState();
-  const taskStatus = toChatTaskStatus(taskState);
+  const taskStatus: ChatTaskStatus = taskState;
   const previousStatus = state.taskStatus;
   if (!state.setTaskStatus(taskStatus)) return;
   if (taskStatus === 'waiting_privacy_decision') {
@@ -137,16 +137,8 @@ function applyTaskState(
     state.setThinking(taskStatus === 'queued' || taskStatus === 'running');
   }
   if (taskStatus === 'failed' && error && previousStatus !== 'failed') {
-    state.addMessage({
-      id: `task-error:${state.activeTaskId ?? error}`,
-      role: 'system',
-      content: error,
-    });
+    state.addMessage({ id: `task-error:${state.activeTaskId ?? 'unknown'}`, role: 'system', content: error });
   }
-}
-
-function toChatTaskStatus(state: RecoverableTaskStatus['state']): ChatTaskStatus {
-  return state;
 }
 
 function finishStream(
@@ -163,11 +155,7 @@ function finishStream(
 }
 
 function findLatestAssistantId(): string | undefined {
-  const messages = useChatStore.getState().messages.filter((message) => message.role === 'user' || message.role === 'assistant');
-  const last = messages[messages.length - 1];
-  return last?.role === 'assistant' ? last.id : undefined;
+  const items = useChatStore.getState().items.filter((item) =>
+    item.type === 'message' && item.payload.role === 'assistant');
+  return items.at(-1)?.id;
 }
-
-
-
-

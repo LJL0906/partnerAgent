@@ -35,8 +35,15 @@ export class AgentRunTraceSink extends ObservabilitySink {
 
   record(event: Readonly<ObservabilityEvent>): void {
     if (!isTraceEvent(event)) return;
-    const sequence = (this.sequences.get(event.runId) ?? 0) + 1;
-    if (sequence > AGENT_TRACE_MAX_EVENTS_PER_RUN) return;
+    const currentSequence = this.sequences.get(event.runId) ?? 0;
+    const isFinished = event.kind === 'agent_run_finished';
+    if (!isFinished && currentSequence >= AGENT_TRACE_MAX_EVENTS_PER_RUN - 1)
+      return;
+    const sequence = currentSequence + 1;
+    if (sequence > AGENT_TRACE_MAX_EVENTS_PER_RUN) {
+      if (isFinished) this.scheduleCleanup(event.runId);
+      return;
+    }
     this.sequences.set(event.runId, sequence);
     const appended = this.store
       .append(toRecord(event, sequence))
@@ -51,7 +58,7 @@ export class AgentRunTraceSink extends ObservabilitySink {
           .catch(() => undefined),
       );
     }
-    if (event.kind === 'agent_run_finished') this.scheduleCleanup(event.runId);
+    if (isFinished) this.scheduleCleanup(event.runId);
   }
 
   private scheduleCleanup(runId: string): void {

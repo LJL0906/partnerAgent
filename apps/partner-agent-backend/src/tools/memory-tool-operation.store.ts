@@ -3,6 +3,7 @@ import {
   ToolOperationStore,
   ToolReconciliationError,
   assertToolReconciliationInput,
+  sessionToolViewFrom,
   type ExpiredToolConfirmationRecord,
   type ReconciledToolConfirmationRecord,
   type RecoverableToolConfirmationRecord,
@@ -32,7 +33,7 @@ export class MemoryToolOperationStore extends ToolOperationStore {
   private readonly listedReconciliations = new Set<string>();
 
   async saveConfirmation(record: ToolConfirmationRecord): Promise<void> {
-    this.confirmations.set(record.id, structuredClone(record));
+    this.confirmations.set(record.id, structuredClone({ ...record, version: record.version ?? 1 }));
   }
 
   async findConfirmation(
@@ -42,10 +43,27 @@ export class MemoryToolOperationStore extends ToolOperationStore {
     return record ? structuredClone(record) : undefined;
   }
 
+  async listSessionToolViews(ownerId: string, sessionId: string) {
+    return [...this.confirmations.values()]
+      .filter(
+        (record) => record.ownerId === ownerId && record.sessionId === sessionId,
+      )
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .map((record) =>
+        sessionToolViewFrom(
+          record,
+          [...this.receipts.values()].find(
+            (receipt) => receipt.confirmationId === record.id,
+          ),
+        ),
+      );
+  }
+
   async claimConfirmation(id: string): Promise<boolean> {
     const record = this.confirmations.get(id);
     if (!record || record.status !== 'pending') return false;
     record.status = 'executing';
+    record.version = (record.version ?? 1) + 1;
     return true;
   }
 
@@ -55,7 +73,9 @@ export class MemoryToolOperationStore extends ToolOperationStore {
   ): Promise<void> {
     const record = this.confirmations.get(id);
     if (!record) throw new Error('确认请求不存在');
+    const previousVersion = record.version ?? 1;
     Object.assign(record, structuredClone(updates));
+    if (updates.version === undefined) record.version = previousVersion + 1;
   }
 
   async listRecoverableConfirmations(
@@ -93,7 +113,10 @@ export class MemoryToolOperationStore extends ToolOperationStore {
         (left, right) => left.expiresAt.getTime() - right.expiresAt.getTime(),
       )
       .slice(0, this.safeLimit(limit));
-    for (const record of expired) record.status = 'expired';
+    for (const record of expired) {
+      record.status = 'expired';
+      record.version = (record.version ?? 1) + 1;
+    }
     return expired.map(
       (record) => structuredClone(record) as ExpiredToolConfirmationRecord,
     );
@@ -139,6 +162,7 @@ export class MemoryToolOperationStore extends ToolOperationStore {
     for (const { record, snapshot, audit } of transitions) {
       this.audits.push(audit);
       record.status = 'indeterminate';
+      record.version = (record.version ?? 1) + 1;
       record.reconciliationSnapshot = snapshot;
     }
     return records.map((record) => {
@@ -242,6 +266,8 @@ export class MemoryToolOperationStore extends ToolOperationStore {
     const receipt = this.receipts.get(id);
     if (!receipt || receipt.status !== 'applied') return false;
     receipt.status = 'undoing';
+    const confirmation = this.confirmations.get(receipt.confirmationId);
+    if (confirmation) confirmation.version = (confirmation.version ?? 1) + 1;
     return true;
   }
 
@@ -252,6 +278,8 @@ export class MemoryToolOperationStore extends ToolOperationStore {
     const receipt = this.receipts.get(id);
     if (!receipt) throw new Error('执行记录不存在');
     Object.assign(receipt, structuredClone(updates));
+    const confirmation = this.confirmations.get(receipt.confirmationId);
+    if (confirmation) confirmation.version = (confirmation.version ?? 1) + 1;
   }
 
   async completeUndo(executionId: string): Promise<void> {
@@ -263,6 +291,7 @@ export class MemoryToolOperationStore extends ToolOperationStore {
     if (!confirmation) throw new Error('确认请求不存在');
     receipt.status = 'undone';
     confirmation.status = 'undone';
+    confirmation.version = (confirmation.version ?? 1) + 1;
   }
 
   private safeLimit(limit: number): number {

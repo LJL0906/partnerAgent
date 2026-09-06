@@ -8,12 +8,18 @@ import { AddToolControlOutboxRemediation1788513000000 } from './migrations/17885
 import { CreateAccountTables1788514000000 } from './migrations/1788514000000-create-account-tables.js';
 import { AddChatTaskModelSelection1788515000000 } from './migrations/1788515000000-add-chat-task-model-selection.js';
 import { AddOffReasoningLevel1788518000000 } from './migrations/1788518000000-add-off-reasoning-level.js';
+import { AlignChatMessageRuntime1788519000000 } from './migrations/1788519000000-align-chat-message-runtime.js';
+import { AddChatTaskOutputMode1788520000000 } from './migrations/1788520000000-add-chat-task-output-mode.js';
 
 describe('database definition', () => {
   it('registers the latest reversible migration exactly once', () => {
-    expect(DATABASE_MIGRATIONS.at(-1)).toBe(
-      AddOffReasoningLevel1788518000000,
-    );
+    expect(DATABASE_MIGRATIONS.at(-1)).toBe(AddChatTaskOutputMode1788520000000);
+    expect(DATABASE_MIGRATIONS).toContain(AlignChatMessageRuntime1788519000000);
+    expect(
+      DATABASE_MIGRATIONS.filter(
+        (migration) => migration === AddOffReasoningLevel1788518000000,
+      ),
+    ).toHaveLength(1);
     expect(
       DATABASE_MIGRATIONS.filter(
         (migration) => migration === AddToolReconciliation1788512000000,

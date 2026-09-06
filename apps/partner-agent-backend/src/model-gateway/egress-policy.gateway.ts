@@ -25,6 +25,20 @@ import {
 type EvaluatedEgressResult = Omit<EgressPolicyResult, 'request'> & {
   approvedInput?: ExternalModelRequest;
 };
+
+interface SemanticEgressPayload {
+  provider: string;
+  modelId: string;
+  context: Context;
+  options?: Record<string, unknown>;
+  source: string;
+  taskRef: {
+    taskId: string | null;
+    sessionId: string;
+    operationId: string | null;
+  };
+}
+
 @Injectable()
 export class EgressPolicyGateway {
   private readonly scanner = new SensitiveDataScanner();
@@ -38,6 +52,11 @@ export class EgressPolicyGateway {
   async evaluate(input: ExternalModelRequest): Promise<EgressPolicyResult> {
     let categories: SensitiveCategory[] = [];
     let fingerprint: string | undefined;
+    let evaluatedInput: ExternalModelRequest = {
+      ...input,
+      metadata: { ...input.metadata },
+      model: { ...input.model },
+    };
     let result: EvaluatedEgressResult = { decision: 'blocked', categories };
     try {
       const payload = this.semanticPayload(input);
@@ -46,20 +65,22 @@ export class EgressPolicyGateway {
         result = { decision: 'blocked', categories };
       } else {
         categories = scanned.categories;
+        const snapshot = structuredClone(payload);
+        evaluatedInput = this.requestFromSnapshot(input, snapshot);
         fingerprint = fingerprintExternalPayload(
-          payload,
+          snapshot,
           this.fingerprintLimit(),
         );
         const configuredDecision = this.decide(categories);
         result =
           configuredDecision === 'pending_user_decision'
             ? await this.evaluatePendingDecision(
-                input,
+                evaluatedInput,
                 fingerprint,
                 categories,
               )
             : this.completeConfiguredDecision(
-                input,
+                evaluatedInput,
                 configuredDecision,
                 categories,
               );
@@ -68,14 +89,14 @@ export class EgressPolicyGateway {
       result = { decision: 'blocked', categories };
     }
 
-    fingerprint ??= this.unavailableFingerprint(input);
+    fingerprint ??= this.unavailableFingerprint(evaluatedInput);
     try {
-      await this.audit(input, result, fingerprint);
+      await this.audit(evaluatedInput, result, fingerprint);
     } catch {
       throw new EgressDecisionError('blocked', categories, {
         reason: 'audit_unavailable',
-        provider: input.metadata.provider,
-        modelId: input.model.id,
+        provider: evaluatedInput.metadata.provider,
+        modelId: evaluatedInput.model.id,
         requestFingerprint: fingerprint,
       });
     }
@@ -142,7 +163,7 @@ export class EgressPolicyGateway {
         return {
           decision: 'allowed',
           categories,
-          approvedInput: input,
+          approvedInput: this.providerRequest(input),
         };
       }
     }
@@ -175,7 +196,7 @@ export class EgressPolicyGateway {
         return {
           decision: 'allowed',
           categories,
-          approvedInput: input,
+          approvedInput: this.providerRequest(input),
         };
       }
       if (['blocked', 'expired', 'cancelled'].includes(consumed.status)) {
@@ -232,8 +253,12 @@ export class EgressPolicyGateway {
     return {
       decision,
       categories,
-      approvedInput: input,
+      approvedInput: this.providerRequest(input),
     };
+  }
+
+  private providerRequest(input: ExternalModelRequest): ExternalModelRequest {
+    return { ...input, context: this.providerContext(input.context) };
   }
 
   private redactAndRescan(
@@ -297,7 +322,7 @@ export class EgressPolicyGateway {
     );
   }
 
-  private semanticPayload(input: ExternalModelRequest): unknown {
+  private semanticPayload(input: ExternalModelRequest): SemanticEgressPayload {
     return {
       provider: input.metadata.provider,
       modelId: input.model.id,
@@ -312,12 +337,45 @@ export class EgressPolicyGateway {
     };
   }
 
+  private requestFromSnapshot(
+    input: ExternalModelRequest,
+    snapshot: SemanticEgressPayload,
+  ): ExternalModelRequest {
+    const signal = input.options?.signal;
+    const onResponse = input.options?.onResponse;
+    return {
+      metadata: {
+        ...input.metadata,
+        provider: snapshot.provider,
+        source: snapshot.source,
+        sessionId: snapshot.taskRef.sessionId,
+        taskId: snapshot.taskRef.taskId ?? undefined,
+        operationId: snapshot.taskRef.operationId ?? undefined,
+      },
+      model: {
+        ...input.model,
+        provider: snapshot.provider,
+        id: snapshot.modelId,
+      },
+      context: snapshot.context,
+      options: input.options
+        ? ({
+            ...snapshot.options,
+            ...(signal === undefined ? {} : { signal }),
+            ...(onResponse === undefined ? {} : { onResponse }),
+          } as SimpleStreamOptions)
+        : undefined,
+    };
+  }
+
   private providerContext(context: Context): Context {
     return {
       ...(context.systemPrompt === undefined
         ? {}
         : { systemPrompt: context.systemPrompt }),
-      messages: context.messages,
+      messages: context.messages.map((message) =>
+        this.withoutRebuiltTimestamp(message),
+      ),
       ...(context.tools === undefined
         ? {}
         : {
@@ -333,11 +391,24 @@ export class EgressPolicyGateway {
     };
   }
 
+  private withoutRebuiltTimestamp<T>(message: T): T {
+    if (message === null || typeof message !== 'object') return message;
+    const descriptors = Object.getOwnPropertyDescriptors(message);
+    const timestamp = descriptors.timestamp;
+    if (timestamp?.enumerable && 'value' in timestamp) {
+      delete descriptors.timestamp;
+    }
+    return Object.create(Object.getPrototypeOf(message), descriptors) as T;
+  }
+
   private providerOptions(
     options?: SimpleStreamOptions,
   ): Record<string, unknown> | undefined {
     if (!options) return undefined;
     const source = options as Record<string, unknown>;
+    if (source.fetch !== undefined || source.onPayload !== undefined) {
+      throw new Error('post-approval provider hooks are not allowed');
+    }
     const keys = [
       'temperature',
       'apiKey',

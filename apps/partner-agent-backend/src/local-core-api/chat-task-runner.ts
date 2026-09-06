@@ -8,12 +8,29 @@ import {
   thrownChatTaskErrorCode,
 } from './chat-task-errors.js';
 import { ChatTaskStore, type AcceptedChatTask } from './chat-task.store.js';
+import type { ChatPreviewV1 } from '@partner-agent/contracts';
 
 export type ChatTaskAgentEvent = {
   type: string;
   data?: unknown;
   timestamp: number;
 };
+
+interface AssistantOutputData {
+  content: string;
+  chatPreviews: ChatPreviewV1[];
+  contextMessages: unknown[];
+}
+
+function assistantOutputData(value: unknown): AssistantOutputData | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const data = value as Partial<AssistantOutputData>;
+  return typeof data.content === 'string' &&
+    Array.isArray(data.chatPreviews) &&
+    Array.isArray(data.contextMessages)
+    ? (data as AssistantOutputData)
+    : undefined;
+}
 
 export class ChatTaskRunner {
   constructor(
@@ -64,6 +81,16 @@ export class ChatTaskRunner {
 
     this.publishState(task, 'running');
     try {
+      const priorMessage = (await this.store.listSessionMessages(
+        task.ownerId,
+        task.sessionId,
+      )).find(
+        (message) => message.role === 'assistant' && message.task_id === task.taskId,
+      );
+      let expectedRevision = priorMessage?.revision ?? 0;
+      let persistedContent = priorMessage?.content ?? '';
+      let generatedContent = '';
+      let outputCommitted = false;
       let failure: { code: string; message: string } | undefined;
       let waitingToolConfirmationId: string | undefined;
       for await (const event of stream) {
@@ -116,6 +143,56 @@ export class ChatTaskRunner {
             ),
           };
         }
+        if (event.type === 'text_delta' && typeof event.data === 'string') {
+          generatedContent += event.data;
+          const delta = generatedContent.startsWith(persistedContent)
+            ? generatedContent.slice(persistedContent.length)
+            : '';
+          if (delta.length > 0) {
+            const written = await this.store.appendAssistantProgress({
+              ownerId: task.ownerId,
+              sessionId: task.sessionId,
+              taskId: task.taskId,
+              operationId: task.operationId,
+              leaseToken: leaseOwner,
+              expectedRevision,
+              textOffset: persistedContent.length,
+              delta,
+            });
+            if (written.outcome !== 'committed') return;
+            expectedRevision = written.message.revision;
+            persistedContent = written.message.content;
+            this.events.publish({
+              ...this.base(task),
+              state: 'running',
+              type: 'agent_event',
+              eventType: event.type,
+              data: delta,
+            });
+          }
+          continue;
+        }
+        if (event.type === 'assistant_output_complete') {
+          const output = assistantOutputData(event.data);
+          if (!output) throw new Error('Agent 完成载荷无效');
+          const completed = await this.store.completeAssistantOutput({
+            ownerId: task.ownerId,
+            sessionId: task.sessionId,
+            taskId: task.taskId,
+            operationId: task.operationId,
+            leaseToken: leaseOwner,
+            expectedRevision,
+            content: output.content,
+            chatPreviews: output.chatPreviews,
+            contextMessages: output.contextMessages,
+          });
+          if (completed.outcome === 'committed') {
+            outputCommitted = true;
+            this.publishState(task, 'completed');
+          }
+          if (completed.outcome !== 'committed') return;
+          continue;
+        }
         if (event.type !== 'done') {
           this.events.publish({
             ...this.base(task),
@@ -156,13 +233,29 @@ export class ChatTaskRunner {
           this.publishState(task, 'failed', failure);
         return;
       }
+      if (outputCommitted) return;
+      if (task.outputMode === 'structured_preview') {
+        const failed = await this.store.markFailed(
+          task.taskId,
+          task.ownerId,
+          'STRUCTURED_PREVIEW_MISSING',
+          '结构化预览任务未产生 emit_chat_preview 输出。',
+          leaseOwner,
+        );
+        if (failed?.state === 'failed') {
+          this.publishState(task, 'failed', {
+            code: 'STRUCTURED_PREVIEW_MISSING',
+            message: '结构化预览任务未产生 emit_chat_preview 输出。',
+          });
+        }
+        return;
+      }
       const completed = await this.store.markCompleted(
         task.taskId,
         task.ownerId,
         leaseOwner,
       );
-      if (completed?.state === 'completed')
-        this.publishState(task, 'completed');
+      if (completed?.state === 'completed') this.publishState(task, 'completed');
     } catch (error) {
       if (this.shouldStop(task.taskId, leaseLost)) return;
       const message = safeChatTaskErrorMessage(

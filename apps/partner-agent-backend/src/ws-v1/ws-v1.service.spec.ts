@@ -111,4 +111,66 @@ describe('WsV1Service subscription handoff', () => {
     expect(socket.emit).toHaveBeenCalledWith('agent_event', afterReplay.event);
     await service.onModuleDestroy();
   });
+
+  it('does not revive a channel unsubscribed while authorization is pending', async () => {
+    let resolveAuthorization!: (allowed: boolean) => void;
+    const store = new ControlledEventStore();
+    const service = new WsV1Service(
+      { canSubscribe: vi.fn(() => new Promise<boolean>((resolve) => {
+        resolveAuthorization = resolve;
+      })) } as unknown as WsV1ChannelAuthorizer,
+      store,
+      new RedactionService(),
+      new ChatTaskEventBus(),
+    );
+    await service.onModuleInit();
+    const socket = { id: 'socket-2', data: { userId: 'owner' }, emit: vi.fn() } as unknown as Socket;
+    service.connect(socket);
+
+    const subscribing = service.subscribe(socket, {
+      request_id: 'subscribe', channels: ['session:s1'],
+    });
+    await vi.waitFor(() => expect(resolveAuthorization).toBeTypeOf('function'));
+    expect(service.unsubscribe(socket, {
+      request_id: 'unsubscribe', channels: ['session:s1'],
+    }).accepted).toEqual(['session:s1']);
+    resolveAuthorization(true);
+
+    const result = await subscribing;
+    service.activateSubscriptions(socket, result.ack.accepted);
+    await store.listener?.(event('00000000-0000-4000-8000-000000000003', 1));
+    expect(result.ack.accepted).toEqual([]);
+    expect(socket.emit).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it('does not recreate subscriptions after disconnect during authorization', async () => {
+    let resolveAuthorization!: (allowed: boolean) => void;
+    const store = new ControlledEventStore();
+    const service = new WsV1Service(
+      { canSubscribe: vi.fn(() => new Promise<boolean>((resolve) => {
+        resolveAuthorization = resolve;
+      })) } as unknown as WsV1ChannelAuthorizer,
+      store,
+      new RedactionService(),
+      new ChatTaskEventBus(),
+    );
+    await service.onModuleInit();
+    const socket = { id: 'socket-3', data: { userId: 'owner' }, emit: vi.fn() } as unknown as Socket;
+    service.connect(socket);
+
+    const subscribing = service.subscribe(socket, {
+      request_id: 'subscribe', channels: ['session:s1'],
+    });
+    await vi.waitFor(() => expect(resolveAuthorization).toBeTypeOf('function'));
+    service.disconnect(socket);
+    resolveAuthorization(true);
+
+    const result = await subscribing;
+    service.activateSubscriptions(socket, result.ack.accepted);
+    await store.listener?.(event('00000000-0000-4000-8000-000000000004', 1));
+    expect(result.ack.accepted).toEqual([]);
+    expect(socket.emit).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
 });

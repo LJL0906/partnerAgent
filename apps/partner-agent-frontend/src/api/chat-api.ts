@@ -2,7 +2,6 @@ import type {
   CommandEnvelope,
   CommandResult,
   ChatSessionSummary,
-  ChatSessionTaskRef,
   ChatSessionListItem,
   ChatOutputMode,
   CancelTaskPayload,
@@ -12,16 +11,12 @@ import type {
   TaskStatus,
   ModelConfig,
   ReasoningLevel,
-  SessionMessageDto,
   SetMessageModelSelectionResult,
 } from '@partner-agent/contracts';
 import {
   isModelConfig,
-  isOperationId,
-  isSessionMessageDto,
   parseChatSessionSummary,
   parseSubmitTextInputCommandResult,
-  TASK_STATES,
 } from '@partner-agent/contracts';
 
 import { createCommandEnvelope, createOperationId } from './command-envelope';
@@ -86,7 +81,6 @@ export async function submitTextInput(
 
 export type RecoverableTaskStatus = TaskStatus;
 
-type LegacyRecoverableChatSession = Omit<ChatSessionSummary, 'items' | 'tool_views'>;
 export type RecoverableChatSession = ChatSessionSummary;
 export function getTaskStatus(
   taskId: string,
@@ -106,62 +100,9 @@ export function getChatSession(
         if (parsed.id !== sessionId) throw new TypeError('Session mismatch');
         return parsed;
       } catch {
-        // The snapshot applier owns this finite migration branch and detects the
-        // deliberate absence of items/tool_views. Keep the public query type on
-        // the current shared contract so normal callers cannot create legacy data.
-        if (isLegacyRecoverableChatSession(value) && value.id === sessionId) {
-          return value as RecoverableChatSession;
-        }
         throw new Error('会话快照响应格式无效。');
       }
     });
-}
-
-function isLegacyRecoverableChatSession(value: unknown): value is LegacyRecoverableChatSession {
-  if (!isRecord(value)
-    || !Object.keys(value).every((key) => [
-      'id', 'title', 'created_at', 'updated_at', 'message_count',
-      'last_message_preview', 'active_task', 'latest_task', 'messages',
-    ].includes(key))
-    || !hasText(value.id)
-    || (value.title !== undefined && typeof value.title !== 'string')
-    || !isDateString(value.created_at)
-    || !isDateString(value.updated_at)
-    || typeof value.message_count !== 'number'
-    || !Number.isSafeInteger(value.message_count)
-    || value.message_count < 0
-    || (value.last_message_preview !== undefined && typeof value.last_message_preview !== 'string')
-    || (value.active_task !== undefined && !isChatSessionTaskRef(value.active_task))
-    || (value.latest_task !== undefined && !isChatSessionTaskRef(value.latest_task))
-    || !Array.isArray(value.messages)
-    || !value.messages.every(isSessionMessageDto)
-    || value.message_count < value.messages.length) return false;
-
-  const messages = value.messages as SessionMessageDto[];
-  return messages.every((message) => message.session_id === value.id)
-    && new Set(messages.map((message) => message.id)).size === messages.length
-    && new Set(messages.map((message) => message.sequence)).size === messages.length
-    && !messages.some((message, index) => index > 0 && message.sequence <= messages[index - 1].sequence);
-}
-
-function isChatSessionTaskRef(value: unknown): value is ChatSessionTaskRef {
-  return isRecord(value)
-    && Object.keys(value).every((key) => ['task_id', 'operation_id', 'state'].includes(key))
-    && hasText(value.task_id)
-    && isOperationId(value.operation_id)
-    && (TASK_STATES as readonly unknown[]).includes(value.state);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasText(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-function isDateString(value: unknown): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
 export async function cancelTask(

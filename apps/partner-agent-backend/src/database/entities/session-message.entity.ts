@@ -27,6 +27,9 @@ export class SessionMessageEntity {
   @Column({ type: 'text', default: 'complete' })
   status: 'pending' | 'streaming' | 'complete' | 'failed' | 'cancelled';
 
+  @Column({ type: 'integer', default: 1 })
+  revision: number;
+
   @Column({ name: 'input_id', type: 'text', nullable: true })
   inputId: string | null;
 

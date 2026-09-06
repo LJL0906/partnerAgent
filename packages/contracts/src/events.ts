@@ -4,6 +4,7 @@ import type {
   ResourceRef,
   TaskStatus,
 } from './local-core.js';
+import type { SessionMessageDto } from './local-core-queries.js';
 
 /**
  * @deprecated 旧 Socket.IO request/response 事件名，仅供兼容层使用。
@@ -102,12 +103,8 @@ export interface ToolControlAckV1 {
   };
 }
 
-export interface SessionMessageV1 {
-  role: "user" | "assistant" | "system";
-  metadata?: Record<string, unknown>;
-  content: string;
-  timestamp: number;
-}
+/** @deprecated history 与 REST 恢复现在共用 SessionMessageDto。 */
+export type SessionMessageV1 = SessionMessageDto;
 
 export type ServerPushEventTypeV1 =
   | "text_delta"
@@ -142,8 +139,22 @@ export interface ServerPushEventBaseV1<T extends ServerPushEventTypeV1, D> {
   data: D;
 }
 
-export type TextDeltaEventV1 = ServerPushEventBaseV1<"text_delta", string>;
-export type ThinkingDeltaEventV1 = ServerPushEventBaseV1<"thinking_delta", string>;
+/** 展示项修订独立于每频道 sequence；多频道广播使用同一 item_id/revision。 */
+export interface DisplayItemRevisionV1 {
+  item_id: string;
+  item_revision: number;
+}
+
+/** text_offset 是追加前正文的 JavaScript UTF-16 code unit 长度。 */
+export interface TextAppendPositionV1 extends DisplayItemRevisionV1 {
+  text_offset: number;
+}
+
+export type TextDeltaEventV1 = ServerPushEventBaseV1<"text_delta", string>
+  & TextAppendPositionV1
+  & { message_id: string };
+export type ThinkingDeltaEventV1 = ServerPushEventBaseV1<"thinking_delta", string>
+  & TextAppendPositionV1;
 export type SessionHistoryEventV1 = ServerPushEventBaseV1<
   "history",
   { messages: SessionMessageV1[] }
@@ -151,7 +162,7 @@ export type SessionHistoryEventV1 = ServerPushEventBaseV1<
 export type ToolExecutionStartEventV1 = ServerPushEventBaseV1<
   "tool_execution_start",
   { tool: string; tool_call_id: string }
->;
+> & DisplayItemRevisionV1;
 export type ToolExecutionEndEventV1 = ServerPushEventBaseV1<
   "tool_execution_end",
   {
@@ -162,7 +173,7 @@ export type ToolExecutionEndEventV1 = ServerPushEventBaseV1<
     undo_available?: boolean;
     undo_expires_at?: number;
   }
->;
+> & DisplayItemRevisionV1;
 
 export type ToolRiskLevel = "read_only" | "low" | "medium" | "high";
 
@@ -176,7 +187,7 @@ export type ToolConfirmationPendingEventV1 = ServerPushEventBaseV1<
     request_summary: string;
     expires_at: number;
   }
->;
+> & DisplayItemRevisionV1;
 
 /**
  * 上述 tool_confirmation/tool_undo 推送只描述外部工具副作用的 Tool Approval，
@@ -185,7 +196,7 @@ export type ToolConfirmationPendingEventV1 = ServerPushEventBaseV1<
 export type ToolConfirmationConfirmedEventV1 = ServerPushEventBaseV1<
   "tool_confirmation_confirmed",
   { confirmation_id: string; tool: string; tool_call_id: string }
->;
+> & DisplayItemRevisionV1;
 export type ToolConfirmationDismissedEventV1 = ServerPushEventBaseV1<
   "tool_confirmation_dismissed",
   {
@@ -194,15 +205,15 @@ export type ToolConfirmationDismissedEventV1 = ServerPushEventBaseV1<
     tool_call_id: string;
     reason: "user_dismissed" | "expired";
   }
->;
+> & DisplayItemRevisionV1;
 export type ToolUndoAvailableEventV1 = ServerPushEventBaseV1<
   "tool_undo_available",
-  { execution_id: string; tool: string; expires_at: number }
->;
+  { execution_id: string; tool: string; tool_call_id: string; expires_at: number }
+> & DisplayItemRevisionV1;
 export type ToolUndoCompletedEventV1 = ServerPushEventBaseV1<
   "tool_undo_completed",
-  { execution_id: string; tool: string; success: boolean }
->;
+  { execution_id: string; tool: string; tool_call_id: string; success: boolean }
+> & DisplayItemRevisionV1;
 export type CandidateEventV1 = ServerPushEventBaseV1<
   "candidate",
   {
@@ -216,15 +227,15 @@ export type CandidateEventV1 = ServerPushEventBaseV1<
     safe_summary: string;
     occurred_at: number;
   }
-> & { task_id: string };
+> & { task_id: string } & DisplayItemRevisionV1;
 export type ReminderEventV1 = ServerPushEventBaseV1<
   "reminder",
   { reminder_instance_id: string }
->;
+> & DisplayItemRevisionV1;
 export type SummaryEventV1 = ServerPushEventBaseV1<
   "summary",
   { summary_id: string; summary_kind: "daily" | "weekly" }
->;
+> & DisplayItemRevisionV1;
 export type TaskStateEventV1 = ServerPushEventBaseV1<
   "task_state",
   {
@@ -234,13 +245,13 @@ export type TaskStateEventV1 = ServerPushEventBaseV1<
     /** 仅 waiting_privacy_decision 状态携带的无明文恢复摘要。 */
     privacy_decision?: PrivacyDecisionStatus;
   }
->;
+> & DisplayItemRevisionV1;
 export type AgentCancelledEventV1 = ServerPushEventBaseV1<"cancelled", Record<string, never>>;
 export type AgentDoneEventV1 = ServerPushEventBaseV1<"done", Record<string, never>>;
 export type AgentErrorEventV1 = ServerPushEventBaseV1<
   "error",
   { code: string; message: string }
->;
+> & DisplayItemRevisionV1;
 export type RecoveryRequiredEventV1 = ServerPushEventBaseV1<
   "recovery_required",
   { reason: "event_expired"; query_url?: string }

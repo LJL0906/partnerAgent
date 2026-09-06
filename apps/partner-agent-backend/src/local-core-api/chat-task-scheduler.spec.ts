@@ -9,6 +9,7 @@ import { ChatTaskEventBus, type ChatTaskEvent } from './chat-task-event.bus.js';
 import type { ChatTaskNotifier } from './chat-task-notifier.js';
 import { PiChatTaskScheduler } from './chat-task-scheduler.js';
 import { MemoryChatTaskStore } from './memory-chat-task.store.js';
+import { chatTaskStream } from './chat-task-scheduler-observability.js';
 
 const command = {
   ownerId: 'owner',
@@ -20,6 +21,33 @@ const command = {
 };
 
 describe('PiChatTaskScheduler', () => {
+  it('passes persisted preview mode and authoritative sources to the Agent', async () => {
+    const resumeTask = vi.fn(async function* () {
+      yield { type: 'done', timestamp: Date.now() };
+    });
+    const task = {
+      taskId: 'task-preview', ownerId: 'owner', sessionId: 'session-preview',
+      operationId: 'operation-preview', inputId: 'input-preview', text: '生成行动',
+      modelConfigId: 'deepseek:model', reasoningLevel: 'low' as const,
+      originalRecordId: 'record-preview', userMessageId: 'message-preview',
+      outputMode: 'structured_preview' as const, previewKind: 'action' as const,
+      state: 'running' as const, createdAt: new Date(), updatedAt: new Date(),
+      attemptCount: 1,
+    };
+
+    for await (const _event of chatTaskStream({ resumeTask } as unknown as PiAgentService, task)) {
+      // Consume the stream.
+    }
+
+    expect(resumeTask).toHaveBeenCalledWith(
+      task.sessionId, task.text, task.ownerId,
+      expect.objectContaining({
+        outputMode: 'structured_preview', previewKind: 'action',
+        originalRecordId: task.originalRecordId, userMessageId: task.userMessageId,
+      }),
+    );
+  });
+
   it('publishes task wakeups and consumes remote wakeup hints', async () => {
     const sessions = new MemorySessionStore();
     const store = new MemoryChatTaskStore(sessions);
@@ -88,12 +116,11 @@ describe('PiChatTaskScheduler', () => {
     bus.subscribe((event) => events.push(event));
     const agent = {
       resumeTask: async function* () {
-        await sessions.appendMessage(
-          accepted.task!.sessionId,
-          command.ownerId,
-          'assistant',
-          'world',
-        );
+        yield {
+          type: 'assistant_output_complete',
+          data: { content: 'world', chatPreviews: [], contextMessages: [] },
+          timestamp: Date.now(),
+        };
         yield { type: 'done', timestamp: Date.now() };
       },
       cancel: vi.fn(),

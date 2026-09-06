@@ -1,0 +1,82 @@
+{
+  "description": "T06 真实 Agent 结构化预览联调样例；Provider 必须发起工具调用，不能把 assistant_text 当 JSON 解析。",
+  "request": {
+    "operation_id": "22222222-2222-4222-8222-222222222222",
+    "request_fingerprint": "sha256:preview-integration-example",
+    "client_source": "web",
+    "payload": {
+      "session_id": "session-preview-example",
+      "input_id": "input-preview-example",
+      "text": "请帮我安排 2026 年 9 月 11 日 18:00 前提交报销，计划 9 月 7 日上午开始整理票据。",
+      "output_mode": "structured_preview",
+      "preview_kind": "action"
+    }
+  },
+  "accepted_task_context": {
+    "task_id": "11111111-1111-4111-8111-111111111111",
+    "operation_id": "22222222-2222-4222-8222-222222222222",
+    "original_record_id": "33333333-3333-4333-8333-333333333333",
+    "user_message_id": "44444444-4444-4444-8444-444444444444",
+    "output_mode": "structured_preview",
+    "preview_kind": "action"
+  },
+  "invalid_provider_tool_calls": [
+    {
+      "case": "forged_server_state",
+      "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "arguments": {
+        "schema_version": 1,
+        "kind": "action",
+        "preview_id": "forged",
+        "applied": true,
+        "content": {
+          "title": "非法生效状态",
+          "confidence": 0.9
+        }
+      }
+    },
+    {
+      "case": "cross_task_source",
+      "expected_code": "STRUCTURED_PREVIEW_SOURCE_INVALID",
+      "arguments": {
+        "schema_version": 1,
+        "kind": "action",
+        "source_refs": [
+          {
+            "kind": "original_record",
+            "id": "55555555-5555-4555-8555-555555555555"
+          }
+        ],
+        "content": {
+          "title": "越权来源",
+          "confidence": 0.9
+        }
+      }
+    },
+    {
+      "case": "invalid_time_order",
+      "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "arguments": {
+        "schema_version": 1,
+        "kind": "action",
+        "content": {
+          "title": "时间倒序",
+          "planned_at": "2026-09-12T09:00:00+08:00",
+          "deadline_at": "2026-09-11T18:00:00+08:00",
+          "confidence": 0.9
+        }
+      }
+    }
+  ],
+  "missing_output": {
+    "assistant_text": "{\"schema_version\":1,\"kind\":\"action\"}",
+    "expected_code": "STRUCTURED_PREVIEW_MISSING",
+    "note": "即使正文看似 JSON，也必须失败；最多再给同一 Agent 一次受预算限制的工具纠正机会。"
+  },
+  "relation_path": "chat_tasks.id -> session_messages.task_id -> session_messages.metadata_json.chat_previews[].preview_id",
+  "formal_business_side_effects": {
+    "confirmation_batches": 0,
+    "candidate_items": 0,
+    "formal_actions": 0
+  }
+}

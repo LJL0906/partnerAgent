@@ -1,0 +1,130 @@
+{
+  "valid_proposal": {
+    "schema_version": 1,
+    "kind": "action",
+    "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+    "content": {
+      "title": "周一上午提交项目周报",
+      "description": "整理本周进展并发给项目组。",
+      "planned_at": "2026-09-07T09:00:00+08:00",
+      "timezone": "Asia/Shanghai",
+      "priority": "medium",
+      "confidence": 0.92,
+      "uncertainty": "具体收件人仍需确认。"
+    }
+  },
+  "valid": {
+    "schema_version": 1,
+    "preview_id": "preview-1",
+    "kind": "action",
+    "confirmation_status": "unconfirmed",
+    "applied": false,
+    "source_refs": [
+      { "kind": "original_record", "id": "record-1" },
+      { "kind": "chat_message", "id": "message-user-1" }
+    ],
+    "content": {
+      "title": "周一上午提交项目周报",
+      "description": "整理本周进展并发给项目组。",
+      "planned_at": "2026-09-07T09:00:00+08:00",
+      "deadline_at": "2026-09-07T11:00:00+08:00",
+      "timezone": "Asia/Shanghai",
+      "priority": "medium",
+      "confidence": 0.92,
+      "uncertainty": "具体收件人仍需确认。",
+      "risk_summary": "发送前检查是否包含敏感项目数据。"
+    },
+    "warnings": [
+      { "code": "RECIPIENT_UNCONFIRMED", "path": "/content/description", "message": "收件人尚未确认。" }
+    ]
+  },
+  "invalid": [
+    {
+      "name": "applied_true", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-2", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": true, "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "confidence": 0.5 }, "warnings": []
+      }
+    },
+    {
+      "name": "formal_candidate_field", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-3", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": false, "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "confidence": 0.5 }, "warnings": [],
+        "candidate_id": "candidate-forged"
+      }
+    },
+    {
+      "name": "unsupported_kind", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-4", "kind": "goal",
+        "confirmation_status": "unconfirmed", "applied": false, "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "confidence": 0.5 }, "warnings": []
+      }
+    },
+    {
+      "name": "confidence_out_of_range", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-5", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": false, "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "confidence": 1.01 }, "warnings": []
+      }
+    },
+    {
+      "name": "time_without_offset", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-6", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": false, "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "planned_at": "2026-09-07T09:00:00", "confidence": 0.5 }, "warnings": []
+      }
+    },
+    {
+      "name": "invalid_timezone", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-7", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": false, "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "timezone": "Mars/Olympus", "confidence": 0.5 }, "warnings": []
+      }
+    },
+    {
+      "name": "content_extra_field", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-8", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": false, "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "confidence": 0.5, "status": "confirmed" }, "warnings": []
+      }
+    },
+    {
+      "name": "missing_source", "expected_code": "STRUCTURED_PREVIEW_SOURCE_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-9", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": false, "source_refs": [],
+        "content": { "title": "错误样例", "confidence": 0.5 }, "warnings": []
+      }
+    },
+    {
+      "name": "forged_confirmation_status", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-10", "kind": "action",
+        "confirmation_status": "confirmed", "applied": false,
+        "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": { "title": "错误样例", "confidence": 0.5 }, "warnings": []
+      }
+    },
+    {
+      "name": "deadline_before_plan", "expected_code": "STRUCTURED_PREVIEW_INVALID",
+      "value": {
+        "schema_version": 1, "preview_id": "preview-11", "kind": "action",
+        "confirmation_status": "unconfirmed", "applied": false,
+        "source_refs": [{ "kind": "chat_message", "id": "message-user-1" }],
+        "content": {
+          "title": "错误样例", "planned_at": "2026-09-07T11:00:00+08:00",
+          "deadline_at": "2026-09-07T09:00:00+08:00", "confidence": 0.5
+        },
+        "warnings": []
+      }
+    }
+  ]
+}

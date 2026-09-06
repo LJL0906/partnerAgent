@@ -310,6 +310,25 @@ describe('agent stream', () => {
     connection.close();
   });
 
+  it('rejects a legacy display event without revision metadata and requests REST recovery', async () => {
+    const onEvent = vi.fn();
+    const onInvalidEvent = vi.fn();
+    const opening = subscribeAgentStream({
+      channels: ['user:self', 'session:session-1'], onEvent, onInvalidEvent,
+    });
+    await nextMicrotask();
+    acknowledge(mocks.socket!, mocks.socket!.lastRequest(), ['user:self', 'session:session-1']);
+    const connection = await opening;
+    mocks.socket!.serverEmit('agent_event', {
+      schema_version: 1, event_id: 'legacy', channel: 'session:session-1', sequence: 1,
+      session_id: 'session-1', task_id: 'task-1', event_type: 'text_delta',
+      timestamp: 1, data: '旧事件',
+    });
+    expect(onInvalidEvent).toHaveBeenCalledOnce();
+    expect(onEvent).not.toHaveBeenCalled();
+    connection.close();
+  });
+
   it('rejects a failed subscription explicitly and reports its correlated ACK', async () => {
     const onSubscriptionError = vi.fn();
     const connection = await openConnection(vi.fn(), onSubscriptionError);
@@ -482,7 +501,7 @@ function event(
     channel,
     sequence,
     session_id: 'session-1',
-    operation_id: 'operation-1',
+    operation_id: '11111111-1111-4111-8111-111111111111',
     task_id: 'task-1',
     event_type: 'done',
     timestamp: sequence,

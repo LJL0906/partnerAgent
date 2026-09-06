@@ -96,7 +96,7 @@ describe('session-list与恢复', () => {
     const archived = await app.executeCommand('ArchiveChatSession', {
       userId: 'a',
       envelope: {
-        operation_id: 'archive-op',
+        operation_id: '66666666-6666-4666-8666-666666666666',
         client_source: 'test',
         request_fingerprint: 'archive-op',
         payload: { session_id: 'archive' },

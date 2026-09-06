@@ -221,6 +221,12 @@ export class PiChatTaskScheduler
           taskId: claimed.task.taskId,
           operationId: claimed.task.operationId,
           source: 'tool_approval_resume',
+          outputMode: claimed.task.outputMode,
+          ...(claimed.task.previewKind
+            ? { previewKind: claimed.task.previewKind }
+            : {}),
+          originalRecordId: claimed.task.originalRecordId,
+          userMessageId: claimed.task.userMessageId,
         },
       ),
       claimed.leaseOwner,

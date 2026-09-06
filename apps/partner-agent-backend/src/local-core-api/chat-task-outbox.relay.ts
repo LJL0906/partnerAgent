@@ -51,6 +51,11 @@ export class ChatTaskOutboxRelay {
         if (await this.relay(event)) delivered += 1;
       }
       return delivered;
+    } catch (error) {
+      this.logger.warn(
+        `ChatTask lifecycle outbox poll failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 0;
     } finally {
       this.relaying = false;
     }
@@ -72,7 +77,13 @@ export class ChatTaskOutboxRelay {
       });
       return await outbox.acknowledge(event);
     } catch {
-      await outbox.fail(event, RELAY_RETRY_DELAY_MS);
+      try {
+        await outbox.fail(event, RELAY_RETRY_DELAY_MS);
+      } catch (error) {
+        this.logger.warn(
+          `ChatTask lifecycle outbox failure update failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       if (event.attemptCount >= RELAY_MAX_ATTEMPTS) {
         this.logger.error('ChatTask lifecycle outbox event exhausted attempts');
       }

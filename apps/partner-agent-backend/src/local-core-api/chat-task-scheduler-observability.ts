@@ -82,6 +82,10 @@ export function chatTaskStream(
     source: 'submit_text_input',
     modelConfigId: task.modelConfigId,
     reasoningLevel: task.reasoningLevel,
+    outputMode: task.outputMode,
+    ...(task.previewKind ? { previewKind: task.previewKind } : {}),
+    originalRecordId: task.originalRecordId,
+    userMessageId: task.userMessageId,
   });
 }
 

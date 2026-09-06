@@ -1,4 +1,4 @@
-import { DataSource, IsNull, type EntityManager } from 'typeorm';
+import { DataSource, IsNull, MoreThan, type EntityManager } from 'typeorm';
 import { ChatTaskEntity } from '../database/entities/chat-task.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import type { StoredChatTask } from './chat-task.store.js';
@@ -133,7 +133,7 @@ export class TypeOrmChatTaskRuntime {
   ) {
     const now = new Date();
     const result = await this.dataSource.getRepository(ChatTaskEntity).update(
-      { id: taskId, ownerId, state: 'running', leaseOwner },
+      { id: taskId, ownerId, state: 'running', leaseOwner, leaseExpiresAt: MoreThan(now) },
       {
         leaseExpiresAt: new Date(now.getTime() + leaseDurationMs),
         updatedAt: now,
@@ -324,14 +324,18 @@ export class TypeOrmChatTaskRuntime {
       }
       if (
         leaseOwner !== undefined &&
-        (task.state !== 'running' || task.leaseOwner !== leaseOwner)
+        (task.state !== 'running' || task.leaseOwner !== leaseOwner ||
+          !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now())
       ) {
-        return this.loadStored(manager, task);
+        return undefined;
       }
       if (state === 'completed') {
-        const message = await manager
-          .getRepository(SessionMessageEntity)
-          .findOne({
+        const repository = manager.getRepository(SessionMessageEntity);
+        const linked = await repository.findOne({
+          where: { ownerId, sessionId: task.sessionId, role: 'assistant', taskId: task.id },
+          order: { sequence: 'DESC' },
+        });
+        const message = linked ?? await repository.findOne({
             where: {
               ownerId,
               sessionId: task.sessionId,
@@ -342,7 +346,7 @@ export class TypeOrmChatTaskRuntime {
           });
         if (message) {
           message.taskId = task.id;
-          await manager.getRepository(SessionMessageEntity).save(message);
+          await repository.save(message);
           task.resultMessageId = message.id;
         }
       }

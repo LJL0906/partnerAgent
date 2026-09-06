@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource, In, IsNull, type EntityManager } from 'typeorm';
-import { SessionStore, type StoredSession } from './session-store.js';
+import {
+  SessionStore,
+  type StoredSession,
+  type TaskAssistantMessageWrite,
+} from './session-store.js';
 import { ChatSessionEntity } from './entities/chat-session.entity.js';
 import { SessionMessageEntity } from './entities/session-message.entity.js';
 import { DATABASE_ENTITIES } from './database-definition.js';
@@ -185,12 +189,15 @@ export class TypeOrmSessionStore
     );
   }
 
-  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
+  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }) {
+    return this.dataSource.transaction(async (manager) => {
       await this.findOwnedSessionForUpdate(manager, sessionId, ownerId);
       const sequence = (await this.findLastSequence(manager, sessionId)) + 1;
-      await this.insertMessage(manager, sessionId, ownerId, 'system', content, sequence, metadata);
+      const createdAt = new Date();
+      const id = randomUUID();
+      await this.insertMessage(manager, sessionId, ownerId, 'system', content, sequence, metadata, id, createdAt);
       await manager.getRepository(ChatSessionEntity).update({ id: sessionId, ownerId }, { lastActiveAt: new Date(), updatedAt: new Date() });
+      return { id, sequence, createdAt };
     });
   }
 
@@ -224,6 +231,68 @@ export class TypeOrmSessionStore
         },
       );
     });
+  }
+
+  async saveTaskAssistantMessage(
+    sessionId: string,
+    ownerId: string,
+    message: TaskAssistantMessageWrite,
+  ) {
+    return this.dataSource.transaction(async (manager) => {
+      await this.findOwnedSessionForUpdate(manager, sessionId, ownerId);
+      const repository = manager.getRepository(SessionMessageEntity);
+      let row = await repository.findOne({
+        where: { ownerId, sessionId, taskId: message.taskId, role: 'assistant' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const createdAt = row?.createdAt ?? new Date();
+      if (!row) {
+        row = repository.create({
+          id: message.id,
+          ownerId,
+          sessionId,
+          sequence: (await this.findLastSequence(manager, sessionId)) + 1,
+          role: 'assistant',
+          createdAt,
+        });
+      }
+      Object.assign(row, {
+        content: message.content,
+        status: message.status,
+        revision: message.revision,
+        taskId: message.taskId,
+        operationId: message.operationId,
+        modelConfigId: message.modelConfigId,
+        reasoningLevel: message.reasoningLevel,
+        metadataJson: message.metadata ?? null,
+        completedAt: message.status === 'complete' ? new Date() : null,
+      });
+      await repository.save(row);
+      await manager.getRepository(ChatSessionEntity).update(
+        { id: sessionId, ownerId },
+        { lastActiveAt: new Date(), updatedAt: new Date() },
+      );
+      return { id: row.id, sequence: row.sequence, createdAt };
+    });
+  }
+
+  async saveContextSnapshot(
+    sessionId: string,
+    ownerId: string,
+    contextMessages: unknown[],
+    contextRevision: number,
+  ): Promise<void> {
+    const result = await this.dataSource.getRepository(ChatSessionEntity).update(
+      { id: sessionId, ownerId, deletedAt: IsNull() },
+      {
+        contextJson: JSON.stringify(contextMessages),
+        contextFormat: SEQUENCE_WATERMARK_CONTEXT_FORMAT,
+        contextRevision,
+        lastActiveAt: new Date(),
+        updatedAt: new Date(),
+      },
+    );
+    if (!result.affected) throw new Error('会话不存在');
   }
 
   async delete(sessionId: string, ownerId: string): Promise<void> {
@@ -290,17 +359,20 @@ export class TypeOrmSessionStore
     content: string,
     sequence: number,
     metadata?: Record<string, unknown>,
+    messageId = randomUUID(),
+    createdAt = new Date(),
   ): Promise<number> {
     await manager.getRepository(SessionMessageEntity).insert({
-      id: randomUUID(),
+      id: messageId,
       sessionId,
       ownerId,
       sequence,
       role,
       content,
       status: 'complete',
-      createdAt: new Date(),
-      completedAt: new Date(),
+      revision: 1,
+      createdAt,
+      completedAt: createdAt,
       metadataJson: (metadata ?? null) as any,
     });
     return sequence;
@@ -327,10 +399,18 @@ export class TypeOrmSessionStore
           } => message.role !== 'system',
         )
         .map((message) => ({
+          id: message.id,
           sequence: message.sequence,
           role: message.role,
           content: message.content,
           timestamp: message.createdAt.getTime(),
+          status: message.status,
+          revision: message.revision,
+          ...(message.taskId ? { taskId: message.taskId } : {}),
+          ...(message.operationId ? { operationId: message.operationId } : {}),
+          ...(message.modelConfigId ? { modelConfigId: message.modelConfigId } : {}),
+          ...(message.reasoningLevel ? { reasoningLevel: message.reasoningLevel } : {}),
+          ...(message.metadataJson ? { metadata: message.metadataJson } : {}),
         })),
       contextMessages: JSON.parse(session.contextJson) as unknown[],
       contextRevision,

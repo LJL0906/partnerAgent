@@ -155,7 +155,7 @@ describe('ModelGatewayService', () => {
     const forwardedOptions = streamSimple.mock.calls[0]?.[2];
     expect(forwardedOptions).toMatchObject({
       timeoutMs: 12_000,
-      maxRetries: 2,
+      maxRetries: 0,
       maxRetryDelayMs: 750,
     });
 
@@ -186,6 +186,225 @@ describe('ModelGatewayService', () => {
       outputTokens: 5,
       totalTokens: 8,
     });
+  });
+
+  it('rechecks egress before retrying a transient failure before stream start', async () => {
+    const config = new ConfigService({
+      MODEL_GATEWAY_MAX_RETRIES: 1,
+      MODEL_GATEWAY_MAX_RETRY_DELAY_MS: 1,
+    });
+    const audit = new MemoryEgressAuditStore();
+    const first = createAssistantMessageEventStream();
+    const second = createAssistantMessageEventStream();
+    const streamSimple = vi
+      .fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => second);
+    const service = new ModelGatewayService(
+      config,
+      new ExternalRequestBuilder(),
+      new EgressPolicyGateway(config, audit, new MemoryEgressDecisionStore()),
+    );
+    (
+      service as unknown as { models: { streamSimple: typeof streamSimple } }
+    ).models = { streamSimple };
+
+    const stream = await service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000005',
+      ownerId: 'owner',
+      sessionId: 'session',
+      source: 'test',
+    })(testModel(), cleanContext());
+    queueMicrotask(() => {
+      first.push({
+        type: 'error',
+        reason: 'error',
+        error: assistantMessage('error', 'Service unavailable'),
+      });
+    });
+    setTimeout(() => {
+      second.push({ type: 'start', partial: assistantMessage('stop') });
+      second.push({
+        type: 'done',
+        reason: 'stop',
+        message: assistantMessage('stop'),
+      });
+    }, 5);
+
+    await expect(stream.result()).resolves.toMatchObject({
+      stopReason: 'stop',
+    });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(streamSimple.mock.calls.map((call) => call[2]?.maxRetries)).toEqual([
+      0, 0,
+    ]);
+    expect(audit.records).toHaveLength(2);
+    expect(audit.records[0]?.requestFingerprint).toBe(
+      audit.records[1]?.requestFingerprint,
+    );
+  });
+
+  it('shares one retry budget across setup and pre-response failures', async () => {
+    const config = new ConfigService({
+      MODEL_GATEWAY_MAX_RETRIES: 1,
+      MODEL_GATEWAY_MAX_RETRY_DELAY_MS: 1,
+    });
+    const second = createAssistantMessageEventStream();
+    const unexpectedThird = createAssistantMessageEventStream();
+    const streamSimple = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('network unavailable');
+      })
+      .mockImplementationOnce(() => second)
+      .mockImplementationOnce(() => unexpectedThird);
+    const service = new ModelGatewayService(
+      config,
+      new ExternalRequestBuilder(),
+      new EgressPolicyGateway(
+        config,
+        new MemoryEgressAuditStore(),
+        new MemoryEgressDecisionStore(),
+      ),
+    );
+    (
+      service as unknown as { models: { streamSimple: typeof streamSimple } }
+    ).models = { streamSimple };
+
+    const stream = await service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000006',
+      ownerId: 'owner',
+      sessionId: 'session',
+      source: 'test',
+    })(testModel(), cleanContext());
+    queueMicrotask(() => {
+      second.push({
+        type: 'error',
+        reason: 'error',
+        error: assistantMessage('error', 'Service unavailable'),
+      });
+      unexpectedThird.push({
+        type: 'done',
+        reason: 'stop',
+        message: assistantMessage('stop'),
+      });
+    });
+
+    await expect(stream.result()).resolves.toMatchObject({
+      stopReason: 'error',
+    });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports cancellation while waiting to retry as an aborted stream', async () => {
+    const config = new ConfigService({
+      MODEL_GATEWAY_MAX_RETRIES: 1,
+      MODEL_GATEWAY_MAX_RETRY_DELAY_MS: 100,
+    });
+    const controller = new AbortController();
+    const source = createAssistantMessageEventStream();
+    const streamSimple = vi.fn(() => source);
+    const service = new ModelGatewayService(
+      config,
+      new ExternalRequestBuilder(),
+      new EgressPolicyGateway(
+        config,
+        new MemoryEgressAuditStore(),
+        new MemoryEgressDecisionStore(),
+      ),
+    );
+    (
+      service as unknown as { models: { streamSimple: typeof streamSimple } }
+    ).models = { streamSimple };
+
+    const stream = await service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000007',
+      ownerId: 'owner',
+      sessionId: 'session',
+      source: 'test',
+    })(testModel(), cleanContext(), { signal: controller.signal });
+    source.push({
+      type: 'error',
+      reason: 'error',
+      error: assistantMessage('error', 'Service unavailable'),
+    });
+    controller.abort();
+
+    await expect(stream.result()).resolves.toMatchObject({
+      stopReason: 'aborted',
+    });
+    expect(streamSimple).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminates the wrapper when a provider stream ends without a terminal event', async () => {
+    const config = new ConfigService({ MODEL_GATEWAY_MAX_RETRIES: 0 });
+    const source = createAssistantMessageEventStream();
+    const streamSimple = vi.fn(() => source);
+    const service = new ModelGatewayService(
+      config,
+      new ExternalRequestBuilder(),
+      new EgressPolicyGateway(
+        config,
+        new MemoryEgressAuditStore(),
+        new MemoryEgressDecisionStore(),
+      ),
+    );
+    (
+      service as unknown as { models: { streamSimple: typeof streamSimple } }
+    ).models = { streamSimple };
+
+    const stream = await service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000008',
+      ownerId: 'owner',
+      sessionId: 'session',
+      source: 'test',
+    })(testModel(), cleanContext());
+    source.end();
+
+    await expect(
+      Promise.race([
+        stream.result(),
+        new Promise((resolve) => setTimeout(() => resolve('hung'), 50)),
+      ]),
+    ).resolves.toMatchObject({ stopReason: 'error' });
+  });
+
+  it('terminates the wrapper when provider iteration throws', async () => {
+    const config = new ConfigService({ MODEL_GATEWAY_MAX_RETRIES: 0 });
+    const source = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => Promise.reject(new Error('socket exploded')),
+        };
+      },
+    } as never;
+    const streamSimple = vi.fn(() => source);
+    const service = new ModelGatewayService(
+      config,
+      new ExternalRequestBuilder(),
+      new EgressPolicyGateway(
+        config,
+        new MemoryEgressAuditStore(),
+        new MemoryEgressDecisionStore(),
+      ),
+    );
+    (
+      service as unknown as { models: { streamSimple: typeof streamSimple } }
+    ).models = { streamSimple };
+
+    const stream = await service.createStreamFunction({
+      runId: '00000000-0000-4000-8000-000000000009',
+      ownerId: 'owner',
+      sessionId: 'session',
+      source: 'test',
+    })(testModel(), cleanContext());
+
+    await expect(
+      Promise.race([
+        stream.result(),
+        new Promise((resolve) => setTimeout(() => resolve('hung'), 50)),
+      ]),
+    ).resolves.toMatchObject({ stopReason: 'error' });
   });
 
   it('classifies synchronous provider setup failures without retrying at the gateway layer', async () => {
@@ -264,6 +483,7 @@ describe('ModelGatewayService', () => {
       source: 'test',
     })(testModel(), cleanContext());
 
+    source.push({ type: 'start', partial: assistantMessage('error') });
     source.push({
       type: 'error',
       reason: 'error',

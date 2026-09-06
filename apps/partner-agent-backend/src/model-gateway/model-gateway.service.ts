@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  createAssistantMessageEventStream,
   createModels,
+  type AssistantMessage,
+  type AssistantMessageEvent,
+  type AssistantMessageEventStream,
   type Context,
   type Model,
   type MutableModels,
@@ -80,6 +84,9 @@ export class ModelGatewayService implements OnModuleInit {
   /** 工具续轮、重试和模型切换均重新组装和审批实际载荷。 */
   createStreamFunction(
     metadata: Omit<EgressRequestMetadata, 'provider'> & { runId: string },
+    hooks: {
+      onEgressDecisionError?: (error: EgressDecisionError) => void;
+    } = {},
   ) {
     const models = this.requireModels();
     const provider = new ModelProviderAdapter((request) =>
@@ -109,92 +116,82 @@ export class ModelGatewayService implements OnModuleInit {
       });
       const reliableOptions: SimpleStreamOptions = {
         ...options,
-        // 注册的 Provider 只在收到首个响应前应用这些有限重试；流开始后不重放。
+        // Provider 内部重试无法逐次外发检查，因此重试由 Gateway 统一控制。
         timeoutMs: this.reliability.timeoutMs,
-        maxRetries: this.reliability.maxRetries,
+        maxRetries: 0,
         maxRetryDelayMs: this.reliability.maxRetryDelayMs,
       };
-      const external = this.requestBuilder.build(
-        { ...metadata, provider: model.provider },
-        model,
-        context,
-        reliableOptions,
-      );
-      const result = await this.egressPolicy.evaluate(external);
-      this.observe({
-        ...observation,
-        type: 'egress_decided',
-        decision: result.decision,
-        sensitiveCategoryCount: result.categories.length,
-      });
-      if (!result.request) {
-        throw new EgressDecisionError(
-          result.decision as 'blocked' | 'pending_user_decision',
-          result.categories,
-          {
-            egressId: result.egressId,
-            expiresAt: result.expiresAt,
-            provider: model.provider,
-            modelId: model.id,
-            requestFingerprint: result.requestFingerprint,
-          },
+      const startAttempt = async () => {
+        const external = this.requestBuilder.build(
+          { ...metadata, provider: model.provider },
+          model,
+          context,
+          reliableOptions,
         );
-      }
-      const callerOnResponse = result.request.options?.onResponse;
-      const approvedRequest = {
-        ...result.request,
-        options: {
-          ...result.request.options,
-          onResponse: async (
-            response: ProviderResponse,
-            responseModel: Model<any>,
-          ) => {
-            await callerOnResponse?.(response, responseModel);
-            this.observe({
-              ...observation,
-              type: 'provider_response',
-              status: response.status,
-              elapsedMs: Date.now() - startedAt,
-            });
-          },
-        },
-      };
-      try {
-        const stream = provider.stream(approvedRequest);
-        void stream.result().then(
-          (message) => {
-            if (
-              message.stopReason === 'error' ||
-              message.stopReason === 'aborted'
-            ) {
+        const result = await this.egressPolicy.evaluate(external);
+        this.observe({
+          ...observation,
+          type: 'egress_decided',
+          decision: result.decision,
+          sensitiveCategoryCount: result.categories.length,
+        });
+        if (!result.request) {
+          throw new EgressDecisionError(
+            result.decision as 'blocked' | 'pending_user_decision',
+            result.categories,
+            {
+              egressId: result.egressId,
+              expiresAt: result.expiresAt,
+              provider: model.provider,
+              modelId: model.id,
+              requestFingerprint: result.requestFingerprint,
+            },
+          );
+        }
+        const callerOnResponse = result.request.options?.onResponse;
+        return provider.stream({
+          ...result.request,
+          options: {
+            ...result.request.options,
+            onResponse: async (
+              response: ProviderResponse,
+              responseModel: Model<any>,
+            ) => {
+              await callerOnResponse?.(response, responseModel);
               this.observe({
                 ...observation,
-                type: 'stream_failed',
+                type: 'provider_response',
+                status: response.status,
                 elapsedMs: Date.now() - startedAt,
-                failure: classifyModelProviderFailure(message),
               });
-              return;
-            }
-            this.observe({
-              ...observation,
-              type: 'stream_completed',
-              elapsedMs: Date.now() - startedAt,
-              inputTokens: message.usage.input,
-              outputTokens: message.usage.output,
-              totalTokens: message.usage.totalTokens,
-            });
+            },
           },
-          (error: unknown) => {
-            this.observe({
-              ...observation,
-              type: 'stream_failed',
-              elapsedMs: Date.now() - startedAt,
-              failure: classifyModelProviderFailure(error),
-            });
-          },
+        });
+      };
+      try {
+        const started = await this.startWithRetries(
+          startAttempt,
+          reliableOptions.signal,
+          observation,
+          startedAt,
         );
-        return stream;
+        const output = createAssistantMessageEventStream();
+        void this.relayWithRetries(
+          started.stream,
+          output,
+          startAttempt,
+          reliableOptions.signal,
+          observation,
+          startedAt,
+          hooks,
+          started.retriesRemaining,
+          model,
+        ).catch((error: unknown) => {
+          this.finishRelayFailure(output, model, error, observation, startedAt);
+        });
+        return output;
       } catch (error) {
+        if (error instanceof EgressDecisionError) throw error;
         const failure = classifyModelProviderFailure(error);
         this.observe({
           ...observation,
@@ -205,6 +202,209 @@ export class ModelGatewayService implements OnModuleInit {
         throw new ModelGatewayCallError(failure, { cause: error });
       }
     };
+  }
+
+  private async startWithRetries(
+    startAttempt: () => Promise<AssistantMessageEventStream>,
+    signal: AbortSignal | undefined,
+    observation: ModelGatewayObservationMetadata,
+    startedAt: number,
+  ): Promise<{
+    stream: AssistantMessageEventStream;
+    retriesRemaining: number;
+  }> {
+    let retriesRemaining = this.reliability.maxRetries;
+    for (;;) {
+      try {
+        return { stream: await startAttempt(), retriesRemaining };
+      } catch (error) {
+        if (error instanceof EgressDecisionError) throw error;
+        const failure = classifyModelProviderFailure(error);
+        if (!failure.transient || retriesRemaining <= 0) throw error;
+        const retryIndex = this.reliability.maxRetries - retriesRemaining;
+        retriesRemaining -= 1;
+        await this.waitForRetry(retryIndex, signal);
+        this.observe({
+          ...observation,
+          type: 'stream_failed',
+          elapsedMs: Date.now() - startedAt,
+          failure,
+        });
+      }
+    }
+  }
+
+  private async relayWithRetries(
+    first: AssistantMessageEventStream,
+    output: AssistantMessageEventStream,
+    startAttempt: () => Promise<AssistantMessageEventStream>,
+    signal: AbortSignal | undefined,
+    observation: ModelGatewayObservationMetadata,
+    startedAt: number,
+    hooks: { onEgressDecisionError?: (error: EgressDecisionError) => void },
+    initialRetriesRemaining: number,
+    model: Model<any>,
+  ): Promise<void> {
+    let source = first;
+    let retriesRemaining = initialRetriesRemaining;
+    for (;;) {
+      let retryEvent:
+        Extract<AssistantMessageEvent, { type: 'error' }> | undefined;
+      let responseStarted = false;
+      for await (const event of source) {
+        if (event.type === 'error' && !responseStarted) {
+          const failure = classifyModelProviderFailure(event.error);
+          if (failure.transient && retriesRemaining > 0) {
+            retryEvent = event;
+            break;
+          }
+        }
+        responseStarted = true;
+        output.push(event);
+        if (event.type === 'done') {
+          this.observe({
+            ...observation,
+            type: 'stream_completed',
+            elapsedMs: Date.now() - startedAt,
+            inputTokens: event.message.usage.input,
+            outputTokens: event.message.usage.output,
+            totalTokens: event.message.usage.totalTokens,
+          });
+          return;
+        }
+        if (event.type === 'error') {
+          this.observe({
+            ...observation,
+            type: 'stream_failed',
+            elapsedMs: Date.now() - startedAt,
+            failure: classifyModelProviderFailure(event.error),
+          });
+          return;
+        }
+      }
+      if (!retryEvent) {
+        this.finishRelayFailure(
+          output,
+          model,
+          new Error('Provider stream ended without a terminal event'),
+          observation,
+          startedAt,
+        );
+        return;
+      }
+
+      const retryIndex = this.reliability.maxRetries - retriesRemaining;
+      let nextRetryIndex = retryIndex;
+      for (;;) {
+        retriesRemaining -= 1;
+        try {
+          await this.waitForRetry(nextRetryIndex, signal);
+          source = await startAttempt();
+          break;
+        } catch (error) {
+          if (error instanceof EgressDecisionError) {
+            hooks.onEgressDecisionError?.(error);
+          }
+          const failure = classifyModelProviderFailure(error);
+          if (
+            !(error instanceof EgressDecisionError) &&
+            failure.transient &&
+            retriesRemaining > 0
+          ) {
+            nextRetryIndex += 1;
+            continue;
+          }
+          output.push(
+            failure.category === 'cancelled'
+              ? {
+                  type: 'error',
+                  reason: 'aborted',
+                  error: {
+                    ...retryEvent.error,
+                    stopReason: 'aborted',
+                    errorMessage: 'Request aborted',
+                  },
+                }
+              : retryEvent,
+          );
+          this.observe({
+            ...observation,
+            type: 'stream_failed',
+            elapsedMs: Date.now() - startedAt,
+            failure,
+          });
+          return;
+        }
+      }
+    }
+  }
+
+  private finishRelayFailure(
+    output: AssistantMessageEventStream,
+    model: Model<any>,
+    error: unknown,
+    observation: ModelGatewayObservationMetadata,
+    startedAt: number,
+  ): void {
+    const failure = classifyModelProviderFailure(error);
+    const stopReason = failure.category === 'cancelled' ? 'aborted' : 'error';
+    const message: AssistantMessage = {
+      role: 'assistant',
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason,
+      errorMessage: new ModelGatewayCallError(failure).message,
+      timestamp: Date.now(),
+    };
+    output.push({ type: 'error', reason: stopReason, error: message });
+    this.observe({
+      ...observation,
+      type: 'stream_failed',
+      elapsedMs: Date.now() - startedAt,
+      failure,
+    });
+  }
+
+  private async waitForRetry(
+    retryIndex: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const delayMs = Math.min(
+      500 * 2 ** retryIndex,
+      this.reliability.maxRetryDelayMs,
+    );
+    await new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, delayMs);
+      timer.unref?.();
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   private observe(event: Parameters<ModelGatewayObserver['record']>[0]): void {

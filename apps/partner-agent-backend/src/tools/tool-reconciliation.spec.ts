@@ -37,7 +37,7 @@ function command(
   const input = {
     confirmationId: '10000000-0000-4000-8000-000000000001',
     ownerId: 'owner-a',
-    expectedVersion: 1,
+    expectedVersion: 2,
     expectedStatus: 'indeterminate' as const,
     outcome: 'verified_not_applied' as const,
     operatorLabel: 'local-operator',
@@ -71,7 +71,7 @@ describe('tool reconciliation service', () => {
       expect.objectContaining({
         confirmationId: '10000000-0000-4000-8000-000000000001',
         ownerId: 'owner-a',
-        currentVersion: 1,
+        currentVersion: 2,
         currentStatus: 'indeterminate',
         snapshot: expect.objectContaining({
           requestSummary: '{"secret":"[已脱敏]"}',
@@ -93,13 +93,13 @@ describe('tool reconciliation service', () => {
 
     expect([first.replayed, second.replayed].sort()).toEqual([false, true]);
     expect(first.audit.outcome).toBe('verified_not_applied');
-    expect(first.audit.confirmationVersionAfter).toBe(2);
+    expect(first.audit.confirmationVersionAfter).toBe(3);
     await expect(service.list('owner-a')).resolves.toEqual([]);
     await expect(
       store.findConfirmation(input.confirmationId),
     ).resolves.toMatchObject({
       status: 'indeterminate',
-      version: 2,
+      version: 3,
     });
   });
 
@@ -112,7 +112,7 @@ describe('tool reconciliation service', () => {
     ).rejects.toThrow('核对记录已由其他结论处理');
     const second = await createPending();
     await expect(
-      second.service.reconcile(command({ expectedVersion: 2 })),
+      second.service.reconcile(command({ expectedVersion: 1 })),
     ).rejects.toThrow('核对记录版本已变化');
     await expect(
       second.service.reconcile(command({ ownerId: 'owner-b' })),
@@ -139,7 +139,9 @@ describe('tool reconciliation service', () => {
       }),
     );
     await expect(
-      new ToolReconciliationService(store).reconcile(command()),
+      new ToolReconciliationService(store).reconcile(
+        command({ expectedVersion: 1 }),
+      ),
     ).rejects.toThrow('核对安全快照缺失或不匹配');
   });
 
@@ -162,6 +164,6 @@ describe('tool reconciliation service', () => {
     );
     await expect(
       failingStore.findConfirmation(command().confirmationId),
-    ).resolves.toMatchObject({ status: 'indeterminate', version: 1 });
+    ).resolves.toMatchObject({ status: 'indeterminate', version: 2 });
   });
 });

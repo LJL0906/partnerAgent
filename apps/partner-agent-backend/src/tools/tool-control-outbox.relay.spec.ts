@@ -51,4 +51,48 @@ describe('ToolControlOutboxRelay', () => {
     expect(outbox.acknowledge).toHaveBeenCalledWith(event);
     expect(outbox.fail).not.toHaveBeenCalled();
   });
+
+  it('contains claim failures and permits the next poll to recover', async () => {
+    const outbox = {
+      claim: vi.fn()
+        .mockRejectedValueOnce(new Error('database unavailable'))
+        .mockResolvedValueOnce([]),
+      acknowledge: vi.fn(),
+      fail: vi.fn(),
+    };
+    const relay = new ToolControlOutboxRelay(
+      { controlOutbox: outbox } as unknown as ToolOperationStore,
+      {} as WsV1EventStore,
+      {} as RedactionService,
+    );
+
+    await expect(relay.runOnce()).resolves.toBe(0);
+    await expect(relay.runOnce()).resolves.toBe(0);
+    expect(outbox.claim).toHaveBeenCalledTimes(2);
+  });
+
+  it('contains failure-recording errors and permits a later retry', async () => {
+    const event = {
+      eventId: '10000000-0000-4000-8000-000000000001',
+      eventKey: 'tool-control:confirmation:dismissed',
+      ownerId: 'owner', sessionId: 'session',
+      taskId: '20000000-0000-4000-8000-000000000001', operationId: 'operation',
+      eventType: 'tool_confirmation_dismissed' as const, data: {}, attemptCount: 1,
+      leaseOwner: '30000000-0000-4000-8000-000000000001', leaseToken: '1',
+    };
+    const outbox = {
+      claim: vi.fn().mockResolvedValueOnce([event]).mockResolvedValueOnce([]),
+      acknowledge: vi.fn(),
+      fail: vi.fn().mockRejectedValueOnce(new Error('database unavailable')),
+    };
+    const relay = new ToolControlOutboxRelay(
+      { controlOutbox: outbox } as unknown as ToolOperationStore,
+      { append: vi.fn().mockRejectedValue(new Error('publish unavailable')) } as unknown as WsV1EventStore,
+      { sanitize: (value: unknown) => value } as RedactionService,
+    );
+
+    await expect(relay.runOnce()).resolves.toBe(0);
+    await expect(relay.runOnce()).resolves.toBe(0);
+    expect(outbox.claim).toHaveBeenCalledTimes(2);
+  });
 });

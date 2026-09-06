@@ -6,6 +6,9 @@
     "apps/*",
     "services/*"
   ],
+  "overrides": {
+    "react-native-svg": "15.15.4"
+  },
   "scripts": {
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present",

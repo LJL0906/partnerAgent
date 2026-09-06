@@ -58,6 +58,36 @@ describe('SensitiveDataRedactor', () => {
     expect(output).not.toContain('abcdefghijklmnop');
   });
 
+  it('redacts quoted password, api key and secret values inside a JSON string', () => {
+    const source = String.raw`{"password":"json-password-value","api_key":"json-api-key-value","secret":"json-secret-value"}`;
+    const output = String(redact(source));
+
+    expect(JSON.parse(output)).toEqual({
+      password: '[REDACTED:PASSWORD]',
+      api_key: '[REDACTED:API_KEY]',
+      secret: '[REDACTED:SECRET]',
+    });
+    expect(output).not.toContain('json-password-value');
+    expect(output).not.toContain('json-api-key-value');
+    expect(output).not.toContain('json-secret-value');
+    expect(new SensitiveDataScanner().scan(output)).toMatchObject({
+      ok: true,
+      findings: [],
+      categories: [],
+    });
+  });
+
+  it('redacts an escaped sensitive key in a JSON string', () => {
+    const output = String(
+      redact(String.raw`{"pass\u0077ord":"escaped-password"}`),
+    );
+
+    expect(JSON.parse(output)).toEqual({
+      password: '[REDACTED:PASSWORD]',
+    });
+    expect(output).not.toContain('escaped-password');
+  });
+
   it('produces standard placeholders that pass a complete rescan', () => {
     const output = redact({
       password: 'hunter2',

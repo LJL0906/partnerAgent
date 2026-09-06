@@ -32,6 +32,8 @@ import { AddChatTaskModelSelection1788515000000 } from './migrations/17885150000
 import { AddSessionMessageModelMetadata1788516000000 } from './migrations/1788516000000-add-session-message-model-metadata.js';
 import { ExpandReasoningLevels1788517000000 } from './migrations/1788517000000-expand-reasoning-levels.js';
 import { AddOffReasoningLevel1788518000000 } from './migrations/1788518000000-add-off-reasoning-level.js';
+import { AlignChatMessageRuntime1788519000000 } from './migrations/1788519000000-align-chat-message-runtime.js';
+import { AddChatTaskOutputMode1788520000000 } from './migrations/1788520000000-add-chat-task-output-mode.js';
 
 export const DATABASE_ENTITIES = [
   AccountCredentialEntity,
@@ -71,6 +73,8 @@ export const DATABASE_MIGRATIONS = [
   AddSessionMessageModelMetadata1788516000000,
   ExpandReasoningLevels1788517000000,
   AddOffReasoningLevel1788518000000,
+  AlignChatMessageRuntime1788519000000,
+  AddChatTaskOutputMode1788520000000,
 ] as const;
 
 export function createDatabaseDataSource(url: string): DataSource {

@@ -15,38 +15,82 @@ interface ChatInputProps {
   models: ModelConfig[];
   modelsLoading: boolean;
   modelsLoadError: boolean;
+  modelSelectionError?: string;
   onRetryModels: () => void;
   modelConfigId: string;
   reasoningLevel?: ReasoningLevel;
   onModelConfigChange: (id: string) => void;
   onReasoningLevelChange: (level: ReasoningLevel) => void;
-  onSend: (message: string, modelConfigId: string, reasoningLevel: ReasoningLevel) => Promise<boolean>;
+  onSend: (message: string, modelConfigId: string, reasoningLevel: ReasoningLevel, outputMode: 'chat' | 'structured_preview') => Promise<boolean>;
   onCancel: () => Promise<void>;
   connectionStatus: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error' | 'auth_required';
 }
 
 const reasoningLabels: Record<ReasoningLevel, string> = { off: '关闭', minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高' };
 
-export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError, onRetryModels, modelConfigId, reasoningLevel, onModelConfigChange, onReasoningLevelChange, onSend, onCancel, connectionStatus }: ChatInputProps) {
+export function getReasoningOptions(model: ModelConfig | undefined): ReasoningLevel[] {
+  return model ? [...model.reasoning_levels] : [];
+}
+
+export interface ModelRequestIdentity {
+  requestId: number;
+  ownerId: string | undefined;
+  sessionRevision: number;
+}
+
+export function isCurrentModelRequest(
+  expected: ModelRequestIdentity,
+  current: ModelRequestIdentity,
+): boolean {
+  return expected.requestId === current.requestId
+    && expected.ownerId === current.ownerId
+    && expected.sessionRevision === current.sessionRevision;
+}
+
+export function resolveModelSelection(
+  models: readonly ModelConfig[],
+  modelConfigId: string,
+  reasoningLevel: ReasoningLevel | undefined,
+): { modelConfigId: string; reasoningLevel: ReasoningLevel | undefined } {
+  const selected = models.find((model) => model.id === modelConfigId)
+    ?? models.find((model) => model.is_default)
+    ?? models[0];
+  if (!selected) return { modelConfigId: '', reasoningLevel: undefined };
+  return {
+    modelConfigId: selected.id,
+    reasoningLevel: reasoningLevel && selected.reasoning_levels.includes(reasoningLevel)
+      ? reasoningLevel
+      : selected.default_reasoning_level,
+  };
+}
+
+export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError, modelSelectionError, onRetryModels, modelConfigId, reasoningLevel, onModelConfigChange, onReasoningLevelChange, onSend, onCancel, connectionStatus }: ChatInputProps) {
   const { width } = useWindowDimensions();
   const [value, setValue] = useState('');
+  const [outputMode, setOutputMode] = useState<'chat' | 'structured_preview'>('chat');
   const [picker, setPicker] = useState<'model' | 'reasoning'>();
   const [providerPicker, setProviderPicker] = useState<string>();
   const [modelAnchor, setModelAnchor] = useState<{ x: number; width: number }>({ x: spacing.page, width: 0 });
   const [reasoningAnchor, setReasoningAnchor] = useState<{ x: number; width: number }>({ x: spacing.page, width: 0 });
 
   async function handleSend() {
+    if (!effectiveReasoningLevel) return;
     const submittedValue = value;
-    const submitted = await onSend(submittedValue, modelConfigId, effectiveReasoningLevel ?? 'medium');
-    if (submitted) { setValue((currentValue) => (currentValue === submittedValue ? '' : currentValue)); Keyboard.dismiss(); }
+    const submitted = await onSend(submittedValue, modelConfigId, effectiveReasoningLevel, outputMode);
+    if (submitted) {
+      setValue((currentValue) => (currentValue === submittedValue ? '' : currentValue));
+      setOutputMode('chat');
+      Keyboard.dismiss();
+    }
   }
 
   const selectedModel = models.find((model) => model.id === modelConfigId);
   const modelLabel = selectedModel?.model_id ?? (modelsLoading ? '加载模型…' : modelsLoadError ? '模型加载失败' : models.length === 0 ? '未配置模型' : '选择模型');
-  const reasoningLevels = selectedModel?.reasoning_levels ?? [];
-  const reasoningEnabled = reasoningLevels.length > 0;
-  const reasoningOptions: ReasoningLevel[] = reasoningEnabled ? ['off', ...reasoningLevels] : [];
-  const effectiveReasoningLevel = reasoningLevel ?? reasoningLevels[0];
+  const reasoningOptions = getReasoningOptions(selectedModel);
+  const reasoningEnabled = selectedModel?.capabilities.includes('reasoning') === true;
+  const effectiveReasoningLevel = reasoningLevel && reasoningOptions.includes(reasoningLevel)
+    ? reasoningLevel
+    : selectedModel?.default_reasoning_level;
   const reasoningLabel = effectiveReasoningLevel ? `思考 ${reasoningLabels[effectiveReasoningLevel]}` : '思考';
   const providers = Array.from(new Set(models.map((model) => model.provider)));
   const providerModels = models.filter((model) => model.provider === providerPicker);
@@ -84,6 +128,23 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
             <Text style={{ color: colors.textSecondary, ...typography.caption }}>{reasoningLabel}</Text>
           </Pressable>
         ) : null}
+        <Pressable
+          accessibilityLabel={outputMode === 'structured_preview' ? '关闭行动预览' : '开启行动预览'}
+          accessibilityRole="button"
+          accessibilityState={{ checked: outputMode === 'structured_preview', disabled: isStreaming }}
+          disabled={isStreaming}
+          onPress={() => setOutputMode((current) => current === 'chat' ? 'structured_preview' : 'chat')}
+          style={({ pressed }) => ({
+            paddingHorizontal: spacing.sm,
+            paddingVertical: spacing.xs,
+            borderRadius: radius.pill,
+            borderWidth: 1,
+            borderColor: outputMode === 'structured_preview' ? colors.brand400 : colors.border,
+            backgroundColor: outputMode === 'structured_preview' ? colors.infoSoft : colors.surfaceSubtle,
+            opacity: isStreaming ? 0.5 : pressed ? 0.72 : 1,
+          })}>
+          <Text style={{ color: outputMode === 'structured_preview' ? colors.brand600 : colors.textSecondary, ...typography.caption }}>行动预览</Text>
+        </Pressable>
         <View accessibilityLabel={`连接状态：${connectionLabel}`} style={{ marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: spacing.xxs, paddingHorizontal: spacing.xs, paddingVertical: spacing.xs }}>
           <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: connectionColor }} />
           <Text numberOfLines={1} style={[typography.caption, { color: connectionColor }]}>{connectionLabel}</Text>
@@ -113,7 +174,7 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
           <Pressable
             accessibilityLabel="发送消息"
             accessibilityRole="button"
-            disabled={!value.trim() || !modelConfigId}
+            disabled={!value.trim() || !modelConfigId || !effectiveReasoningLevel}
             onPress={() => void handleSend()}
             style={({ pressed }) => ({
               alignItems: 'center',
@@ -123,13 +184,18 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
               justifyContent: 'center',
               minHeight: spacing.minTouchTarget,
               minWidth: spacing.minTouchTarget,
-              opacity: !value.trim() || !modelConfigId ? 0.32 : pressed ? 0.62 : 1,
+              opacity: !value.trim() || !modelConfigId || !effectiveReasoningLevel ? 0.32 : pressed ? 0.62 : 1,
               transform: [{ scale: pressed ? 0.94 : 1 }],
             })}>
             <PaperPlaneTilt color={colors.brand500} size={24} weight="duotone" />
           </Pressable>
         )}
       </View>
+      {modelSelectionError ? (
+        <Text accessibilityRole="alert" style={[typography.caption, { color: colors.danger, paddingHorizontal: spacing.xs }]}>
+          {modelSelectionError}
+        </Text>
+      ) : null}
     </View>
     <Modal visible={Boolean(picker)} transparent animationType="fade" onRequestClose={() => { setPicker(undefined); setProviderPicker(undefined); }}>
       <Pressable

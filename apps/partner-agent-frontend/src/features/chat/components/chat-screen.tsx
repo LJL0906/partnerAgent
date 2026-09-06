@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   KeyboardAvoidingView,
@@ -12,30 +12,41 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listModelConfigs, setMessageModelSelection } from '@/api/chat-api';
 import { AmbientBackground } from '@/components/ui/ambient-background';
 import { AppButton } from '@/components/ui/app-button';
-import { useChat } from '@/features/chat/use-chat';
+import { reconcileChatFromRest, useChat } from '@/features/chat/use-chat';
 import { useChatToolActions } from '@/features/chat/use-chat-tool-actions';
 import { getKeyboardAvoidingProps } from '@/features/chat/keyboard-avoiding';
 import { createMessageScroll } from '@/features/chat/use-message-scroll';
 import type { ModelConfig, ReasoningLevel } from '@partner-agent/contracts';
 import { createSession, retrySession, useConversationStore } from '@/features/chat/session-management';
 import { useChatStore } from '@/store/chat-store';
+import { useAuthStore } from '@/features/auth';
 import { colors } from '@/theme/colors';
 import { spacing } from '@/theme/spacing';
 
-import { ChatInput } from './chat-input';
+import { ChatInput, isCurrentModelRequest, resolveModelSelection } from './chat-input';
 import { ChatHeader } from './chat-header';
 import { ChatMessageList } from './chat-message-list';
 import { ChatSessionLoading } from './chat-session-loading';
 import { ChatSessionsDrawer } from './chat-sessions-drawer';
 
+export function getModelReconciliationError(
+  results: readonly [PromiseSettledResult<unknown>, PromiseSettledResult<unknown>],
+): string | undefined {
+  const sessionResult = results[1];
+  return sessionResult.status === 'rejected' || sessionResult.value === undefined
+    ? '模型已切换，但无法读取服务端权威会话；当前显示可能不是最新状态，请稍后重试。'
+    : undefined;
+}
+
 export function ChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const messages = useChatStore((state) => state.messages);
   const items = useChatStore((state) => state.items);
+  const toolViews = useChatStore((state) => state.toolViews);
   const sessionId = useChatStore((state) => state.sessionId);
   const sessionRevision = useChatStore((state) => state.sessionRevision);
+  const ownerId = useAuthStore((state) => state.user?.id);
   const sessions = useConversationStore((state) => state.sessions);
   const ready = useConversationStore((state) => state.ready);
   const opening = useConversationStore((state) => state.opening);
@@ -47,33 +58,62 @@ export function ChatScreen() {
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsLoadError, setModelsLoadError] = useState(false);
-  const [modelConfigId, setModelConfigId] = useState('');
-  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>();
+  const [modelSelection, setModelSelection] = useState<{
+    modelConfigId: string;
+    reasoningLevel: ReasoningLevel | undefined;
+  }>({ modelConfigId: '', reasoningLevel: undefined });
+  const [modelSelectionError, setModelSelectionError] = useState<string>();
+  const modelListRequestRef = useRef(0);
+  const modelSwitchRequestRef = useRef(0);
+  const modelListAbortRef = useRef<AbortController | undefined>(undefined);
+  const modelSwitchAbortRef = useRef<AbortController | undefined>(undefined);
+  const { modelConfigId, reasoningLevel } = modelSelection;
   const horizontalPadding = width <= 340 ? spacing.md : spacing.page;
   const keyboardAvoidingProps = getKeyboardAvoidingProps(Platform.OS, insets.top);
-  const loadModels = useMemo(() => async () => {
+  const loadModels = useCallback(async () => {
+    const requestId = ++modelListRequestRef.current;
+    const expectedOwnerId = ownerId;
+    const expectedSessionRevision = sessionRevision;
+    modelListAbortRef.current?.abort();
+    const controller = new AbortController();
+    modelListAbortRef.current = controller;
+    const isCurrent = () => isCurrentModelRequest(
+      { requestId, ownerId: expectedOwnerId, sessionRevision: expectedSessionRevision },
+      {
+        requestId: modelListRequestRef.current,
+        ownerId: useAuthStore.getState().user?.id,
+        sessionRevision: useChatStore.getState().sessionRevision,
+      },
+    );
     setModelsLoading(true);
     setModelsLoadError(false);
     try {
-      const { items } = await listModelConfigs();
+      const { items } = await listModelConfigs({ signal: controller.signal });
+      if (!isCurrent()) return;
       setModels(items);
-      const initialModel = items.find((item) => item.is_default) ?? items[0];
-      setModelConfigId((current) => current || initialModel?.id || '');
-      setReasoningLevel((current) => current ?? initialModel?.reasoning_levels?.[0]);
+      setModelSelection((current) => resolveModelSelection(
+        items,
+        current.modelConfigId,
+        current.reasoningLevel,
+      ));
     } catch {
-      setModelsLoadError(true);
+      if (isCurrent() && !controller.signal.aborted) setModelsLoadError(true);
     } finally {
-      setModelsLoading(false);
+      if (isCurrent()) setModelsLoading(false);
     }
-  }, []);
+  }, [ownerId, sessionRevision]);
 
   useEffect(() => {
     // 模型列表是外部 REST 数据源，首次挂载时必须主动同步。
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadModels();
+    return () => modelListAbortRef.current?.abort();
   }, [loadModels]);
   const currentSessionTitle = sessions.find((session) => session.id === sessionId)?.title?.trim();
-  const firstUserMessage = messages.find((message) => message.role === 'user')?.content;
+  const firstUserItem = items.find(
+    (item) => item.type === 'message' && item.payload.role === 'user',
+  );
+  const firstUserMessage = firstUserItem?.type === 'message' ? firstUserItem.payload.content : undefined;
   const chatTitle = currentSessionTitle || firstUserMessage?.replace(/\s+/g, ' ').trim().slice(0, 48) || '新对话';
 
   const [sessionsMounted, setSessionsMounted] = useState(false);
@@ -99,22 +139,71 @@ export function ChatScreen() {
 
 
   async function handleModelConfigChange(nextModelConfigId: string) {
-    const previous = modelConfigId;
-    setModelConfigId(nextModelConfigId);
-    if (!useChatStore.getState().sessionPersisted || !sessionId || !previous || previous === nextModelConfigId) return;
+    const previous = modelSelection;
+    const next = resolveModelSelection(models, nextModelConfigId, undefined);
+    if (!next.modelConfigId || !next.reasoningLevel) return;
+    setModelSelection(next);
+    setModelSelectionError(undefined);
+    if (!useChatStore.getState().sessionPersisted || !sessionId
+      || !previous.modelConfigId || previous.modelConfigId === next.modelConfigId) return;
+    const requestId = ++modelSwitchRequestRef.current;
+    const expectedOwnerId = ownerId;
+    const expectedSessionId = sessionId;
+    const expectedSessionRevision = sessionRevision;
+    modelSwitchAbortRef.current?.abort();
+    const controller = new AbortController();
+    modelSwitchAbortRef.current = controller;
+    const isCurrent = () => isCurrentModelRequest(
+      { requestId, ownerId: expectedOwnerId, sessionRevision: expectedSessionRevision },
+      {
+        requestId: modelSwitchRequestRef.current,
+        ownerId: useAuthStore.getState().user?.id,
+        sessionRevision: useChatStore.getState().sessionRevision,
+      },
+    ) && expectedSessionId === useChatStore.getState().sessionId;
     try {
-      const nextModel = models.find((model) => model.id === nextModelConfigId);
-      const nextReasoningLevel = nextModel?.reasoning_levels?.[0] ?? reasoningLevel ?? 'medium';
-      setReasoningLevel(nextModel?.reasoning_levels?.[0]);
-      await setMessageModelSelection({ sessionId, previousModelConfigId: previous, modelConfigId: nextModelConfigId, reasoningLevel: nextReasoningLevel });
-      const from = models.find((model) => model.id === previous)?.model_id ?? previous;
-      const to = models.find((model) => model.id === nextModelConfigId)?.model_id ?? nextModelConfigId;
-      useChatStore.getState().addMessage({ id: `model-switch-${Date.now()}`, role: 'system', content: `模型由 ${from} 切换成 ${to}` });
+      const result = await setMessageModelSelection({
+        sessionId: expectedSessionId,
+        previousModelConfigId: previous.modelConfigId,
+        modelConfigId: next.modelConfigId,
+        reasoningLevel: next.reasoningLevel,
+        signal: controller.signal,
+      });
+      if (!isCurrent()) return;
+      if (result.status === 'rejected') {
+        throw new Error(result.validation_errors?.[0]?.message ?? '模型切换被拒绝。');
+      }
+      if (!result.data || result.data.session_id !== expectedSessionId) {
+        throw new Error('模型切换响应格式无效。');
+      }
+      const resolved = resolveModelSelection(
+        models,
+        result.data.resolved_model.model_config_id,
+        result.data.resolved_model.reasoning_level,
+      );
+      if (resolved.modelConfigId !== result.data.resolved_model.model_config_id
+        || resolved.reasoningLevel !== result.data.resolved_model.reasoning_level) {
+        throw new Error('服务端返回了不可用的模型能力。');
+      }
+      setModelSelection(resolved);
+      try {
+        const reconciliation = await reconcileChatFromRest(undefined, expectedSessionId);
+        const reconciliationError = getModelReconciliationError(reconciliation);
+        if (isCurrent() && reconciliationError) setModelSelectionError(reconciliationError);
+      } catch {
+        if (isCurrent()) setModelSelectionError('模型已切换，但会话刷新失败，请稍后重试。');
+      }
     } catch (error) {
-      setModelConfigId(previous);
-      useChatStore.getState().addMessage({ id: `model-switch-error-${Date.now()}`, role: 'system', content: error instanceof Error ? error.message : '模型切换失败，请稍后重试。' });
+      if (!isCurrent() || controller.signal.aborted) return;
+      setModelSelection(previous);
+      setModelSelectionError(error instanceof Error ? error.message : '模型切换失败，请稍后重试。');
     }
   }
+
+  useEffect(() => () => {
+    modelSwitchRequestRef.current += 1;
+    modelSwitchAbortRef.current?.abort();
+  }, [ownerId, sessionRevision]);
 
   function stopDrawerAnimation() {
     if (drawerOpenFrame.current !== null) {
@@ -186,8 +275,8 @@ export function ChatScreen() {
               {/* key=sessionRevision:切换会话时重挂,重置贴底状态,避免串线。 */}
               <ChatMessageList
                 key={sessionRevision}
-                messages={messages}
                 items={items}
+                toolViews={toolViews}
                 privacyDecision={privacyDecision}
                 horizontalPadding={horizontalPadding}
                 scroll={scroll}
@@ -197,7 +286,6 @@ export function ChatScreen() {
                   onConfirmTool: (id) => { void toolActions.run('confirm', id); },
                   onDismissTool: (id) => { void toolActions.run('dismiss', id); },
                   onUndoTool: (id) => { void toolActions.run('undo', id); },
-                  onCandidateDecision: (decision) => { console.info('[ChatPreviewDecision]', decision); },
                 }}
               />
 
@@ -228,7 +316,7 @@ export function ChatScreen() {
                 paddingTop: 4,
                 paddingBottom: Math.max(insets.bottom, spacing.sm),
               }}>
-              <ChatInput key={sessionId} connectionStatus={connectionStatus} isStreaming={isStreaming} models={models} modelsLoading={modelsLoading} modelsLoadError={modelsLoadError} onRetryModels={() => void loadModels()} modelConfigId={modelConfigId} reasoningLevel={reasoningLevel} onModelConfigChange={handleModelConfigChange} onReasoningLevelChange={setReasoningLevel} onSend={sendMessage} onCancel={stopStreaming} />
+              <ChatInput key={sessionId} connectionStatus={connectionStatus} isStreaming={isStreaming} models={models} modelsLoading={modelsLoading} modelsLoadError={modelsLoadError} modelSelectionError={modelSelectionError} onRetryModels={() => void loadModels()} modelConfigId={modelConfigId} reasoningLevel={reasoningLevel} onModelConfigChange={handleModelConfigChange} onReasoningLevelChange={(level) => { setModelSelection((current) => ({ ...current, reasoningLevel: level })); setModelSelectionError(undefined); }} onSend={sendMessage} onCancel={stopStreaming} />
             </View>
           </>
         )}

@@ -9,11 +9,15 @@ import {
 } from '../database/entities/chat-task.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import { UserEntity } from '../database/entities/core/user.entity.js';
+import { parseChatPreviewsV1 } from '@partner-agent/contracts';
 import {
   ChatTaskConflictError,
   ChatTaskStore,
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
+  type IdempotentCommand,
+  type AssistantCompletionCommand,
+  type AssistantProgressCommand,
   type RejectInputAnalysisCommand,
   type StoredChatTask,
   type SubmitTextCommand,
@@ -37,6 +41,37 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       this.loadStored(manager, task),
     );
     this.lifecycleOutbox = new TypeOrmChatTaskLifecycleOutbox(dataSource);
+  }
+
+  async executeIdempotentCommand<T extends Record<string, unknown>>(
+    command: IdempotentCommand,
+    execute: () => Promise<T>,
+  ): Promise<T> {
+    return this.dataSource.transaction(async (manager) => {
+      await this.lock(manager, command.ownerId, command.operationId);
+      const prior = await this.findOperation(
+        manager,
+        command.ownerId,
+        command.operationId,
+      );
+      if (prior) {
+        if (
+          prior.commandName !== command.commandName ||
+          prior.requestFingerprint !== command.requestFingerprint
+        ) throw new ChatTaskConflictError();
+        return structuredClone(prior.resultJson) as T;
+      }
+      const result = await execute();
+      const repository = manager.getRepository(LocalCoreOperationEntity);
+      await repository.save(repository.create({
+        id: randomUUID(), ownerId: command.ownerId,
+        operationId: command.operationId,
+        requestFingerprint: command.requestFingerprint,
+        commandName: command.commandName,
+        resultJson: result as Record<string, unknown>, createdAt: new Date(),
+      }));
+      return result;
+    });
   }
   async rejectInputAnalysis(command: RejectInputAnalysisCommand) {
     return this.dataSource.transaction(async (manager) => {
@@ -201,6 +236,8 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         inputId: command.inputId,
         modelConfigId: command.modelConfigId ?? `${process.env.DEFAULT_PROVIDER ?? 'deepseek'}:${process.env.DEFAULT_MODEL ?? ''}`,
         reasoningLevel: command.reasoningLevel ?? 'medium',
+        outputMode: command.outputMode ?? 'chat',
+        previewKind: command.previewKind ?? null,
         originalRecordId: recordId,
         userMessageId: messageId,
         resultMessageId: null,
@@ -400,6 +437,109 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
   ) {
     return this.runtime.markFailed(taskId, ownerId, code, message, leaseOwner);
   }
+  async appendAssistantProgress(command: AssistantProgressCommand) {
+    return this.dataSource.transaction(async (manager) => {
+      const task = await this.lockCurrentLease(manager, command);
+      if (!task) return { outcome: 'fence_rejected' as const };
+      const repository = manager.getRepository(SessionMessageEntity);
+      let message = await repository.findOne({
+        where: { ownerId: task.ownerId, sessionId: task.sessionId, taskId: task.id, role: 'assistant' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const revision = message?.revision ?? 0;
+      const content = message?.content ?? '';
+      if (command.expectedRevision !== revision || command.textOffset !== content.length || command.delta.length === 0) {
+        return { outcome: 'conflict' as const };
+      }
+      if (!message) {
+        const last = await repository.findOne({ where: { sessionId: task.sessionId }, order: { sequence: 'DESC' } });
+        message = repository.create({
+          id: task.resultMessageId ?? randomUUID(), ownerId: task.ownerId,
+          sessionId: task.sessionId, sequence: (last?.sequence ?? 0) + 1,
+          role: 'assistant', createdAt: new Date(), completedAt: null,
+          taskId: task.id, operationId: this.uuidOrNull(task.operationId),
+          modelConfigId: task.modelConfigId, reasoningLevel: task.reasoningLevel,
+          metadataJson: null,
+        });
+      }
+      const textOffset = content.length;
+      message.content = content + command.delta;
+      message.status = 'streaming';
+      message.revision = revision + 1;
+      await repository.save(message);
+      if (task.resultMessageId !== message.id) {
+        task.resultMessageId = message.id;
+        task.updatedAt = new Date();
+        await manager.getRepository(ChatTaskEntity).save(task);
+      }
+      await manager.getRepository(ChatSessionEntity).update(
+        { id: task.sessionId, ownerId: task.ownerId },
+        { lastActiveAt: new Date(), updatedAt: new Date() },
+      );
+      return { outcome: 'committed' as const, textOffset, message: this.toMessageDto(message) };
+    });
+  }
+
+  async completeAssistantOutput(command: AssistantCompletionCommand) {
+    return this.dataSource.transaction(async (manager) => {
+      const taskRepository = manager.getRepository(ChatTaskEntity);
+      const task = await taskRepository.findOne({
+        where: { id: command.taskId, ownerId: command.ownerId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!task || task.sessionId !== command.sessionId || task.operationId !== command.operationId) {
+        return { outcome: 'fence_rejected' as const };
+      }
+      const messageRepository = manager.getRepository(SessionMessageEntity);
+      let message = await messageRepository.findOne({
+        where: { ownerId: task.ownerId, sessionId: task.sessionId, taskId: task.id, role: 'assistant' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (task.state === 'completed' && message) {
+        return { outcome: 'already_completed' as const, task: await this.loadStored(manager, task), message: this.toMessageDto(message) };
+      }
+      if (!this.matchesCurrentLease(task, command.leaseToken)) {
+        return { outcome: 'fence_rejected' as const };
+      }
+      if (command.expectedRevision !== (message?.revision ?? 0)) {
+        return { outcome: 'conflict' as const };
+      }
+      const previews = command.chatPreviews.length ? parseChatPreviewsV1(command.chatPreviews) : [];
+      if (!message) {
+        const last = await messageRepository.findOne({ where: { sessionId: task.sessionId }, order: { sequence: 'DESC' } });
+        message = messageRepository.create({
+          id: task.resultMessageId ?? randomUUID(), ownerId: task.ownerId,
+          sessionId: task.sessionId, sequence: (last?.sequence ?? 0) + 1,
+          role: 'assistant', createdAt: new Date(), taskId: task.id,
+          operationId: this.uuidOrNull(task.operationId), modelConfigId: task.modelConfigId,
+          reasoningLevel: task.reasoningLevel,
+        });
+      }
+      message.content = command.content;
+      message.status = 'complete';
+      message.revision = (message.revision ?? 0) + 1;
+      message.metadataJson = previews.length ? { chat_previews: previews } : null;
+      message.completedAt = new Date();
+      await messageRepository.save(message);
+      await manager.getRepository(ChatSessionEntity).update(
+        { id: task.sessionId, ownerId: task.ownerId },
+        { contextJson: JSON.stringify(command.contextMessages), contextFormat: 'pi-agent-v2-sequence-watermark', contextRevision: message.sequence, lastActiveAt: message.completedAt, updatedAt: message.completedAt },
+      );
+      task.resultMessageId = message.id;
+      task.state = 'completed';
+      task.waitingToolConfirmationId = null;
+      task.leaseOwner = null;
+      task.leaseExpiresAt = null;
+      task.errorCode = null;
+      task.errorMessage = null;
+      task.completedAt = message.completedAt;
+      task.updatedAt = message.completedAt;
+      await taskRepository.save(task);
+      await ChatTaskLifecycleOutboxWriter.append(manager, task);
+      return { outcome: 'committed' as const, task: await this.loadStored(manager, task), message: this.toMessageDto(message) };
+    });
+  }
+
   async listSessionMessages(ownerId: string, sessionId: string) {
     const rows = await this.dataSource
       .getRepository(SessionMessageEntity)
@@ -410,10 +550,60 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         role: m.role,
         content: m.content,
         created_at: m.createdAt.toISOString(),
+        sequence: m.sequence,
+        status: m.status,
+        session_id: m.sessionId,
+        revision: m.revision,
+        ...(m.taskId ? { task_id: m.taskId } : {}),
+        ...(m.operationId ? { operation_id: m.operationId } : {}),
         ...(m.modelConfigId ? { model_config_id: m.modelConfigId } : {}),
         ...(m.reasoningLevel ? { reasoning_level: m.reasoningLevel } : {}),
-        ...(m.metadataJson ? { metadata: m.metadataJson } : {}),
       }));
+  }
+  async listSessionChatPreviews(ownerId: string, sessionId: string) {
+    const rows = await this.dataSource.getRepository(SessionMessageEntity).find({
+      where: { ownerId, sessionId, role: 'assistant' },
+      order: { sequence: 'ASC' },
+    });
+    return rows.flatMap((message) => {
+      if (!message.taskId || !message.operationId) return [];
+      const previews = message.metadataJson?.chat_previews;
+      if (!Array.isArray(previews)) return [];
+      return previews.map((preview) => ({
+        session_id: message.sessionId,
+        task_id: message.taskId!,
+        operation_id: message.operationId!,
+        message_id: message.id,
+        message_revision: message.revision,
+        preview: structuredClone(preview) as import('@partner-agent/contracts').ChatPreviewV1,
+      }));
+    });
+  }
+  private async lockCurrentLease(
+    manager: EntityManager,
+    command: { taskId: string; ownerId: string; sessionId: string; operationId: string; leaseToken: string },
+  ) {
+    const task = await manager.getRepository(ChatTaskEntity).findOne({
+      where: { id: command.taskId, ownerId: command.ownerId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    return task && task.sessionId === command.sessionId && task.operationId === command.operationId &&
+      this.matchesCurrentLease(task, command.leaseToken) ? task : undefined;
+  }
+  private matchesCurrentLease(task: ChatTaskEntity, leaseToken: string) {
+    return task.state === 'running' && task.leaseOwner === leaseToken &&
+      Boolean(task.leaseExpiresAt && task.leaseExpiresAt.getTime() > Date.now());
+  }
+  private toMessageDto(message: SessionMessageEntity) {
+    return {
+      id: message.id, session_id: message.sessionId, sequence: message.sequence,
+      role: message.role, content: message.content, status: message.status,
+      revision: message.revision, created_at: message.createdAt.toISOString(),
+      ...(message.taskId ? { task_id: message.taskId } : {}),
+      ...(message.operationId ? { operation_id: message.operationId } : {}),
+      ...(message.modelConfigId ? { model_config_id: message.modelConfigId } : {}),
+      ...(message.reasoningLevel ? { reasoning_level: message.reasoningLevel } : {}),
+    };
   }
   private async loadStored(
     manager: EntityManager,
@@ -498,6 +688,10 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         message_ref: message,
         original_record: record,
         chat_task: taskRef,
+        resolved_model: {
+          model_config_id: task.modelConfigId,
+          reasoning_level: task.reasoningLevel,
+        },
       },
     };
   }

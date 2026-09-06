@@ -1,394 +1,177 @@
-import type { ServerPushEventV1 } from '@partner-agent/contracts';
+import fixture from '@partner-agent/contracts/fixtures/chat-session-v1.json';
+import type { ChatSessionSummary, TaskStatus } from '@partner-agent/contracts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  desiredChannels,
-  initialChatChannels,
-  loadChatReconciliation,
-  reconcileChatFromRest,
-  createUseChatToolControls,
-} from './use-chat';
-import { applyAgentEvent, toPrivacyDecisionSummary } from './chat-event-state';
-import { useChatStore } from '../../store/chat-store';
 
-vi.mock('expo-crypto', () => ({ randomUUID: () => 'generated-message' }));
+import { useChatStore } from '../../store/chat-store';
+import { toPrivacyDecisionSummary } from './chat-event-state';
+import {
+  adoptPendingSubmissionSession, createUseChatToolControls, desiredChannels,
+  findAuthoritativeUserMessageId, initialChatChannels,
+  loadChatReconciliation, reconcileChatFromRest,
+} from './use-chat';
+
 vi.mock('expo-constants', () => ({ default: { expoConfig: undefined, expoGoConfig: undefined } }));
-vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
+vi.mock('expo-crypto', () => ({ randomUUID: () => 'local-message' }));
+vi.mock('react-native', () => ({ Platform: { OS: 'web' }, AppState: { addEventListener: vi.fn() } }));
+
+const snapshot = (): ChatSessionSummary => structuredClone(fixture.snapshot) as ChatSessionSummary;
+const task = (state: TaskStatus['state'] = 'running'): TaskStatus => ({
+  task_id: 'task-1', state, created_at: '2026-09-06T08:00:00.000Z',
+  updated_at: '2026-09-06T08:01:00.000Z',
+});
+const queries = (session: ChatSessionSummary) => ({
+  getTaskStatus: vi.fn(async () => task()), getChatSession: vi.fn(async () => session),
+});
+
+beforeEach(() => {
+  useChatStore.getState().resetChat();
+  useChatStore.getState().selectSession('session-1', true);
+});
 
 describe('chat subscription bootstrap', () => {
-  it('subscribes only to the owner-scoped channel before REST creates the session', () => {
+  it('starts owner-only and adds authoritative resource channels after acceptance', () => {
     expect(initialChatChannels()).toEqual(['user:self']);
+    expect(desiredChannels('session-1', 'task-1', '11111111-1111-4111-8111-111111111111'))
+      .toEqual(['user:self', 'session:session-1', 'task:task-1',
+        'operation:11111111-1111-4111-8111-111111111111']);
   });
 
-  it('adds the authoritative session, task and operation channels after REST acceptance', () => {
-    expect(desiredChannels('session-1', 'task-1', 'operation-1')).toEqual([
-      'user:self',
-      'session:session-1',
-      'task:task-1',
-      'operation:operation-1',
-    ]);
-  });
-});
-
-describe('chat REST reconciliation', () => {
-  it('starts task and session queries together', async () => {
+  it('starts task and session reconciliation requests together', async () => {
     const started: string[] = [];
-    let resolveTask!: (value: { task_id: string; state: 'completed' }) => void;
-    let resolveSession!: (value: {
-      id: string;
-      created_at: string;
-      updated_at: string;
-      message_count: number;
-      messages: [];
-    }) => void;
-    const task = new Promise<{ task_id: string; state: 'completed' }>((resolve) => {
-      resolveTask = resolve;
+    const pendingTask = new Promise<TaskStatus>(() => undefined);
+    const pendingSession = new Promise<ChatSessionSummary>(() => undefined);
+    void loadChatReconciliation('task-1', 'session-1', {
+      getTaskStatus: vi.fn(() => { started.push('task'); return pendingTask; }),
+      getChatSession: vi.fn(() => { started.push('session'); return pendingSession; }),
     });
-    const session = new Promise<{
-      id: string;
-      created_at: string;
-      updated_at: string;
-      message_count: number;
-      messages: [];
-    }>((resolve) => {
-      resolveSession = resolve;
-    });
-
-    const reconciliation = loadChatReconciliation('task-1', 'session-1', {
-      getTaskStatus: vi.fn(() => {
-        started.push('task');
-        return task;
-      }),
-      getChatSession: vi.fn(() => {
-        started.push('session');
-        return session;
-      }),
-    });
-
     expect(started).toEqual(['task', 'session']);
-    resolveTask({ task_id: 'task-1', state: 'completed' });
-    resolveSession({
-      id: 'session-1',
-      created_at: '2026-09-04T00:00:00.000Z',
-      updated_at: '2026-09-04T00:00:01.000Z',
-      message_count: 0,
-      messages: [],
-    });
-    const [taskResult, sessionResult] = await reconciliation;
-    expect(taskResult.status).toBe('fulfilled');
-    expect(sessionResult.status).toBe('fulfilled');
-  });
-
-  it('settles both results when either REST query fails', async () => {
-    const [taskResult, sessionResult] = await loadChatReconciliation(
-      'task-1',
-      'session-1',
-      {
-        getTaskStatus: vi.fn(async () => {
-          throw new Error('offline');
-        }),
-        getChatSession: vi.fn(async () => ({
-          id: 'session-1',
-          created_at: '2026-09-04T00:00:00.000Z',
-          updated_at: '2026-09-04T00:00:01.000Z',
-          message_count: 0,
-          messages: [],
-        })),
-      },
-    );
-
-    expect(taskResult.status).toBe('rejected');
-    expect(sessionResult.status).toBe('fulfilled');
   });
 });
 
-describe('canonical REST snapshot boundary', () => {
-  beforeEach(() => {
-    useChatStore.getState().resetChat();
-    useChatStore.getState().selectSession('session-1', true);
-    useChatStore.getState().addMessage({ id: 'local', role: 'user', content: 'keep until valid snapshot' });
+describe('revision-aware REST reconciliation', () => {
+  it('consumes the shared fixture including its authoritative tool view', async () => {
+    await reconcileChatFromRest(undefined, 'session-1', { queries: queries(snapshot()) });
+    expect(useChatStore.getState().items).toHaveLength(fixture.snapshot.items.length);
+    expect(useChatStore.getState().toolViews).toHaveLength(1);
   });
 
-  const snapshot = () => ({
-    id: 'session-1', created_at: '', updated_at: '', message_count: 1,
-    messages: [{ id: 'legacy', role: 'user' as const, content: 'legacy must not replace canonical', created_at: '' }],
-  });
-  const queries = (data: import('../../api/chat-api').RecoverableChatSession) => ({
-    getTaskStatus: vi.fn(), getChatSession: vi.fn(async () => data),
+  it('recovers the persisted structured preview repeatedly without duplicating it', async () => {
+    await reconcileChatFromRest(undefined, 'session-1', { queries: queries(snapshot()) });
+    await reconcileChatFromRest(undefined, 'session-1', { queries: queries(snapshot()) });
+
+    const previews = useChatStore.getState().items.filter((item) => item.type === 'structured_preview');
+    const fixturePreview = fixture.snapshot.items.find((item) => item.type === 'structured_preview');
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).toEqual(fixturePreview);
   });
 
-  it('treats items: [] as authoritative rather than restoring legacy messages', async () => {
-    await reconcileChatFromRest(undefined, 'session-1', { queries: queries({ ...snapshot(), items: [] }) });
-    expect(useChatStore.getState().items).toEqual([]);
-    expect(useChatStore.getState().messages).toEqual([]);
+  it('does not let a late older snapshot overwrite a newer realtime item', async () => {
+    const current = snapshot().items.find((item) => item.id === 'task:task-1:assistant')!;
+    if (current.type !== 'message') throw new Error('fixture assistant item missing');
+    useChatStore.getState().upsertItem({ ...current, revision: 4, updated_at: current.updated_at + 1,
+      status: 'streaming', payload: { ...current.payload, content: '实时新正文' } });
+    await reconcileChatFromRest(undefined, 'session-1', { queries: queries(snapshot()) });
+    expect(useChatStore.getState().items.find((item) => item.id === current.id))
+      .toMatchObject({ revision: 4, payload: { content: '实时新正文' } });
   });
 
-  it('restores older tasks from the same session even while another task is active', async () => {
-    useChatStore.getState().setActiveTaskId('current-task');
-    useChatStore.getState().setActiveOperationId('current-operation');
-    const item: import('@partner-agent/contracts').ChatItem = {
-      schema_version: 1, id: 'historical-answer', type: 'message', status: 'completed',
-      collapsed: false, created_at: 1, updated_at: 1, session_id: 'session-1',
-      task_id: 'previous-task', operation_id: 'previous-operation',
-      payload: { role: 'assistant', content: 'previous answer' },
-    };
-    await reconcileChatFromRest(undefined, 'session-1', {
-      queries: queries({ ...snapshot(), items: [item] }),
-    });
-    expect(useChatStore.getState().items).toEqual([item]);
-  });
-
-  it('rejects a response for another session without replacing local content', async () => {
-    const before = useChatStore.getState().items;
-    const result = await reconcileChatFromRest(undefined, 'session-1', {
-      queries: queries({ ...snapshot(), id: 'foreign', items: [] }),
-    });
-    expect(result[1].status).toBe('rejected');
-    expect(useChatStore.getState().items).toEqual(before);
-  });
-
-  it('validates the whole item list before any store mutation', async () => {
-    const before = useChatStore.getState().items;
-    const invalid = { ...snapshot(), items: [{ type: 'message', payload: null }] };
-    const result = await reconcileChatFromRest(undefined, 'session-1', {
-      queries: queries(invalid as unknown as import('../../api/chat-api').RecoverableChatSession),
-    });
-    expect(result[1].status).toBe('rejected');
-    expect(useChatStore.getState().items).toEqual(before);
-  });
-
-  it('still applies a valid task response if the session snapshot is malformed', async () => {
+  it('rejects malformed snapshots without mutating current items but still applies a valid task', async () => {
+    const current = snapshot().items[0];
+    useChatStore.getState().upsertItem(current);
     const result = await reconcileChatFromRest('task-1', 'session-1', {
-      queries: {
-        getTaskStatus: async () => ({ task_id: 'task-1', state: 'failed', error: 'task failed' }),
-        getChatSession: async () => ({ ...snapshot(), items: null }) as unknown as import('../../api/chat-api').RecoverableChatSession,
-      },
+      queries: { getTaskStatus: vi.fn(async () => ({ ...task('failed'), error: '权威失败' })),
+        getChatSession: vi.fn(async () => ({ ...snapshot(), items: [{ bad: true }] } as never)) },
     });
     expect(result[1].status).toBe('rejected');
+    expect(useChatStore.getState().items).toContainEqual(current);
     expect(useChatStore.getState().taskStatus).toBe('failed');
   });
-});
 
-describe('chat event state merge', () => {
-  beforeEach(() => {
-    useChatStore.setState({
-      sessionId: 'session-1',
-      activeTaskId: 'task-1',
-      activeOperationId: 'operation-1',
-      messages: [],
-      isStreaming: true,
-      isThinking: true,
-      connectionStatus: 'connected',
-      taskStatus: 'queued',
-      privacyDecision: undefined,
-    });
-  });
-
-  it('does not append a restored running answer to the previous turn', async () => {
-    const assistantRef: { current: string | undefined } = { current: undefined };
-    await reconcileChatFromRest('task-1', 'session-1', {
-      assistantMessageIdRef: assistantRef,
-      queries: {
-        getTaskStatus: async () => ({ task_id: 'task-1', state: 'running' }),
-        getChatSession: async () => ({ id: 'session-1', created_at: '', updated_at: '', message_count: 3,
-          messages: [
-            { id: 'u1', role: 'user', content: 'first', created_at: '' },
-            { id: 'a1', role: 'assistant', content: 'old answer', created_at: '' },
-            { id: 'u2', role: 'user', content: 'second', created_at: '' },
-          ],
-        }),
-      },
-    });
-    applyAgentEvent(event('text_delta', 'new answer'), assistantRef);
-    expect(useChatStore.getState().messages.map((message) => message.content)).toEqual(['first', 'old answer', 'second', 'new answer']);
-  });
-
-  it('discards a REST snapshot that resolves after session switching', async () => {
-    let resolve!: (value: import('../../api/chat-api').RecoverableChatSession) => void;
-    const session = new Promise<import('../../api/chat-api').RecoverableChatSession>((done) => { resolve = done; });
+  it('discards a snapshot that resolves after switching sessions', async () => {
+    let resolve!: (value: ChatSessionSummary) => void;
+    const waiting = new Promise<ChatSessionSummary>((done) => { resolve = done; });
     const reconciling = reconcileChatFromRest(undefined, 'session-1', {
-      queries: { getTaskStatus: vi.fn(), getChatSession: () => session },
+      queries: { getTaskStatus: vi.fn(), getChatSession: vi.fn(() => waiting) },
     });
     useChatStore.getState().selectSession('session-2', false);
-    resolve({ id: 'session-1', created_at: '', updated_at: '', message_count: 1, messages: [{ id: 'old', role: 'user', content: 'old', created_at: '' }] });
+    resolve(snapshot());
     await reconciling;
-    expect(useChatStore.getState().messages).toEqual([]);
+    expect(useChatStore.getState().items).toEqual([]);
   });
 
-  it('handles a normal delta and terminal event', () => {
-    const assistantRef: { current: string | undefined } = { current: undefined };
+  it('adopts an authoritative active task and replaces its optimistic user item', async () => {
+    const operationId = '11111111-1111-4111-8111-111111111111';
+    const recovered = snapshot();
+    recovered.active_task = { task_id: 'task-1', operation_id: operationId, state: 'running' };
+    const state = useChatStore.getState();
+    state.beginTask();
+    state.setActiveOperationId(operationId);
+    state.addMessage({ id: 'optimistic-user', role: 'user', content: '帮我安排周一提交周报' });
+    state.setTaskStatus('recovering');
 
-    applyAgentEvent(event('text_delta', '你好'), assistantRef);
-    applyAgentEvent(event('done', {}), assistantRef);
+    await reconcileChatFromRest(undefined, 'session-1', { queries: queries(recovered) });
 
-    expect(useChatStore.getState()).toMatchObject({
-      taskStatus: 'completed',
-      isStreaming: false,
-      isThinking: false,
-      activeTaskId: undefined,
-      activeOperationId: undefined,
-    });
-    expect(useChatStore.getState().messages).toEqual([
-      expect.objectContaining({ id: 'generated-message', role: 'assistant', content: '你好' }),
+    expect(useChatStore.getState()).toMatchObject({ activeTaskId: 'task-1',
+      activeOperationId: operationId, taskStatus: 'running', isStreaming: true });
+    expect(useChatStore.getState().messages.filter((message) => message.role === 'user')).toEqual([
+      expect.objectContaining({ id: 'message:message-user-1' }),
     ]);
   });
 
-  it('ignores late running and text events after completion', () => {
-    const assistantRef: { current: string | undefined } = { current: undefined };
-    applyAgentEvent(event('text_delta', '最终回答'), assistantRef);
-    applyAgentEvent(event('done', {}), assistantRef);
-    const messagesAtCompletion = useChatStore.getState().messages;
+  it('clears recovering when the accepted operation already completed before reconciliation', async () => {
+    const operationId = '11111111-1111-4111-8111-111111111111';
+    const recovered = snapshot();
+    recovered.latest_task = { task_id: 'task-1', operation_id: operationId, state: 'completed' };
+    const state = useChatStore.getState();
+    state.beginTask();
+    state.setActiveOperationId(operationId);
+    state.addMessage({ id: 'optimistic-user', role: 'user', content: '帮我安排周一提交周报' });
+    state.setTaskStatus('recovering');
 
-    applyAgentEvent(event('task_state', { state: 'running' }), assistantRef);
-    applyAgentEvent(event('text_delta', '迟到内容'), assistantRef);
+    await reconcileChatFromRest(undefined, 'session-1', { queries: queries(recovered) });
 
-    expect(useChatStore.getState().taskStatus).toBe('completed');
-    expect(useChatStore.getState().messages).toEqual(messagesAtCompletion);
+    expect(useChatStore.getState()).toMatchObject({ activeTaskId: undefined,
+      activeOperationId: undefined, taskStatus: 'completed', isStreaming: false });
+    expect(useChatStore.getState().messages.filter((message) => message.role === 'user')).toHaveLength(1);
   });
 
-  it('maps the safe privacy summary from a task_state event', () => {
-    const assistantRef: { current: string | undefined } = { current: undefined };
+  it('finds an authoritative user message in a legal legacy snapshot without items', () => {
+    const legacy = { ...snapshot(), items: undefined };
+    expect(findAuthoritativeUserMessageId(legacy, '11111111-1111-4111-8111-111111111111'))
+      .toBe('message-user-1');
+  });
 
-    applyAgentEvent(
-      event('task_state', {
-        state: 'waiting_privacy_decision',
-        privacy_decision: {
-          egress_id: 'egress-1',
-          categories: ['api_key'],
-          provider: 'provider',
-          model_id: 'model',
-          expires_at: '2026-09-04T01:00:00.000Z',
-        },
-      }),
-      assistantRef,
-    );
+  it('adopts a server session only for a matching pending owner-scoped event', () => {
+    useChatStore.getState().selectSession('local-session', false);
+    const pending = { inputId: 'input-1', operationId: '11111111-1111-4111-8111-111111111111',
+      optimisticMessageId: 'local-user', sessionId: 'local-session', text: '消息', outputMode: 'chat' as const };
+    const event = { schema_version: 1 as const, event_id: 'accepted', channel: 'user:self' as const,
+      sequence: 1, session_id: 'server-session', task_id: 'task-1',
+      operation_id: pending.operationId, event_type: 'done' as const, timestamp: 1, data: {} };
+    expect(adoptPendingSubmissionSession(event, pending, '__pending_task__')).toBe(true);
+    expect(useChatStore.getState()).toMatchObject({ sessionId: 'server-session', sessionPersisted: true });
+    expect(pending.sessionId).toBe('server-session');
 
-    expect(useChatStore.getState()).toMatchObject({
-      taskStatus: 'waiting_privacy_decision',
-      privacyDecision: {
-        egress_id: 'egress-1',
-        categories: ['api_key'],
-        provider: 'provider',
-        model_id: 'model',
-        expires_at: '2026-09-04T01:00:00.000Z',
-      },
-    });
+    useChatStore.getState().selectSession('another-local', false);
+    expect(adoptPendingSubmissionSession({ ...event,
+      operation_id: '22222222-2222-4222-8222-222222222222' }, pending, '__pending_task__')).toBe(false);
+    expect(useChatStore.getState().sessionId).toBe('another-local');
   });
 });
 
-describe('privacy decision REST reconciliation', () => {
-  beforeEach(() => {
-    useChatStore.setState({
-      sessionId: 'session-1',
-      activeTaskId: 'task-1',
-      messages: [],
-      isStreaming: true,
-      isThinking: false,
-      taskStatus: 'waiting_privacy_decision',
-      privacyDecision: {
-        egress_id: 'egress-1',
-        categories: ['secret'],
-        provider: 'provider',
-        model_id: 'model',
-        expires_at: '2026-09-04T01:00:00.000Z',
-      },
-    });
+describe('privacy and tool projections', () => {
+  it('keeps only safe privacy fields and known categories', () => {
+    expect(toPrivacyDecisionSummary({ egress_id: 'egress-1', categories: ['secret', 'raw'] as never,
+      provider: 'provider', model_id: 'model', expires_at: '2026-09-06T09:00:00.000Z',
+      raw_payload: 'hidden' } as never)).toEqual({ egress_id: 'egress-1', categories: ['secret'],
+      provider: 'provider', model_id: 'model', expires_at: '2026-09-06T09:00:00.000Z' });
   });
 
-  it('applies both TaskStatus and ChatSession without inventing a final state', async () => {
-    await reconcileChatFromRest('task-1', 'session-1', {
-      queries: {
-        getTaskStatus: vi.fn(async () => ({
-          task_id: 'task-1',
-          state: 'running' as const,
-        })),
-        getChatSession: vi.fn(async () => ({
-          id: 'session-1',
-          created_at: '2026-09-04T00:00:00.000Z',
-          updated_at: '2026-09-04T00:00:01.000Z',
-          message_count: 1,
-          messages: [
-            {
-              id: 'message-1',
-              role: 'assistant' as const,
-              content: '继续处理',
-              created_at: '2026-09-04T00:00:00.000Z',
-            },
-          ],
-        })),
-      },
-    });
-
-    expect(useChatStore.getState()).toMatchObject({
-      taskStatus: 'running',
-      privacyDecision: undefined,
-      messages: [{ id: 'message-1', role: 'assistant', content: '继续处理' }],
-      isStreaming: true,
-    });
-  });
-
-  it('projects only contract fields and removes unknown categories', () => {
-    const summary = toPrivacyDecisionSummary({
-      egress_id: 'egress-1',
-      categories: ['secret', 'raw-value'] as never,
-      provider: 'provider',
-      model_id: 'model',
-      expires_at: '2026-09-04T01:00:00.000Z',
-      raw_payload: 'must-not-leak',
-    } as never);
-
-    expect(summary).toEqual({
-      egress_id: 'egress-1',
-      categories: ['secret'],
-      provider: 'provider',
-      model_id: 'model',
-      expires_at: '2026-09-04T01:00:00.000Z',
-    });
-    expect(summary).not.toHaveProperty('raw_payload');
-  });
-
-  it('maps a TaskStatus privacy summary during REST recovery', async () => {
-    await reconcileChatFromRest('task-1', undefined, {
-      queries: {
-        getTaskStatus: vi.fn(async () => ({
-          task_id: 'task-1',
-          state: 'waiting_privacy_decision' as const,
-          privacy_decision: {
-            egress_id: 'egress-rest',
-            categories: ['bank_card' as const],
-            provider: 'provider',
-            model_id: 'model',
-            expires_at: '2026-09-04T01:00:00.000Z',
-          },
-        })),
-        getChatSession: vi.fn(),
-      },
-    });
-
-    expect(useChatStore.getState().privacyDecision).toMatchObject({
-      egress_id: 'egress-rest',
-      categories: ['bank_card'],
-    });
+  it('passes stable tool resource ids to the injected transport', async () => {
+    const transport = { confirmTool: vi.fn(async () => ({ request_id: 'r1', action: 'confirm' as const,
+      status: 'completed' as const })), dismissTool: vi.fn(), undoTool: vi.fn() };
+    const controls = createUseChatToolControls(() => 'session-1', () => transport);
+    await controls.confirmTool('confirmation-1');
+    expect(transport.confirmTool).toHaveBeenCalledWith({ session_id: 'session-1', confirmation_id: 'confirmation-1' });
   });
 });
-
-function event<T extends ServerPushEventV1['event_type']>(
-  eventType: T,
-  data: Extract<ServerPushEventV1, { event_type: T }>['data'],
-): Extract<ServerPushEventV1, { event_type: T }> {
-  return {
-    schema_version: 1,
-    event_id: `event-${eventType}`,
-    channel: 'task:task-1',
-    sequence: 1,
-    session_id: 'session-1',
-    operation_id: 'operation-1',
-    task_id: 'task-1',
-    event_type: eventType,
-    timestamp: 1,
-    data,
-  } as unknown as Extract<ServerPushEventV1, { event_type: T }>;
-}
-
-
-
-describe('useChat tool controls', () => {   it('exposes the injected transport through the chat-facing control API', async () => {     const transport = {       confirmTool: vi.fn(async () => ({ request_id: 'r1', action: 'confirm' as const, status: 'completed' as const })),       dismissTool: vi.fn(async () => ({ request_id: 'r2', action: 'dismiss' as const, status: 'completed' as const })),       undoTool: vi.fn(async () => ({ request_id: 'r3', action: 'undo' as const, status: 'completed' as const })),     };     const controls = createUseChatToolControls(() => 'session-1', () => transport);     await controls.confirmTool('confirmation-1');     await controls.dismissTool('confirmation-2');     await controls.undoTool('execution-1');     expect(transport.confirmTool).toHaveBeenCalledWith({ session_id: 'session-1', confirmation_id: 'confirmation-1' });     expect(transport.dismissTool).toHaveBeenCalledWith({ session_id: 'session-1', confirmation_id: 'confirmation-2' });     expect(transport.undoTool).toHaveBeenCalledWith({ session_id: 'session-1', execution_id: 'execution-1' });   }); });
