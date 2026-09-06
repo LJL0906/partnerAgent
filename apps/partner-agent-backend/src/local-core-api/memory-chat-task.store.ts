@@ -7,7 +7,6 @@ import {
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
   parseAssistantCompletionPreviews,
-  parseStoredChatPreviews,
   type RejectInputAnalysisCommand,
   type AssistantCompletionCommand,
   type AssistantProgressCommand,
@@ -15,6 +14,7 @@ import {
   type StoredChatTask,
   type SubmitTextCommand,
 } from './chat-task.store.js';
+import { recoverChatPreviewsV1 } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import type { EntityManager } from 'typeorm';
 import {
@@ -682,6 +682,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
   async listSessionChatPreviews(ownerId: string, sessionId: string) {
     const session = await this.sessions.find(sessionId, ownerId);
     if (!session) return [];
+    const seenPreviewIds = new Set<string>();
     return session.messages.flatMap((message) => {
       const messageId = message.id;
       if (message.role !== 'assistant' || !messageId || !message.taskId || !message.operationId) return [];
@@ -689,14 +690,18 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       const operationId = message.operationId;
       const previews = message.metadata?.chat_previews;
       if (!Array.isArray(previews)) return [];
-      return parseStoredChatPreviews(previews).map((preview) => ({
-        session_id: sessionId,
-        task_id: taskId,
-        operation_id: operationId,
-        message_id: messageId,
-        message_revision: message.revision ?? 1,
-        preview,
-      }));
+      return recoverChatPreviewsV1(previews).flatMap((preview) => {
+        if (seenPreviewIds.has(preview.preview_id)) return [];
+        seenPreviewIds.add(preview.preview_id);
+        return [{
+          session_id: sessionId,
+          task_id: taskId,
+          operation_id: operationId,
+          message_id: messageId,
+          message_revision: message.revision ?? 1,
+          preview,
+        }];
+      });
     });
   }
 

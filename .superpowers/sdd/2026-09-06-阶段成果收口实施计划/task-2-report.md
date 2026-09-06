@@ -3,9 +3,9 @@
 ## 结果
 
 - `completeAssistantOutput` 的 memory 与 TypeORM 写入边界现在统一只接受 `chat + 0 previews` 或 `structured_preview/action + >=1 valid preview`。
-- 非法组合统一返回 `{ outcome: 'conflict' }`，不写入 assistant message、context、task 完成态或 outbox；解析失败也转为同样的安全非 committed 结果。
-- memory 与 TypeORM 回读边界现在逐项调用 `parseChatPreviewV1`。任一附件损坏时整次恢复显式失败，不返回部分成功卡，也不对未校验 JSONB 做类型强转。
-- 真实库成功 fixture 已修正为 `structured_preview/action` 任务，并增加“正常恢复后注入单个损坏 preview”的反例。
+- 非法组合统一返回 `{ outcome: 'invalid_output' }` 及固定安全错误码；runner 通过 lease fence 将任务标为 failed，不写入 assistant message、context、完成态或 completed outbox。revision conflict 与 fence rejection 仍保留原语义。
+- memory 与 TypeORM 回读边界统一使用 contracts `recoverChatPreviewsV1`：损坏项被隔离，重复 ID 按持久化顺序保留第一项，超过 20 项或使累计载荷超过 64 KiB 的候选被跳过，后续较小合法 sibling 仍可恢复。最终非空集合可通过严格 `parseChatPreviewsV1`，且会话内无重复 preview ChatItem ID。
+- 真实库成功 fixture 已修正为 `structured_preview/action` 任务，并增加合法 sibling 与损坏 preview 混合时只恢复合法项的反例。
 
 ## RED
 
@@ -46,7 +46,7 @@ npm run test --workspace @partner-agent/backend -- src/local-core-api/typeorm-ch
 
 - 修改仅限 brief 指定的存储、测试文件与本报告，未覆盖其他未提交成果。
 - 非法完成组合在任何权威写入前被拒绝；TypeORM 仍在原事务中执行，memory 在第一次 session/message 变更前返回。
-- 恢复采取两种 store 一致的 fail-closed 行为：损坏项抛出共享契约校验错误，不吞掉错误、不返回其他部分卡片。
+- 恢复采取两种 store 一致的 attachment isolation：仅跳过不能加入严格集合的损坏/重复/超限候选，按稳定顺序保留其他合法卡，不返回伪成功卡。
 - 已复审根 README、backend README 与 Task 2 brief；实现与 PostgreSQL 权威存储、共享契约 parser 不变量一致，未发现文档偏离。
 
 ## Commit
@@ -60,7 +60,7 @@ npm run test --workspace @partner-agent/backend -- src/local-core-api/typeorm-ch
 - 将完成边界的预览不变量失败从普通 `conflict` 拆分为显式 `invalid_output`，并仅携带固定安全错误码/消息：结构化任务缺附件为 `STRUCTURED_PREVIEW_MISSING`，其他模式或契约错误为 `STRUCTURED_PREVIEW_INVALID`。
 - `ChatTaskRunner` 只对 `invalid_output` 调用带 lease fence 的 `markFailed`，落明确 failed 终态并发布安全状态；普通 revision `conflict` 与 lease `fence_rejected` 仍按原 fencing 语义直接停止，未被误判成任务失败。
 - 修正 `chat-task.store.spec.ts` 的附件成功 fixture，显式使用 `structured_preview/action`。
-- 回读改为共享 `parseStoredChatPreviews` 逐项校验：损坏附件被隔离，同消息/会话的其他合法卡继续恢复。当前未引入新的 logger 构造依赖，因此这是 fail-closed attachment isolation：损坏对象不会静默伪装成成功卡，但本轮不额外记录诊断日志。
+- 回读改为共享容错 helper 逐项校验：损坏附件被隔离，同消息/会话的其他合法卡继续恢复。当前未引入新的 logger 构造依赖，因此这是 fail-closed attachment isolation：损坏对象不会静默伪装成成功卡，但本轮不额外记录诊断日志。
 - 真实 PostgreSQL fixture 仍为 `structured_preview/action`，合法+损坏混合 JSONB 反例现在断言只恢复合法 preview。
 
 ### RED / GREEN
@@ -87,3 +87,32 @@ npm run test --workspace @partner-agent/backend -- src/local-core-api/typeorm-ch
 新增：无。删除：无。Task 3 revision 相关文件未触碰。
 
 Fix round 1 使用新提交承载，提交哈希见本轮最终交付回报。
+
+## 最终验收 Important #2/#4 修正（2026-09-06）
+
+### 策略
+
+- contracts 新增 `recoverChatPreviewsV1`，专用于持久化 JSONB 回读；`parseChatPreviewsV1` 的严格写入拒绝语义未改变。
+- 恢复 helper 按原数组顺序处理。每个候选先经 `parseChatPreviewV1`，再用 `parseChatPreviewsV1([...recovered, candidate])` 复用集合级唯一性、数量和 UTF-8 JSON 载荷限制。不可加入的候选被隔离，继续尝试后续项；因此重复 ID 确定保留第一项，前 20 个可接受项稳定保留，导致累计超 64 KiB 的大项被跳过后，后续较小合法项仍可保留。
+- memory/TypeORM 都直接使用该 contracts helper，并在会话聚合层按消息 sequence 对 `preview_id` 再做稳定 first-wins，防止跨消息重复 ChatItem ID。
+
+### RED / GREEN 证据
+
+- RED：Memory/TypeORM 定向用例同时显示重复 ID 被全部返回、22 项全部返回、使累计载荷超 64 KiB 的第三个大附件仍被返回，且恢复结果无法通过严格集合 parser。contracts 回归在 helper 未实现时以 `recoverChatPreviewsV1 is not a function` 失败。
+- GREEN：contracts 全量 4 suites / 140 tests passed；Memory+TypeORM 定向 2 files / 15 tests passed；backend 全量 78 files / 453 tests passed；memory e2e 8 files / 132 tests passed；backend build/lint 通过。
+- 测试显式校验恢复顺序、first-wins、20 项上限、累计 64 KiB 隔离后继续、损坏 sibling 隔离、最终严格集合 parser 通过，以及 `chatItemIds.preview` 无重复。
+
+### 本轮文件
+
+修改：
+
+- `packages/contracts/src/chat-preview.ts`
+- `packages/contracts/test/contract-alignment-v1.test.cjs`
+- `apps/partner-agent-backend/src/local-core-api/chat-task.store.ts`
+- `apps/partner-agent-backend/src/local-core-api/memory-chat-task.store.ts`
+- `apps/partner-agent-backend/src/local-core-api/typeorm-chat-task.store.ts`
+- `apps/partner-agent-backend/src/local-core-api/chat-task-runner-output.spec.ts`
+- `apps/partner-agent-backend/src/local-core-api/typeorm-chat-output.store.spec.ts`
+- `.superpowers/sdd/2026-09-06-阶段成果收口实施计划/task-2-report.md`
+
+新增：无。删除：无。未修改 A10、session store、heartbeat 或 docs 收口文件。

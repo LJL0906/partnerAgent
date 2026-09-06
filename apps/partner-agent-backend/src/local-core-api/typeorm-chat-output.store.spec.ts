@@ -13,6 +13,31 @@ import { UserEntity } from '../database/entities/core/user.entity.js';
 import { TypeOrmSessionStore } from '../database/typeorm-session.store.js';
 import { TypeOrmChatTaskStore } from './typeorm-chat-task.store.js';
 import type { EntityManager } from 'typeorm';
+import {
+  chatItemIds,
+  parseChatPreviewsV1,
+  type ChatPreviewV1,
+} from '@partner-agent/contracts';
+
+function storedPreview(
+  userMessageId: string,
+  previewId: string,
+  title = previewId,
+  warningMessage = '',
+): ChatPreviewV1 {
+  return {
+    schema_version: 1,
+    preview_id: previewId,
+    kind: 'action',
+    confirmation_status: 'unconfirmed',
+    applied: false,
+    source_refs: [{ kind: 'chat_message', id: userMessageId }],
+    content: { title, confidence: 0.8 },
+    warnings: warningMessage
+      ? [{ code: 'RECOVERY_TEST', message: warningMessage }]
+      : [],
+  };
+}
 
 function dataSource() {
   const database = newDb();
@@ -374,7 +399,7 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
     await source.destroy();
   });
 
-  it('isolates damaged persisted preview metadata while restoring valid siblings', async () => {
+  it('restores a stable collection from damaged, duplicate and oversized persisted previews', async () => {
     const source = dataSource();
     await source.initialize();
     const store = new TypeOrmChatTaskStore(source);
@@ -404,33 +429,56 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
       operationId: task.operationId,
       modelConfigId: task.modelConfigId,
       reasoningLevel: task.reasoningLevel,
-      metadataJson: {
-        chat_previews: [
-          {
-            schema_version: 1,
-            preview_id: 'valid-sibling',
-            kind: 'action',
-            confirmation_status: 'unconfirmed',
-            applied: false,
-            source_refs: [{ kind: 'chat_message', id: task.userMessageId }],
-            content: { title: '合法卡片', confidence: 0.8 },
-            warnings: [],
-          },
-          { schema_version: 1, preview_id: 'damaged' },
-        ],
-      },
+      metadataJson: { chat_previews: [] },
       createdAt: new Date(),
       completedAt: new Date(),
     });
 
-    await expect(store.listSessionChatPreviews(
-      task.ownerId,
-      task.sessionId,
-    )).resolves.toEqual([
-      expect.objectContaining({
-        preview: expect.objectContaining({ preview_id: 'valid-sibling' }),
-      }),
-    ]);
+    const cases = [
+      {
+        previews: [
+          storedPreview(task.userMessageId, 'duplicate', '保留第一项'),
+          storedPreview(task.userMessageId, 'duplicate', '忽略重复项'),
+          { schema_version: 1, preview_id: 'damaged' },
+          storedPreview(task.userMessageId, 'valid-sibling'),
+        ],
+        expectedIds: ['duplicate', 'valid-sibling'],
+      },
+      {
+        previews: Array.from({ length: 22 }, (_, index) =>
+          storedPreview(task.userMessageId, `count-${index}`)),
+        expectedIds: Array.from({ length: 20 }, (_, index) => `count-${index}`),
+      },
+      {
+        previews: [
+          storedPreview(task.userMessageId, 'large-1', 'large-1', 'a'.repeat(28_000)),
+          storedPreview(task.userMessageId, 'large-2', 'large-2', 'b'.repeat(28_000)),
+          storedPreview(task.userMessageId, 'would-overflow', 'would-overflow', 'c'.repeat(28_000)),
+          storedPreview(task.userMessageId, 'small-after-overflow'),
+        ],
+        expectedIds: ['large-1', 'large-2', 'small-after-overflow'],
+      },
+    ];
+
+    for (const testCase of cases) {
+      await source.getRepository(SessionMessageEntity).update(
+        { id: '00000000-0000-4000-8000-000000000204' },
+        { metadataJson: { chat_previews: testCase.previews } },
+      );
+      const attachments = await store.listSessionChatPreviews(
+        task.ownerId,
+        task.sessionId,
+      );
+      expect.soft(attachments.map(({ preview }) => preview.preview_id)).toEqual(
+        testCase.expectedIds,
+      );
+      expect.soft(new Set(attachments.map(({ preview }) =>
+        chatItemIds.preview(preview.preview_id))).size)
+        .toBe(attachments.length);
+      expect.soft(() => parseChatPreviewsV1(
+        attachments.map(({ preview }) => preview),
+      )).not.toThrow();
+    }
     await source.destroy();
   });
 });

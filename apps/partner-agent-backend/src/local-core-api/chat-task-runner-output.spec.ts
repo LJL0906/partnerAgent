@@ -6,6 +6,31 @@ import { ChatPreviewOutputCollector, StructuredPreviewOutputError } from '../age
 import { ChatTaskEventBus, type ChatTaskEvent } from './chat-task-event.bus.js';
 import { ChatTaskRunner, type ChatTaskAgentEvent } from './chat-task-runner.js';
 import { MemoryChatTaskStore } from './memory-chat-task.store.js';
+import {
+  chatItemIds,
+  parseChatPreviewsV1,
+  type ChatPreviewV1,
+} from '@partner-agent/contracts';
+
+function storedPreview(
+  task: { userMessageId: string },
+  previewId: string,
+  title = previewId,
+  warningMessage = '',
+): ChatPreviewV1 {
+  return {
+    schema_version: 1,
+    preview_id: previewId,
+    kind: 'action',
+    confirmation_status: 'unconfirmed',
+    applied: false,
+    source_refs: [{ kind: 'chat_message', id: task.userMessageId }],
+    content: { title, confidence: 0.9 },
+    warnings: warningMessage
+      ? [{ code: 'RECOVERY_TEST', message: warningMessage }]
+      : [],
+  };
+}
 
 async function claimedTask(outputMode: 'chat' | 'structured_preview' = 'chat') {
   const sessions = new MemorySessionStore();
@@ -92,38 +117,60 @@ describe('ChatTaskRunner assistant output', () => {
     );
   });
 
-  it('isolates one damaged memory preview while restoring valid siblings', async () => {
+  it('restores a stable collection from damaged, duplicate and oversized memory previews', async () => {
     const { sessions, store, task } = await claimedTask('structured_preview');
-    const preview = new ChatPreviewOutputCollector({
-      taskId: task.taskId,
-      allowedSourceRefs: [{ kind: 'original_record', id: task.originalRecordId }],
-    }).collect({
-      schema_version: 1,
-      kind: 'action',
-      content: { title: '合法卡片', confidence: 0.9 },
-    });
-    await sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
-      id: 'damaged-memory-message',
-      taskId: task.taskId,
-      operationId: task.operationId,
-      modelConfigId: task.modelConfigId,
-      reasoningLevel: task.reasoningLevel,
-      content: '',
-      status: 'complete',
-      revision: 1,
-      metadata: {
-        chat_previews: [
-          preview,
+    const cases = [
+      {
+        previews: [
+          storedPreview(task, 'duplicate', '保留第一项'),
+          storedPreview(task, 'duplicate', '忽略重复项'),
           { schema_version: 1, preview_id: 'damaged' },
+          storedPreview(task, 'valid-sibling'),
         ],
+        expectedIds: ['duplicate', 'valid-sibling'],
       },
-    });
+      {
+        previews: Array.from({ length: 22 }, (_, index) =>
+          storedPreview(task, `count-${index}`)),
+        expectedIds: Array.from({ length: 20 }, (_, index) => `count-${index}`),
+      },
+      {
+        previews: [
+          storedPreview(task, 'large-1', 'large-1', 'a'.repeat(28_000)),
+          storedPreview(task, 'large-2', 'large-2', 'b'.repeat(28_000)),
+          storedPreview(task, 'would-overflow', 'would-overflow', 'c'.repeat(28_000)),
+          storedPreview(task, 'small-after-overflow'),
+        ],
+        expectedIds: ['large-1', 'large-2', 'small-after-overflow'],
+      },
+    ];
 
-    await expect(
-      store.listSessionChatPreviews(task.ownerId, task.sessionId),
-    ).resolves.toEqual([
-      expect.objectContaining({ preview }),
-    ]);
+    for (const testCase of cases) {
+      await sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
+        id: 'memory-recovery-message',
+        taskId: task.taskId,
+        operationId: task.operationId,
+        modelConfigId: task.modelConfigId,
+        reasoningLevel: task.reasoningLevel,
+        content: '',
+        status: 'complete',
+        revision: 1,
+        metadata: { chat_previews: testCase.previews },
+      });
+      const attachments = await store.listSessionChatPreviews(
+        task.ownerId,
+        task.sessionId,
+      );
+      expect.soft(attachments.map(({ preview }) => preview.preview_id)).toEqual(
+        testCase.expectedIds,
+      );
+      expect.soft(new Set(attachments.map(({ preview }) =>
+        chatItemIds.preview(preview.preview_id))).size)
+        .toBe(attachments.length);
+      expect.soft(() => parseChatPreviewsV1(
+        attachments.map(({ preview }) => preview),
+      )).not.toThrow();
+    }
   });
 
   it.each([

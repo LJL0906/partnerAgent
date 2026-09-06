@@ -101,6 +101,54 @@ describe('shared contract alignment v1', () => {
     );
   });
 
+  it('recovers a stable valid collection without weakening strict writes', () => {
+    const fixture = readFixture('chat-preview-v1.json');
+    const preview = (previewId, title = previewId, warningMessage = '') => ({
+      ...fixture.valid,
+      preview_id: previewId,
+      content: { ...fixture.valid.content, title },
+      warnings: warningMessage
+        ? [{ code: 'RECOVERY_TEST', message: warningMessage }]
+        : [],
+    });
+
+    const deduplicated = contracts.recoverChatPreviewsV1([
+      preview('duplicate', '保留第一项'),
+      preview('duplicate', '忽略重复项'),
+      { schema_version: 1, preview_id: 'damaged' },
+      preview('valid-sibling'),
+    ]);
+    expect(deduplicated.map((item) => item.preview_id)).toEqual([
+      'duplicate',
+      'valid-sibling',
+    ]);
+    expect(deduplicated[0].content.title).toBe('保留第一项');
+    expect(new Set(deduplicated.map((item) =>
+      contracts.chatItemIds.preview(item.preview_id))).size).toBe(deduplicated.length);
+    expect(contracts.parseChatPreviewsV1(deduplicated)).toEqual(deduplicated);
+
+    const limited = contracts.recoverChatPreviewsV1(
+      Array.from({ length: 22 }, (_, index) => preview(`count-${index}`)),
+    );
+    expect(limited.map((item) => item.preview_id)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `count-${index}`),
+    );
+    expect(contracts.parseChatPreviewsV1(limited)).toEqual(limited);
+
+    const sizeLimited = contracts.recoverChatPreviewsV1([
+      preview('large-1', 'large-1', 'a'.repeat(28_000)),
+      preview('large-2', 'large-2', 'b'.repeat(28_000)),
+      preview('would-overflow', 'would-overflow', 'c'.repeat(28_000)),
+      preview('small-after-overflow'),
+    ]);
+    expect(sizeLimited.map((item) => item.preview_id)).toEqual([
+      'large-1',
+      'large-2',
+      'small-after-overflow',
+    ]);
+    expect(contracts.parseChatPreviewsV1(sizeLimited)).toEqual(sizeLimited);
+  });
+
   it('keeps model output separate from server-owned preview fields', () => {
     const fixture = readFixture('chat-preview-v1.json');
 

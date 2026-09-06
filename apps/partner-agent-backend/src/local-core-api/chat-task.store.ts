@@ -1,5 +1,4 @@
 import {
-  parseChatPreviewV1,
   parseChatPreviewsV1,
   type ChatPreviewV1,
   type ChatOutputMode,
@@ -138,17 +137,6 @@ export function parseAssistantCompletionPreviews(
       message: '结构化预览附件未通过安全契约校验。',
     };
   }
-}
-
-export function parseStoredChatPreviews(value: unknown): ChatPreviewV1[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((preview) => {
-    try {
-      return [structuredClone(parseChatPreviewV1(preview))];
-    } catch {
-      return [];
-    }
-  });
 }
 
 export type SessionMessageView = SessionMessageDto;

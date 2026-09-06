@@ -331,3 +331,25 @@ export function parseChatPreviewsV1(value: unknown): ChatPreviewV1[] {
     }
   });
 }
+
+/**
+ * 按持久化顺序恢复可安全展示的附件集合。
+ *
+ * 严格写入仍由 parseChatPreviewsV1 拒绝非法集合；本函数仅用于读取历史
+ * JSONB 时逐项隔离损坏、重复、超数量或使累计载荷超限的条目。
+ */
+export function recoverChatPreviewsV1(value: unknown): ChatPreviewV1[] {
+  if (!Array.isArray(value)) return [];
+  const recovered: ChatPreviewV1[] = [];
+  for (const candidate of value) {
+    let preview: ChatPreviewV1;
+    try {
+      preview = parseChatPreviewV1(candidate);
+      parseChatPreviewsV1([...recovered, preview]);
+    } catch {
+      continue;
+    }
+    recovered.push(preview);
+  }
+  return recovered;
+}
