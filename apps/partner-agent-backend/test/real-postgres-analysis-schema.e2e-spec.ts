@@ -191,8 +191,8 @@ describeReal('PostgreSQL analysis schema constraints', () => {
     await dataSource.query(
       `insert into chat_tasks(
          id,owner_id,session_id,operation_id,input_id,original_record_id,
-         user_message_id,state,created_at,updated_at
-       ) values ($1,$2,$3,$4,$5,$6,$7,'completed',now(),now())`,
+         user_message_id,model_config_id,reasoning_level,state,created_at,updated_at
+       ) values ($1,$2,$3,$4,$5,$6,$7,'deepseek:deepseek-v4-flash','medium','completed',now(),now())`,
       [taskId, ownerId, sessionId, operationId, inputId, recordId, messageId],
     );
     return { ownerId, recordId, taskId };

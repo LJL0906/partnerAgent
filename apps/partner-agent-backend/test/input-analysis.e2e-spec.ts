@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import { SignJWT } from 'jose';
 import request from 'supertest';
@@ -42,8 +43,13 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
     const fixture = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(ModelGatewayService)
       .useValue({
-        listModels: vi.fn(() => []),
-        resolveModel: vi.fn(),
+        listModels: vi.fn(() => [{
+          provider: 'deepseek', id: 'deepseek-chat', reasoning: false,
+        }]),
+        resolveModel: vi.fn((_provider: string, modelId?: string) =>
+          modelId === 'deepseek-chat'
+            ? { provider: 'deepseek', id: 'deepseek-chat', reasoning: false }
+            : undefined),
         createStreamFunction: providerCreateStream,
       })
       .overrideProvider(PiAgentService)
@@ -75,9 +81,10 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
   });
 
   it('keeps an ordinary request without analysis parameters on the chat path', async () => {
+    const operationId = operationUuid('analysis-ordinary');
     const response = await submit(
       ownerToken,
-      command('analysis-ordinary', 'analysis-ordinary-fingerprint', {
+      command(operationId, 'analysis-ordinary-fingerprint', {
         text: '普通聊天',
         input_id: 'analysis-ordinary-input',
       }),
@@ -85,7 +92,7 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
 
     expect(response.status).toBe(202);
     expect(response.body).toMatchObject({
-      operation_id: 'analysis-ordinary',
+      operation_id: operationId,
       status: 'accepted',
       data: { chat_task: { kind: 'chat_response' } },
     });
@@ -93,7 +100,7 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
   });
 
   it('returns stable 501 details for an explicit analysis request', async () => {
-    const operationId = 'analysis-explicit-501';
+    const operationId = operationUuid('analysis-explicit-501');
     const requestedTypes = ['action'];
     const response = await submit(
       ownerToken,
@@ -227,7 +234,7 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
   });
 
   it('scopes rejected-operation idempotency to JWT owner, not forged body identity', async () => {
-    const operationId = 'analysis-owner-boundary';
+    const operationId = operationUuid('analysis-owner-boundary');
     const body = {
       ...analysisCommand(operationId, 'analysis-owner-boundary-fingerprint'),
       user_id: forgedOwnerId,
@@ -252,7 +259,7 @@ describe('SubmitTextInput analysis parameters (e2e)', () => {
   });
 
   it('replays the same rejection and rejects an operation fingerprint collision', async () => {
-    const operationId = 'analysis-rejection-idempotency';
+    const operationId = operationUuid('analysis-rejection-idempotency');
     const body = analysisCommand(
       operationId,
       'analysis-rejection-idempotency-fingerprint',
@@ -307,11 +314,21 @@ function command(
   payload: Record<string, unknown>,
 ) {
   return {
-    operation_id: operationId,
+    operation_id: operationUuid(operationId),
     client_source: 'web',
     request_fingerprint: fingerprint,
     payload,
   };
+}
+
+function operationUuid(seed: string): string {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(seed)) {
+    return seed;
+  }
+  const hex = createHash('sha256').update(seed).digest('hex').slice(0, 32).split('');
+  hex[12] = '4';
+  hex[16] = '8';
+  return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`;
 }
 
 function analysisCommand(operationId: string, fingerprint: string) {

@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { SignJWT } from 'jose';
@@ -113,7 +114,7 @@ describe('Local Core REST API (e2e)', () => {
       .send(command('operation-1', { text: 'hello', input_id: 'input-1' }));
     expect(response.status).toBe(202);
     expect(response.body).toMatchObject({
-      operation_id: 'operation-1',
+      operation_id: operationUuid('operation-1'),
       status: 'accepted',
       data: { session_id: expect.any(String) },
     });
@@ -135,7 +136,15 @@ describe('Local Core REST API (e2e)', () => {
         previous_model_config_id: 'deepseek:deepseek-v4-flash',
       }));
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ changed: false, reasoning_level: 'low' });
+    expect(response.body).toMatchObject({
+      session_id: 'owned-session',
+      message_ref: { kind: 'chat_message', id: expect.any(String) },
+      item_id: expect.stringMatching(/^message:/),
+      resolved_model: {
+        model_config_id: 'deepseek:deepseek-v4-flash',
+        reasoning_level: 'low',
+      },
+    });
   });
 
   it.each([
@@ -188,7 +197,7 @@ describe('Local Core REST API (e2e)', () => {
       .send(command('operation-3', { task_id: taskId }));
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      operation_id: 'operation-3',
+      operation_id: operationUuid('operation-3'),
       status: 'completed',
       data: { task_id: taskId, state: 'cancelled' },
     });
@@ -314,11 +323,29 @@ describe('Local Core REST API (e2e)', () => {
 
 function command(operationId: string, payload: unknown) {
   return {
-    operation_id: operationId,
+    operation_id: operationUuid(operationId),
     client_source: 'web',
     request_fingerprint: `fingerprint-${operationId}`,
     payload,
   };
+}
+
+function operationUuid(seed: string): string {
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      seed,
+    )
+  ) {
+    return seed;
+  }
+  const hex = createHash('sha256')
+    .update(seed)
+    .digest('hex')
+    .slice(0, 32)
+    .split('');
+  hex[12] = '4';
+  hex[16] = '8';
+  return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`;
 }
 
 async function createToken(subject: string): Promise<string> {

@@ -17,7 +17,7 @@ describeReal('PostgreSQL input analysis rejection boundary', () => {
   let token: string;
   let store: TypeOrmSessionStore;
   const ownerId = 'real-pg-analysis-owner';
-  const operationId = 'real-pg-analysis-operation';
+  const operationId = '76000000-0000-4000-8000-000000000001';
   const inputId = 'real-pg-analysis-input';
   const agentChat = vi.fn();
   const providerCreateStream = vi.fn();

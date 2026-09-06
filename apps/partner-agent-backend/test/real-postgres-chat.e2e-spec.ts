@@ -9,7 +9,6 @@ import request from 'supertest';
 import type { DataSource } from 'typeorm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PiAgentService } from '../src/agent/pi-agent.service.js';
-import { SessionManager } from '../src/agent/session-manager.service.js';
 import { AuthService } from '../src/auth/auth.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { TypeOrmSessionStore } from '../src/database/typeorm-session.store.js';
@@ -23,7 +22,6 @@ const origin = 'https://real-postgres-e2e.example';
 
 describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
   let app: INestApplication;
-  let sessions: SessionManager;
   let baseUrl: string;
   let token: string;
   let dataSource: DataSource;
@@ -36,9 +34,9 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
 
     const { AppModule } = await import('../src/app.module.js');
     const fakeChat = async function* (
-      sessionId: string,
+      _sessionId: string,
       text: string,
-      ownerId: string,
+      _ownerId: string,
     ) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       yield {
@@ -46,12 +44,6 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
         data: `已收到：${text}`,
         timestamp: Date.now(),
       };
-      await sessions.saveMessage(
-        sessionId,
-        ownerId,
-        'assistant',
-        `已收到：${text}`,
-      );
       yield { type: 'done', timestamp: Date.now() };
     };
     const fakeAgent = {
@@ -68,7 +60,6 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
       .useValue(fakeAgent)
       .compile();
     app = fixture.createNestApplication();
-    sessions = app.get(SessionManager);
     const sessionStore = app.get(SessionStore);
     expect(sessionStore).toBeInstanceOf(TypeOrmSessionStore);
     dataSource = (sessionStore as TypeOrmSessionStore).getDataSource();

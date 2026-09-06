@@ -105,9 +105,9 @@ describeReal('PostgreSQL ChatTask worker recovery', () => {
     await dataSource.query(
       `insert into chat_tasks(
          id,owner_id,session_id,operation_id,input_id,original_record_id,
-         user_message_id,state,created_at,updated_at,started_at,
+         user_message_id,model_config_id,reasoning_level,state,created_at,updated_at,started_at,
          lease_owner,lease_expires_at,attempt_count
-       ) values ($1,$2,$3,$4,$5,$6,$7,'running',now(),now(),now(),
+       ) values ($1,$2,$3,$4,$5,$6,$7,'deepseek:deepseek-v4-flash','medium','running',now(),now(),now(),
          'worker:crashed:attempt',now() - interval '1 second',1)`,
       [
         ids.task,

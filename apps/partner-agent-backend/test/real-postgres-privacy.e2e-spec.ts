@@ -159,8 +159,8 @@ describeReal('PostgreSQL privacy decision persistence', () => {
     await dataSource.query(
       `insert into chat_tasks(
          id,owner_id,session_id,operation_id,input_id,original_record_id,
-         user_message_id,state,created_at,updated_at,started_at
-       ) values ($1,$2,$3,$4,$5,$6,$7,'waiting_privacy_decision',now(),now(),now())`,
+         user_message_id,model_config_id,reasoning_level,state,created_at,updated_at,started_at
+       ) values ($1,$2,$3,$4,$5,$6,$7,'deepseek:deepseek-v4-flash','medium','waiting_privacy_decision',now(),now(),now())`,
       [
         taskId,
         ownerId,
