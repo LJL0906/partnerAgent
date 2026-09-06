@@ -76,7 +76,7 @@ git -C pi pull
 - 会话列表、历史切换、续聊、重新打开恢复和消息贴底策略已实现并完成 Web 验证；Android Expo Go 键盘聚焦修复仍待真机验收；
 - 支持按用户校验 `sessionId` 所有权、隔离限额、取消，以及带消息序号水位和完整工具上下文的会话恢复；
 - 已接入无副作用的 `get_current_time` 工具；
-- `/api/v1` 已登记 36 个 Command 和 38 个 Query，健康检查、会话列表/详情与任务查询、`SubmitTextInput`、`CancelTask`、`SubmitPrivacyDecision` 和 `SubmitConfirmationBatch` 已接通，其余 handler 显式返回 501；
+- `/api/v1` 已登记 38 个 Command 和 37 个 Query；已接通 7 个 Command（会话重命名/归档、文字输入、消息模型选择、任务取消、隐私决定、确认批次）与 5 个 Query（健康、会话列表/详情、模型配置列表、任务状态），其余 31 个 Command 和 32 个 Query handler 显式返回 501；
 - Local Core Entity/Migration 已加固，复用并扩展现有会话/消息表，候选 24 小时期限和高风险单候选由数据库约束；
 - `/ws/v1` 已基于 PostgreSQL 权威数据授权 session/task/operation 频道，并支持顺序推送、已有水位的断线重放、LISTEN 重连主动 catch-up 和保留窗缺口的 REST 恢复提示；旧 Agent WS 已移出默认模块图，只允许开发环境显式启用兼容；
 - ChatTask 生命周期和工具确认/拒绝/执行结果/撤销通知均已使用各自的 transactional outbox；relay 以稳定幂等键、lease/fence、同会话头阻塞和有限重试投递 WS stream；
@@ -89,7 +89,7 @@ git -C pi pull
 - P1-01 已将 `action` 纳入权威 `ANALYSIS_TYPES`，冻结 Action DTO、`AnalysisTaskRef` 与 WS `candidate` 安全资源引用；`local-core.ts` 已拆分为 463 行，并新增 `local-core-analysis.ts`、`local-core-model.ts`、`local-core-queries.ts`；
 - 已新增 `analysis_runs`、`structured_analyses` 实体与第 8 条 migration，具备 owner、OriginalRecord、ChatTask 复合所有权约束、状态约束和必要索引；
 - `SubmitConfirmationBatch` 已按逐项决策、批次/候选/目标版本接通 PostgreSQL 原子事务；正式事实、目标、行动和长期记忆的其余 handler 仍需逐项接通，且只能经该事务生效；
-- PostgreSQL 16 专用空库已完成现有 15 条 migration 全量 up → down → up；后端单元测试 58 个文件、323/323 通过，前端单元测试 13 个文件、87/87 通过，后端全量 e2e 15 个文件、131/131 通过；真实 DeepSeek、生产镜像构建及单实例 Compose 迁移、健康、重启和持久化冒烟均已通过。完整证据见 [`Agent 底座收口验证记录`](docs/05-任务架构/2026-09-05-Agent底座收口验证记录.md)。
+- 2026 年 9 月 5 日技术底座批次曾在 PostgreSQL 16 专用空库完成当时 15 条 migration 全量 up → down → up；该数字仅属历史。2026 年 9 月 6 日阶段收口已在独立 PostgreSQL 16 验证当前 23 条 up → down → up、前 22 条到第 23 条的旧数据增量升级，以及 10 个真实库文件 37 项用例。完整历史证据见 [`Agent 底座收口验证记录`](docs/05-任务架构/2026-09-05-Agent底座收口验证记录.md)，当前证据见 [`T01 至 T09 阶段成果收口报告`](docs/01-项目/2026-09-06-T01至T09阶段成果收口报告.md)。
 
 ## 后续启动顺序
 
@@ -104,7 +104,7 @@ git -C pi pull
 
 ## 仓库拆分原则
 
-本轮集成验证：build、lint 通过；contracts 12、后端 325、前端 112 项单元测试通过，共 449 项；memory e2e 121 项通过，真实 PostgreSQL 的 20 项本轮未运行。此前独立账户验收已完成 16 条迁移 up → down → up 及 8 项真实库账户测试，详见账户记录；不得把历史技术底座的 15 条迁移记录当作当前迁移数量。
+2026 年 9 月 5 日聊天与账户集成批次数字保留为历史快照。2026 年 9 月 6 日阶段收口已完成当前代码的 build、lint、单元与 memory e2e，并以 10 个真实 PostgreSQL 文件 37 项用例验证结构化预览、23 条迁移、旧数据升级、REST 重启恢复和 11 张正式表零变化；真实 DeepSeek 预览另有脱敏人工证据。限定结论是“聊天与结构化预览链已验通”，不是“业务生产闭环完成”；A06/A09、14 个 moderate 依赖项、Android 真机和旧 Agent WS 退役仍未完成。
 
 当前不按语言或框架拆分仓库。只要前端、NestJS 和 Python 服务仍然共同服务于同一个产品、需要同步接口和需求，就继续使用本仓库。
 
