@@ -29,6 +29,61 @@ async function* events(values: ChatTaskAgentEvent[]) {
 }
 
 describe('ChatTaskRunner assistant output', () => {
+  it.each([
+    { outputMode: 'chat' as const, includePreview: true },
+    { outputMode: 'structured_preview' as const, includePreview: false },
+  ])('rejects an invalid $outputMode completion without partial writes', async ({
+    outputMode,
+    includePreview,
+  }) => {
+    const { store, task } = await claimedTask(outputMode);
+    const preview = new ChatPreviewOutputCollector({
+      taskId: task.taskId,
+      allowedSourceRefs: [{ kind: 'original_record', id: task.originalRecordId }],
+    }).collect({
+      schema_version: 1,
+      kind: 'action',
+      content: { title: '提交报销', confidence: 0.9 },
+    });
+
+    await expect(store.completeAssistantOutput({
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      leaseToken: 'worker-runner',
+      expectedRevision: 0,
+      content: '',
+      chatPreviews: includePreview ? [preview] : [],
+      contextMessages: [],
+    })).resolves.toEqual({ outcome: 'conflict' });
+    await expect(store.getTask(task.ownerId, task.taskId)).resolves.toMatchObject({
+      state: 'running',
+    });
+    await expect(store.listSessionMessages(task.ownerId, task.sessionId)).resolves.not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: 'assistant' })]),
+    );
+  });
+
+  it('fails memory recovery when one persisted preview is damaged', async () => {
+    const { sessions, store, task } = await claimedTask('structured_preview');
+    await sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
+      id: 'damaged-memory-message',
+      taskId: task.taskId,
+      operationId: task.operationId,
+      modelConfigId: task.modelConfigId,
+      reasoningLevel: task.reasoningLevel,
+      content: '',
+      status: 'complete',
+      revision: 1,
+      metadata: { chat_previews: [{ schema_version: 1, preview_id: 'damaged' }] },
+    });
+
+    await expect(
+      store.listSessionChatPreviews(task.ownerId, task.sessionId),
+    ).rejects.toThrow();
+  });
+
   it('persists text before publishing it and commits preview before completion', async () => {
     const { store, task } = await claimedTask('structured_preview');
     const bus = new ChatTaskEventBus();

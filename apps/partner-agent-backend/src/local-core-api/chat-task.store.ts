@@ -1,11 +1,12 @@
-import type {
-  ChatPreviewV1,
-  ChatOutputMode,
-  ChatPreviewKind,
-  ChatSessionTaskRef,
-  ReasoningLevel,
-  SessionMessageDto,
-  TaskState,
+import {
+  parseChatPreviewsV1,
+  type ChatPreviewV1,
+  type ChatOutputMode,
+  type ChatPreviewKind,
+  type ChatSessionTaskRef,
+  type ReasoningLevel,
+  type SessionMessageDto,
+  type TaskState,
 } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import type { TypeOrmChatTaskLifecycleOutbox } from './chat-task-lifecycle-outbox.js';
@@ -83,6 +84,26 @@ export interface StoredChatTask extends AcceptedChatTask {
   leaseExpiresAt?: Date;
   attemptCount: number;
   waitingToolConfirmationId?: string;
+}
+
+export function parseAssistantCompletionPreviews(
+  task: Pick<StoredChatTask, 'outputMode' | 'previewKind'>,
+  value: unknown,
+): ChatPreviewV1[] | undefined {
+  if (task.outputMode === 'chat') {
+    return Array.isArray(value) && value.length === 0 ? [] : undefined;
+  }
+  if (task.outputMode !== 'structured_preview' || task.previewKind !== 'action') {
+    return undefined;
+  }
+  try {
+    const previews = parseChatPreviewsV1(value);
+    return previews.every((preview) => preview.kind === task.previewKind)
+      ? previews
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type SessionMessageView = SessionMessageDto;

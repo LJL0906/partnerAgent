@@ -178,7 +178,7 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
     await source.destroy();
   });
 
-  it('rolls back an invalid final preview and rejects completion after cancellation', async () => {
+  it('rejects chat completion with a preview without writing partial state', async () => {
     const source = dataSource();
     await source.initialize();
     const store = new TypeOrmChatTaskStore(source);
@@ -213,12 +213,19 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
       content: '',
       contextMessages: [],
     };
+    const preview = {
+      schema_version: 1 as const,
+      preview_id: 'preview-for-chat',
+      kind: 'action' as const,
+      confirmation_status: 'unconfirmed' as const,
+      applied: false as const,
+      source_refs: [{ kind: 'chat_message' as const, id: task.userMessageId }],
+      content: { title: '不应写入', confidence: 0.8 },
+      warnings: [],
+    };
     await expect(
-      store.completeAssistantOutput({
-        ...command,
-        chatPreviews: [{} as never],
-      }),
-    ).rejects.toThrow();
+      store.completeAssistantOutput({ ...command, chatPreviews: [preview] }),
+    ).resolves.toEqual({ outcome: 'conflict' });
     expect(
       await source
         .getRepository(SessionMessageEntity)
@@ -243,6 +250,104 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
         .getRepository(SessionMessageEntity)
         .count({ where: { taskId: task.taskId, role: 'assistant' } }),
     ).toBe(0);
+    await source.destroy();
+  });
+
+  it('rejects structured preview completion without an attachment', async () => {
+    const source = dataSource();
+    await source.initialize();
+    const store = new TypeOrmChatTaskStore(source);
+    const accepted = await store.submitText({
+      ownerId: 'owner',
+      operationId: '00000000-0000-4000-8000-000000000103',
+      requestFingerprint: 'fingerprint-3',
+      clientSource: 'web',
+      text: '生成行动',
+      inputId: 'input-3',
+      modelConfigId: 'test:model',
+      reasoningLevel: 'low',
+      outputMode: 'structured_preview',
+      previewKind: 'action',
+    });
+    const task = accepted.task!;
+    await source.getRepository(ChatTaskEntity).update(
+      { id: task.taskId },
+      {
+        state: 'running',
+        leaseOwner: 'worker',
+        leaseExpiresAt: new Date(Date.now() + 30_000),
+      },
+    );
+
+    await expect(store.completeAssistantOutput({
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      leaseToken: 'worker',
+      expectedRevision: 0,
+      content: '',
+      chatPreviews: [],
+      contextMessages: [],
+    })).resolves.toEqual({ outcome: 'conflict' });
+    await expect(store.completeAssistantOutput({
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      leaseToken: 'worker',
+      expectedRevision: 0,
+      content: '',
+      chatPreviews: [{} as never],
+      contextMessages: [],
+    })).resolves.toEqual({ outcome: 'conflict' });
+    await expect(source.getRepository(SessionMessageEntity).count({
+      where: { taskId: task.taskId, role: 'assistant' },
+    })).resolves.toBe(0);
+    await expect(source.getRepository(ChatTaskEntity).findOneByOrFail({
+      id: task.taskId,
+    })).resolves.toMatchObject({ state: 'running' });
+    await source.destroy();
+  });
+
+  it('fails recovery when persisted preview metadata is damaged', async () => {
+    const source = dataSource();
+    await source.initialize();
+    const store = new TypeOrmChatTaskStore(source);
+    const accepted = await store.submitText({
+      ownerId: 'owner',
+      operationId: '00000000-0000-4000-8000-000000000104',
+      requestFingerprint: 'fingerprint-4',
+      clientSource: 'web',
+      text: '生成行动',
+      inputId: 'input-4',
+      modelConfigId: 'test:model',
+      reasoningLevel: 'low',
+      outputMode: 'structured_preview',
+      previewKind: 'action',
+    });
+    const task = accepted.task!;
+    await source.getRepository(SessionMessageEntity).save({
+      id: '00000000-0000-4000-8000-000000000204',
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      sequence: 2,
+      role: 'assistant',
+      content: '',
+      status: 'complete',
+      revision: 1,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      modelConfigId: task.modelConfigId,
+      reasoningLevel: task.reasoningLevel,
+      metadataJson: { chat_previews: [{ schema_version: 1, preview_id: 'damaged' }] },
+      createdAt: new Date(),
+      completedAt: new Date(),
+    });
+
+    await expect(
+      store.listSessionChatPreviews(task.ownerId, task.sessionId),
+    ).rejects.toThrow();
     await source.destroy();
   });
 });

@@ -6,6 +6,7 @@ import {
   ChatTaskStore,
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
+  parseAssistantCompletionPreviews,
   type RejectInputAnalysisCommand,
   type AssistantCompletionCommand,
   type AssistantProgressCommand,
@@ -13,7 +14,7 @@ import {
   type StoredChatTask,
   type SubmitTextCommand,
 } from './chat-task.store.js';
-import { parseChatPreviewsV1 } from '@partner-agent/contracts';
+import { parseChatPreviewV1 } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import {
   copyStoredChatTask,
@@ -585,6 +586,8 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (!task || task.ownerId !== command.ownerId || task.sessionId !== command.sessionId || task.operationId !== command.operationId) {
       return { outcome: 'fence_rejected' as const };
     }
+    const previews = parseAssistantCompletionPreviews(task, command.chatPreviews);
+    if (!previews) return { outcome: 'conflict' as const };
     if (task.state === 'completed' && task.resultMessageId) {
       const session = await this.sessions.find(task.sessionId, task.ownerId);
       const existing = session?.messages.find((message) => message.id === task.resultMessageId);
@@ -603,9 +606,6 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       };
     }
     if (!this.hasCurrentLease(task, command)) return { outcome: 'fence_rejected' as const };
-    const previews = command.chatPreviews.length
-      ? parseChatPreviewsV1(command.chatPreviews)
-      : [];
     const session = await this.sessions.find(task.sessionId, task.ownerId);
     const existing = session?.messages.find(
       (message) => message.role === 'assistant' && message.taskId === task.taskId,
@@ -672,7 +672,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
         operation_id: operationId,
         message_id: messageId,
         message_revision: message.revision ?? 1,
-        preview: structuredClone(preview) as import('@partner-agent/contracts').ChatPreviewV1,
+        preview: structuredClone(parseChatPreviewV1(preview)),
       }));
     });
   }

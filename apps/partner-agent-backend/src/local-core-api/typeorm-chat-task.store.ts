@@ -9,12 +9,13 @@ import {
 } from '../database/entities/chat-task.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import { UserEntity } from '../database/entities/core/user.entity.js';
-import { parseChatPreviewsV1 } from '@partner-agent/contracts';
+import { parseChatPreviewV1 } from '@partner-agent/contracts';
 import {
   ChatTaskConflictError,
   ChatTaskStore,
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
+  parseAssistantCompletionPreviews,
   type IdempotentCommand,
   type AssistantCompletionCommand,
   type AssistantProgressCommand,
@@ -490,6 +491,14 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       if (!task || task.sessionId !== command.sessionId || task.operationId !== command.operationId) {
         return { outcome: 'fence_rejected' as const };
       }
+      const previews = parseAssistantCompletionPreviews(
+        {
+          outputMode: task.outputMode,
+          ...(task.previewKind ? { previewKind: task.previewKind } : {}),
+        },
+        command.chatPreviews,
+      );
+      if (!previews) return { outcome: 'conflict' as const };
       const messageRepository = manager.getRepository(SessionMessageEntity);
       let message = await messageRepository.findOne({
         where: { ownerId: task.ownerId, sessionId: task.sessionId, taskId: task.id, role: 'assistant' },
@@ -504,7 +513,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       if (command.expectedRevision !== (message?.revision ?? 0)) {
         return { outcome: 'conflict' as const };
       }
-      const previews = command.chatPreviews.length ? parseChatPreviewsV1(command.chatPreviews) : [];
       if (!message) {
         const last = await messageRepository.findOne({ where: { sessionId: task.sessionId }, order: { sequence: 'DESC' } });
         message = messageRepository.create({
@@ -575,7 +583,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         operation_id: message.operationId!,
         message_id: message.id,
         message_revision: message.revision,
-        preview: structuredClone(preview) as import('@partner-agent/contracts').ChatPreviewV1,
+        preview: structuredClone(parseChatPreviewV1(preview)),
       }));
     });
   }
