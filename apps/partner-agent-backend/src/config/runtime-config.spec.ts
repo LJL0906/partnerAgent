@@ -97,21 +97,6 @@ describe('validateRuntimeConfig', () => {
     );
   });
 
-  it('rejects the legacy Agent WS in production', () => {
-    expect(() =>
-      validateRuntimeConfig({
-        NODE_ENV: 'production',
-        AUTH_JWT_SECRET: secret,
-        SESSION_STORE: 'postgres',
-        DATABASE_URL: 'postgresql://app:secret@db.internal:5432/app',
-        CORS_ALLOWED_ORIGINS: 'https://app.example.com',
-        DEFAULT_PROVIDER: 'deepseek',
-        DEEPSEEK_API_KEY: 'provider-secret',
-        ENABLE_LEGACY_AGENT_WS: 'true',
-      }),
-    ).toThrow('ENABLE_LEGACY_AGENT_WS');
-  });
-
   it.each([
     [{ SESSION_STORE: 'memory' }, 'SESSION_STORE'],
     [{ DATABASE_URL: undefined }, 'DATABASE_URL'],
@@ -167,7 +152,7 @@ describe('validateRuntimeConfig', () => {
     expect((error as Error).message).not.toContain(rejected);
   });
 
-  it('rejects malformed database, host, egress and boolean settings', () => {
+  it('rejects malformed database, host and egress settings', () => {
     expect(() =>
       validateRuntimeConfig({
         AUTH_JWT_SECRET: secret,
@@ -176,10 +161,9 @@ describe('validateRuntimeConfig', () => {
         HOST: 'https://localhost',
         EGRESS_SENSITIVE_ACTION: 'permit',
         EGRESS_FORBIDDEN_CATEGORIES: 'password,unknown',
-        ENABLE_LEGACY_AGENT_WS: 'yes',
       }),
     ).toThrow(
-      'DATABASE_URL,EGRESS_FORBIDDEN_CATEGORIES,EGRESS_SENSITIVE_ACTION,ENABLE_LEGACY_AGENT_WS,HOST',
+      'DATABASE_URL,EGRESS_FORBIDDEN_CATEGORIES,EGRESS_SENSITIVE_ACTION,HOST',
     );
   });
 

@@ -6,21 +6,7 @@ import type {
 } from './local-core.js';
 import type { SessionMessageDto } from './local-core-queries.js';
 
-/**
- * @deprecated 旧 Socket.IO request/response 事件名，仅供兼容层使用。
- * v1 客户端只能发送 WS_CONTROL_EVENTS 中的订阅控制事件，业务 Command 走 REST。
- */
-export const WS_EVENTS = {
-  CHAT: "chat",
-  CANCEL: "cancel",
-  RESUME_SESSION: "resume_session",
-  CONFIRM_TOOL_EXECUTION: "confirm_tool_execution",
-  DISMISS_TOOL_EXECUTION: "dismiss_tool_execution",
-  UNDO_TOOL_EXECUTION: "undo_tool_execution",
-  AGENT_EVENT: "agent_event",
-} as const;
-
-/** 正式 v1 服务端推送事件名，与旧请求事件集合解耦。 */
+/** 正式 v1 服务端推送事件名。 */
 export const WS_SERVER_EVENTS = {
   AGENT_EVENT: "agent_event",
 } as const;
@@ -278,141 +264,10 @@ export type ServerPushEventV1 =
   | AgentErrorEventV1
   | RecoveryRequiredEventV1;
 
-/** @deprecated 旧 Socket.IO 请求契约；v1 业务 Command 请改走 REST。 */
-export interface SessionRequest {
-  sessionId: string;
-}
-
-export interface ChatRequest extends SessionRequest {
-  message: string;
-}
-
-export interface CancelRequest {
-  sessionId: string;
-}
-
-export interface ToolConfirmationRequest extends SessionRequest {
-  confirmationId: string;
-}
-
-export interface ToolUndoRequest extends SessionRequest {
-  executionId: string;
-}
-
+/** Agent 内部会话消息；不是 WebSocket wire contract。 */
 export interface SessionMessage {
   role: "user" | "assistant" | "system";
   metadata?: Record<string, unknown>;
   content: string;
   timestamp: number;
 }
-
-export interface AgentEventBase {
-  type: string;
-  sessionId: string;
-  timestamp: number;
-}
-
-export interface TextDeltaEvent extends AgentEventBase {
-  type: "text_delta";
-  data: string;
-}
-
-export interface ThinkingDeltaEvent extends AgentEventBase {
-  type: "thinking_delta";
-  data: string;
-}
-
-export interface AgentDoneEvent extends AgentEventBase {
-  type: "done";
-}
-
-export interface AgentErrorEvent extends AgentEventBase {
-  type: "error";
-  data: {
-    message: string;
-  };
-}
-
-export interface AgentCancelledEvent extends AgentEventBase {
-  type: "cancelled";
-}
-
-export interface SessionHistoryEvent extends AgentEventBase {
-  type: "history";
-  data: {
-    messages: SessionMessage[];
-  };
-}
-
-export interface ToolExecutionStartEvent extends AgentEventBase {
-  type: "tool_execution_start";
-  data: {
-    tool: string;
-    toolCallId: string;
-  };
-}
-
-export interface ToolExecutionEndEvent extends AgentEventBase {
-  type: "tool_execution_end";
-  data: {
-    tool: string;
-    toolCallId: string;
-    success: boolean;
-    executionId?: string;
-    undoAvailable?: boolean;
-    undoExpiresAt?: number;
-  };
-}
-
-export interface ToolConfirmationPendingEvent extends AgentEventBase {
-  type: "tool_confirmation_pending";
-  data: {
-    confirmationId: string;
-    tool: string;
-    toolCallId: string;
-    riskLevel: ToolRiskLevel;
-    requestSummary: string;
-    expiresAt: number;
-  };
-}
-
-export interface ToolConfirmationConfirmedEvent extends AgentEventBase {
-  type: "tool_confirmation_confirmed";
-  data: { confirmationId: string; tool: string; toolCallId: string };
-}
-
-export interface ToolConfirmationDismissedEvent extends AgentEventBase {
-  type: "tool_confirmation_dismissed";
-  data: {
-    confirmationId: string;
-    tool: string;
-    toolCallId: string;
-    reason: "user_dismissed" | "expired";
-  };
-}
-
-export interface ToolUndoAvailableEvent extends AgentEventBase {
-  type: "tool_undo_available";
-  data: { executionId: string; tool: string; expiresAt: number };
-}
-
-export interface ToolUndoCompletedEvent extends AgentEventBase {
-  type: "tool_undo_completed";
-  data: { executionId: string; tool: string; success: boolean };
-}
-
-/** @deprecated 旧 camelCase/type 推送契约；新代码使用 ServerPushEventV1。 */
-export type AgentEvent =
-  | TextDeltaEvent
-  | ThinkingDeltaEvent
-  | AgentDoneEvent
-  | AgentErrorEvent
-  | AgentCancelledEvent
-  | SessionHistoryEvent
-  | ToolExecutionStartEvent
-  | ToolExecutionEndEvent
-  | ToolConfirmationPendingEvent
-  | ToolConfirmationConfirmedEvent
-  | ToolConfirmationDismissedEvent
-  | ToolUndoAvailableEvent
-  | ToolUndoCompletedEvent;

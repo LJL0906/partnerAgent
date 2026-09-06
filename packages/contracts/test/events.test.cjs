@@ -1,16 +1,9 @@
-const { WS_CONTROL_EVENTS, WS_EVENTS, WS_SERVER_EVENTS } = require("../dist");
+const contracts = require("../dist");
+const { WS_CONTROL_EVENTS, WS_SERVER_EVENTS } = contracts;
 
-describe("WS_EVENTS", () => {
-  it("exposes the shared WebSocket event names", () => {
-    expect(WS_EVENTS).toEqual({
-      CHAT: "chat",
-      CANCEL: "cancel",
-      RESUME_SESSION: "resume_session",
-      CONFIRM_TOOL_EXECUTION: "confirm_tool_execution",
-      DISMISS_TOOL_EXECUTION: "dismiss_tool_execution",
-      UNDO_TOOL_EXECUTION: "undo_tool_execution",
-      AGENT_EVENT: "agent_event",
-    });
+describe("legacy Agent WebSocket contract", () => {
+  it("does not export the removed request event map", () => {
+    expect(contracts.WS_EVENTS).toBeUndefined();
   });
 });
 

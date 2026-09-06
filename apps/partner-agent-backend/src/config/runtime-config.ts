@@ -62,15 +62,6 @@ export function validateRuntimeConfig(
     production,
     invalid,
   );
-  output.ENABLE_LEGACY_AGENT_WS = booleanValue(
-    environment.ENABLE_LEGACY_AGENT_WS,
-    'ENABLE_LEGACY_AGENT_WS',
-    false,
-    invalid,
-  );
-  if (production && output.ENABLE_LEGACY_AGENT_WS === 'true') {
-    invalid.add('ENABLE_LEGACY_AGENT_WS');
-  }
   integer('MAX_SESSIONS_PER_USER', 100, 1, 100_000);
 
   const sessionStore = enumValue(
@@ -342,18 +333,6 @@ function localHostname(hostname: string): boolean {
     normalized === '0.0.0.0' ||
     normalized === '[::1]'
   );
-}
-
-function booleanValue(
-  raw: unknown,
-  key: string,
-  fallback: boolean,
-  invalid: Set<string>,
-): string {
-  if (raw === undefined) return String(fallback);
-  if (raw === 'true' || raw === 'false') return raw;
-  invalid.add(key);
-  return String(fallback);
 }
 
 function validateDatabaseUrl(
