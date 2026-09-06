@@ -1,4 +1,5 @@
 import { DataType, newDb } from 'pg-mem';
+import { ConfigService } from '@nestjs/config';
 import { describe, expect, it } from 'vitest';
 import { ChatSessionEntity } from '../database/entities/chat-session.entity.js';
 import {
@@ -9,7 +10,9 @@ import {
 import { ChatTaskLifecycleOutboxEntity } from '../database/entities/chat-task-outbox.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import { UserEntity } from '../database/entities/core/user.entity.js';
+import { TypeOrmSessionStore } from '../database/typeorm-session.store.js';
 import { TypeOrmChatTaskStore } from './typeorm-chat-task.store.js';
+import type { EntityManager } from 'typeorm';
 
 function dataSource() {
   const database = newDb();
@@ -63,6 +66,48 @@ function dataSource() {
 }
 
 describe('TypeOrmChatTaskStore assistant output transaction', () => {
+  it('passes one transaction manager to a session mutation and replays once', async () => {
+    const source = dataSource();
+    await source.initialize();
+    const sessions = new TypeOrmSessionStore(new ConfigService(), source);
+    const store = new TypeOrmChatTaskStore(source);
+    const sessionId = '00000000-0000-4000-8000-000000000001';
+    const operationId = '00000000-0000-4000-8000-000000000002';
+    await sessions.createIfAllowed(sessionId, 'owner', 100);
+    const command = {
+      ownerId: 'owner',
+      operationId,
+      requestFingerprint: 'set-model-fingerprint',
+      commandName: 'SetMessageModelSelection',
+    };
+    let executions = 0;
+    const appendTip = async (manager?: EntityManager) => {
+      executions += 1;
+      return sessions.appendSystemTip(sessionId, 'owner', '模型切换成 test', {
+        model_config_id: 'test:model',
+        previous_model_config_id: 'test:previous',
+      }, manager);
+    };
+
+    const first = await store.executeIdempotentCommand(command, async (manager) => {
+      expect(manager).toBeDefined();
+      const message = await appendTip(manager);
+      return { message_id: message.id };
+    });
+    const replay = await store.executeIdempotentCommand(command, async () => {
+      throw new Error('replay must not execute');
+    });
+
+    expect(replay).toEqual(first);
+    expect(executions).toBe(1);
+    expect(
+      await source.getRepository(SessionMessageEntity).count({
+        where: { ownerId: 'owner', sessionId, role: 'system' },
+      }),
+    ).toBe(1);
+    await source.destroy();
+  });
+
   it('restores one stable progressive message and commits preview/task/outbox together', async () => {
     const source = dataSource();
     await source.initialize();

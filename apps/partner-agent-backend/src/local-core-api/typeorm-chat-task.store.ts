@@ -46,7 +46,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
 
   async executeIdempotentCommand<T extends Record<string, unknown>>(
     command: IdempotentCommand,
-    execute: () => Promise<T>,
+    execute: (manager?: EntityManager) => Promise<T>,
   ): Promise<T> {
     return this.dataSource.transaction(async (manager) => {
       await this.lock(manager, command.ownerId, command.operationId);
@@ -62,7 +62,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         ) throw new ChatTaskConflictError();
         return structuredClone(prior.resultJson) as T;
       }
-      const result = await execute();
+      const result = await execute(manager);
       const repository = manager.getRepository(LocalCoreOperationEntity);
       await repository.save(repository.create({
         id: randomUUID(), ownerId: command.ownerId,

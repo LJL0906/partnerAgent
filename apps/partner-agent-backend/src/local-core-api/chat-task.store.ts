@@ -11,6 +11,7 @@ import {
 } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import type { TypeOrmChatTaskLifecycleOutbox } from './chat-task-lifecycle-outbox.js';
+import type { EntityManager } from 'typeorm';
 
 export interface SubmitTextCommand {
   ownerId: string;
@@ -202,7 +203,7 @@ export abstract class ChatTaskStore {
   ): Promise<Record<string, unknown>>;
   abstract executeIdempotentCommand<T extends Record<string, unknown>>(
     command: IdempotentCommand,
-    execute: () => Promise<T>,
+    execute: (manager?: EntityManager) => Promise<T>,
   ): Promise<T>;
   abstract submitText(command: SubmitTextCommand): Promise<{
     result: Record<string, unknown>;

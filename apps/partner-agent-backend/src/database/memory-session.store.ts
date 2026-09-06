@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { SessionMessage } from '@partner-agent/contracts';
+import type { EntityManager } from 'typeorm';
 function compactTitle(content: string): string {
   return content.replace(/\s+/g, ' ').trim().slice(0, 48) || '新对话';
 }
@@ -64,14 +65,14 @@ export class MemorySessionStore extends SessionStore {
     return this.copy(session);
   }
 
-  async rename(sessionId: string, ownerId: string, title: string): Promise<StoredSession> {
+  async rename(sessionId: string, ownerId: string, title: string, _manager?: EntityManager): Promise<StoredSession> {
     const session = this.requireOwned(sessionId, ownerId);
     session.title = title;
     session.lastActiveAt = new Date();
     return this.copy(session);
   }
 
-  async archive(sessionId: string, ownerId: string): Promise<StoredSession> {
+  async archive(sessionId: string, ownerId: string, _manager?: EntityManager): Promise<StoredSession> {
     const session = this.requireOwned(sessionId, ownerId);
     session.archivedAt ??= new Date();
     return this.copy(session);
@@ -95,7 +96,7 @@ export class MemorySessionStore extends SessionStore {
     session.lastActiveAt = new Date();
   }
 
-  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }) {
+  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }, _manager?: EntityManager) {
     const session = this.requireOwned(sessionId, ownerId);
     const id = randomUUID();
     const sequence = (session.messages.at(-1)?.sequence ?? 0) + 1;

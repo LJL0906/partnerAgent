@@ -23,6 +23,7 @@ import {
   parseSubmitTextInputPayload,
 } from '@partner-agent/contracts';
 import { ToolOperationStore } from '../tools/tool-operation.store.js';
+import type { EntityManager } from 'typeorm';
 
 @Injectable()
 export class LocalCoreApplicationService extends LocalCoreApplicationPort {
@@ -119,8 +120,8 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     const title = this.requiredString(payload, 'title').replace(/\s+/g, ' ').trim().slice(0, 48);
     if (!title) throw new HttpException({ code: 'VALIDATION_001', message: '会话名称不能为空' }, HttpStatus.BAD_REQUEST);
     try {
-      return await this.idempotent(request, 'RenameChatSession', async () => {
-        const session = await this.sessionStore.rename(sessionId, request.userId, title);
+      return await this.idempotent(request, 'RenameChatSession', async (manager) => {
+        const session = await this.sessionStore.rename(sessionId, request.userId, title, manager);
         return buildSessionSummary(session, request.userId, this.chatTasks);
       });
     } catch (error) {
@@ -135,8 +136,8 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     const payload = this.objectPayload(request);
     const sessionId = this.requiredString(payload, 'session_id');
     try {
-      return await this.idempotent(request, 'ArchiveChatSession', async () => {
-        const session = await this.sessionStore.archive(sessionId, request.userId);
+      return await this.idempotent(request, 'ArchiveChatSession', async (manager) => {
+        const session = await this.sessionStore.archive(sessionId, request.userId, manager);
         return buildSessionSummary(session, request.userId, this.chatTasks);
       });
     } catch (error) {
@@ -161,7 +162,7 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     const resolvedModelConfigId = `${selection.provider}:${selection.modelId}`;
     const toName = selection.modelId;
     try {
-      return await this.idempotent(request, 'SetMessageModelSelection', async () => {
+      return await this.idempotent(request, 'SetMessageModelSelection', async (manager) => {
         const message = await this.sessionStore.appendSystemTip(
           sessionId,
           request.userId,
@@ -172,6 +173,7 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
             model_config_id: resolvedModelConfigId,
             previous_model_config_id: previous,
           },
+          manager,
         );
         return {
           session_id: sessionId,
@@ -328,7 +330,7 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
   private async idempotent<T extends Record<string, unknown>>(
     request: LocalCoreCommandRequest,
     commandName: string,
-    execute: () => Promise<T>,
+    execute: (manager?: EntityManager) => Promise<T>,
   ): Promise<T> {
     const operationId = this.requiredEnvelopeString(request, 'operation_id');
     const requestFingerprint = this.requiredEnvelopeString(

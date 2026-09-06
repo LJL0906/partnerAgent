@@ -1,4 +1,5 @@
 import type { ReasoningLevel, SessionMessage } from '@partner-agent/contracts';
+import type { EntityManager } from 'typeorm';
 
 export interface StoredSessionMessage extends SessionMessage {
   /** 稳定消息资源 ID。 */
@@ -56,8 +57,17 @@ export abstract class SessionStore {
     ownerId: string,
     maxSessionsPerUser: number,
   ): Promise<StoredSession>;
-  abstract rename(sessionId: string, ownerId: string, title: string): Promise<StoredSession>;
-  abstract archive(sessionId: string, ownerId: string): Promise<StoredSession>;
+  abstract rename(
+    sessionId: string,
+    ownerId: string,
+    title: string,
+    manager?: EntityManager,
+  ): Promise<StoredSession>;
+  abstract archive(
+    sessionId: string,
+    ownerId: string,
+    manager?: EntityManager,
+  ): Promise<StoredSession>;
   abstract appendMessage(
     sessionId: string,
     ownerId: string,
@@ -69,6 +79,7 @@ export abstract class SessionStore {
     ownerId: string,
     content: string,
     metadata: { model_config_id: string; previous_model_config_id: string },
+    manager?: EntityManager,
   ): Promise<AppendedSessionMessage>;
   abstract completeAssistantTurn(
     sessionId: string,

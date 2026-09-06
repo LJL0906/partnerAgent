@@ -156,24 +156,33 @@ export class TypeOrmSessionStore
     });
   }
 
-  async rename(sessionId: string, ownerId: string, title: string): Promise<StoredSession> {
-    const result = await this.dataSource.getRepository(ChatSessionEntity).update(
+  async rename(
+    sessionId: string,
+    ownerId: string,
+    title: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<StoredSession> {
+    const result = await manager.getRepository(ChatSessionEntity).update(
       { id: sessionId, ownerId, deletedAt: IsNull() },
       { title, updatedAt: new Date() },
     );
     if (!result.affected) throw new Error('会话不存在');
-    const session = await this.find(sessionId, ownerId);
+    const session = await this.findWithManager(manager, sessionId, ownerId);
     if (!session) throw new Error('会话不存在');
     return session;
   }
 
-  async archive(sessionId: string, ownerId: string): Promise<StoredSession> {
-    const result = await this.dataSource.getRepository(ChatSessionEntity).update(
+  async archive(
+    sessionId: string,
+    ownerId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<StoredSession> {
+    const result = await manager.getRepository(ChatSessionEntity).update(
       { id: sessionId, ownerId, deletedAt: IsNull() },
       { archivedAt: () => 'coalesce(archived_at, now())', lifecycleStatus: 'archived', updatedAt: new Date() },
     );
     if (!result.affected) throw new Error('会话不存在');
-    const session = await this.find(sessionId, ownerId);
+    const session = await this.findWithManager(manager, sessionId, ownerId);
     if (!session) throw new Error('会话不存在');
     return session;
   }
@@ -189,16 +198,23 @@ export class TypeOrmSessionStore
     );
   }
 
-  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }) {
-    return this.dataSource.transaction(async (manager) => {
-      await this.findOwnedSessionForUpdate(manager, sessionId, ownerId);
-      const sequence = (await this.findLastSequence(manager, sessionId)) + 1;
+  async appendSystemTip(
+    sessionId: string,
+    ownerId: string,
+    content: string,
+    metadata: { model_config_id: string; previous_model_config_id: string },
+    manager?: EntityManager,
+  ) {
+    const append = async (transactionManager: EntityManager) => {
+      await this.findOwnedSessionForUpdate(transactionManager, sessionId, ownerId);
+      const sequence = (await this.findLastSequence(transactionManager, sessionId)) + 1;
       const createdAt = new Date();
       const id = randomUUID();
-      await this.insertMessage(manager, sessionId, ownerId, 'system', content, sequence, metadata, id, createdAt);
-      await manager.getRepository(ChatSessionEntity).update({ id: sessionId, ownerId }, { lastActiveAt: new Date(), updatedAt: new Date() });
+      await this.insertMessage(transactionManager, sessionId, ownerId, 'system', content, sequence, metadata, id, createdAt);
+      await transactionManager.getRepository(ChatSessionEntity).update({ id: sessionId, ownerId }, { lastActiveAt: new Date(), updatedAt: new Date() });
       return { id, sequence, createdAt };
-    });
+    };
+    return manager ? append(manager) : this.dataSource.transaction(append);
   }
 
   async completeAssistantTurn(
@@ -338,6 +354,22 @@ export class TypeOrmSessionStore
     });
     if (!session) throw new Error('会话不存在');
     return session;
+  }
+
+  private async findWithManager(
+    manager: EntityManager,
+    sessionId: string,
+    ownerId: string,
+  ): Promise<StoredSession | undefined> {
+    const session = await manager.getRepository(ChatSessionEntity).findOne({
+      where: { id: sessionId, ownerId, deletedAt: IsNull() },
+    });
+    if (!session) return undefined;
+    const messages = await manager.getRepository(SessionMessageEntity).find({
+      where: { sessionId, ownerId },
+      order: { sequence: 'ASC' },
+    });
+    return this.toStoredSession(session, messages);
   }
 
   private async findLastSequence(

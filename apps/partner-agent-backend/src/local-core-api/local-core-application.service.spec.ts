@@ -5,6 +5,7 @@ import { LocalCoreApplicationService } from './local-core-application.service.js
 import { MemoryChatTaskStore } from './memory-chat-task.store.js';
 import { MemoryToolOperationStore } from '../tools/memory-tool-operation.store.js';
 import { parseChatSessionSummary } from '@partner-agent/contracts';
+import type { EntityManager } from 'typeorm';
 
 const envelope = {
   operation_id: '11111111-1111-4111-8111-111111111111',
@@ -176,6 +177,38 @@ describe('LocalCoreApplicationService SubmitTextInput analysis handling', () => 
 });
 
 describe('LocalCoreApplicationService idempotent session mutations', () => {
+  it('passes the idempotent transaction manager to a model switch mutation', async () => {
+    const fixture = createFixture();
+    await fixture.sessions.createIfAllowed('session-1', 'trusted-owner', 10);
+    const manager = {} as EntityManager;
+    vi.spyOn(fixture.tasks, 'executeIdempotentCommand').mockImplementation(
+      async (_command, execute) => execute(manager),
+    );
+    const appendSystemTip = vi.spyOn(fixture.sessions, 'appendSystemTip');
+
+    await fixture.service.executeCommand('SetMessageModelSelection', {
+      userId: 'trusted-owner',
+      input: {},
+      envelope: {
+        operation_id: '88888888-8888-4888-8888-888888888888',
+        request_fingerprint: 'manager-bound-switch',
+        client_source: 'web',
+        payload: {
+          session_id: 'session-1',
+          model_config_id: 'deepseek:deepseek-chat',
+        },
+      },
+    });
+
+    expect(appendSystemTip).toHaveBeenCalledWith(
+      'session-1',
+      'trusted-owner',
+      expect.any(String),
+      expect.any(Object),
+      manager,
+    );
+  });
+
   it('does not let an old rename retry overwrite a newer title', async () => {
     const fixture = createFixture();
     await fixture.sessions.createIfAllowed('session-1', 'trusted-owner', 10);

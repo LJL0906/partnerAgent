@@ -16,6 +16,7 @@ import {
   type SubmitTextCommand,
 } from './chat-task.store.js';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
+import type { EntityManager } from 'typeorm';
 import {
   copyStoredChatTask,
   countRunnableChatTasks,
@@ -54,7 +55,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
 
   async executeIdempotentCommand<T extends Record<string, unknown>>(
     command: IdempotentCommand,
-    execute: () => Promise<T>,
+    execute: (manager?: EntityManager) => Promise<T>,
   ): Promise<T> {
     const operationKey = memoryTaskKey(command.ownerId, command.operationId);
     const prior = this.operations.get(operationKey);
@@ -65,7 +66,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       ) throw new ChatTaskConflictError();
       return structuredClone(prior.result) as T;
     }
-    const result = await execute();
+    const result = await execute(undefined);
     this.operations.set(operationKey, {
       commandName: command.commandName,
       fingerprint: command.requestFingerprint,
