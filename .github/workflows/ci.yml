@@ -85,6 +85,7 @@ jobs:
           --no-file-parallelism
           test/real-postgres-analysis-schema.e2e-spec.ts
           test/real-postgres-chat-task-worker.e2e-spec.ts
+          test/real-postgres-data-recovery.e2e-spec.ts
           test/real-postgres-egress.e2e-spec.ts
           test/real-postgres-input-analysis.e2e-spec.ts
           test/real-postgres-privacy.e2e-spec.ts
