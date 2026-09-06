@@ -76,7 +76,14 @@ export async function assertEmptyVerifyDatabase(
 export async function verifyMigrationCycle(
   dataSource: MigrationRunner,
   migrationCount = DATABASE_MIGRATIONS.length,
-): Promise<{ firstUp: number; down: number; secondUp: number }> {
+): Promise<{
+  firstUp: number;
+  down: number;
+  secondUp: number;
+  incrementalUp: number;
+  taskRevision: number;
+  outboxRevision: number;
+}> {
   const firstUp = await dataSource.runMigrations({ transaction: 'all' });
   if (
     firstUp.length !== migrationCount ||
@@ -97,11 +104,138 @@ export async function verifyMigrationCycle(
   ) {
     throw new MigrationVerifySafetyError('第二次 migration up 未完整应用');
   }
+
+  const incremental = await verifyLatestMigrationUpgrade(dataSource);
   return {
     firstUp: firstUp.length,
     down: migrationCount,
     secondUp: secondUp.length,
+    ...incremental,
   };
+}
+
+async function verifyLatestMigrationUpgrade(
+  dataSource: MigrationRunner,
+): Promise<{
+  incrementalUp: number;
+  taskRevision: number;
+  outboxRevision: number;
+}> {
+  await dataSource.undoLastMigration({ transaction: 'all' });
+  if (!(await dataSource.showMigrations())) {
+    throw new MigrationVerifySafetyError('旧版增量验证未回退最新 migration');
+  }
+
+  const fixture = {
+    ownerId: 'migration-verify-old-owner',
+    sessionId: 'migration-verify-old-session',
+    messageId: '10000000-0000-4000-8000-000000000001',
+    recordId: '10000000-0000-4000-8000-000000000002',
+    operationId: '10000000-0000-4000-8000-000000000003',
+    taskId: '10000000-0000-4000-8000-000000000004',
+    eventId: '10000000-0000-4000-8000-000000000005',
+  };
+  await seedLatestMigrationUpgradeFixture(dataSource, fixture);
+
+  const applied = await dataSource.runMigrations({ transaction: 'all' });
+  if (applied.length !== 1 || (await dataSource.showMigrations())) {
+    throw new MigrationVerifySafetyError(
+      '旧版数据库未仅增量应用最新 migration',
+    );
+  }
+
+  const taskRows = (await dataSource.query(
+    'select revision from chat_tasks where id=$1',
+    [fixture.taskId],
+  )) as Array<{ revision?: number }>;
+  const outboxRows = (await dataSource.query(
+    `select event_data->>'revision' as revision
+     from chat_task_lifecycle_outbox where event_id=$1`,
+    [fixture.eventId],
+  )) as Array<{ revision?: string }>;
+  const taskRevision = Number(taskRows[0]?.revision);
+  const outboxRevision = Number(outboxRows[0]?.revision);
+  if (taskRevision !== 1 || outboxRevision !== 1) {
+    throw new MigrationVerifySafetyError(
+      '最新 migration 未正确回填旧 task/outbox revision',
+    );
+  }
+  return {
+    incrementalUp: applied.length,
+    taskRevision,
+    outboxRevision,
+  };
+}
+
+async function seedLatestMigrationUpgradeFixture(
+  dataSource: MigrationRunner,
+  fixture: {
+    ownerId: string;
+    sessionId: string;
+    messageId: string;
+    recordId: string;
+    operationId: string;
+    taskId: string;
+    eventId: string;
+  },
+): Promise<void> {
+  await dataSource.query(
+    `insert into chat_sessions(id,owner_id,created_at,last_active_at,updated_at)
+     values ($1,$2,now(),now(),now())`,
+    [fixture.sessionId, fixture.ownerId],
+  );
+  await dataSource.query(
+    `insert into session_messages(
+       id,session_id,sequence,role,content,status,created_at,input_id
+     ) values ($1,$2,1,'user','migration fixture','complete',now(),'old-input')`,
+    [fixture.messageId, fixture.sessionId],
+  );
+  await dataSource.query(
+    `insert into original_records(
+       id,owner_id,session_id,input_id,request_fingerprint,content,created_at
+     ) values ($1,$2,$3,'old-input','old-fingerprint','migration fixture',now())`,
+    [fixture.recordId, fixture.ownerId, fixture.sessionId],
+  );
+  await dataSource.query(
+    `insert into local_core_operations(
+       id,owner_id,operation_id,request_fingerprint,command_name,result_json,created_at
+     ) values (
+       '10000000-0000-4000-8000-000000000006',$1,$2,
+       'old-fingerprint','SubmitTextInput','{}',now()
+     )`,
+    [fixture.ownerId, fixture.operationId],
+  );
+  await dataSource.query(
+    `insert into chat_tasks(
+       id,owner_id,session_id,operation_id,input_id,original_record_id,
+       user_message_id,state,created_at,updated_at,model_config_id,
+       reasoning_level,output_mode,preview_kind
+     ) values (
+       $1,$2,$3,$4,'old-input',$5,$6,'completed',now(),now(),
+       'test:model','low','chat',null
+     )`,
+    [
+      fixture.taskId,
+      fixture.ownerId,
+      fixture.sessionId,
+      fixture.operationId,
+      fixture.recordId,
+      fixture.messageId,
+    ],
+  );
+  await dataSource.query(
+    `insert into chat_task_lifecycle_outbox(
+       event_id,event_key,owner_id,task_id,operation_id,session_id,state,event_data
+     ) values ($1,$2,$3,$4,$5,$6,'completed','{}')`,
+    [
+      fixture.eventId,
+      `chat-task:${fixture.taskId}:${fixture.eventId}`,
+      fixture.ownerId,
+      fixture.taskId,
+      fixture.operationId,
+      fixture.sessionId,
+    ],
+  );
 }
 
 export async function runMigrationVerification(
@@ -149,7 +283,7 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
   runMigrationVerification()
     .then((result) => {
       process.stdout.write(
-        `Migration verification passed: up=${result.firstUp}, down=${result.down}, up=${result.secondUp}\n`,
+        `Migration verification passed: up=${result.firstUp}, down=${result.down}, up=${result.secondUp}, incremental=${result.incrementalUp}, task_revision=${result.taskRevision}, outbox_revision=${result.outboxRevision}\n`,
       );
     })
     .catch((error: unknown) => {

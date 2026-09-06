@@ -74,19 +74,36 @@ describe('migration verification CLI', () => {
       runMigrations: vi
         .fn()
         .mockResolvedValueOnce(migrations)
-        .mockResolvedValueOnce(migrations),
+        .mockResolvedValueOnce(migrations)
+        .mockResolvedValueOnce([{ name: 'second' }]),
       undoLastMigration: vi.fn().mockResolvedValue(undefined),
-      showMigrations: vi.fn().mockResolvedValue(false),
-      query: vi.fn().mockResolvedValue([]),
+      showMigrations: vi
+        .fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false),
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes('select revision from chat_tasks')) {
+          return [{ revision: 1 }];
+        }
+        if (sql.includes("event_data->>'revision'")) {
+          return [{ revision: '1' }];
+        }
+        return [];
+      }),
     } as unknown as DataSource;
 
     await expect(verifyMigrationCycle(dataSource, 2)).resolves.toEqual({
       firstUp: 2,
       down: 2,
       secondUp: 2,
+      incrementalUp: 1,
+      taskRevision: 1,
+      outboxRevision: 1,
     });
-    expect(dataSource.undoLastMigration).toHaveBeenCalledTimes(2);
-    expect(dataSource.runMigrations).toHaveBeenCalledTimes(2);
-    expect(dataSource.showMigrations).toHaveBeenCalledTimes(2);
+    expect(dataSource.undoLastMigration).toHaveBeenCalledTimes(3);
+    expect(dataSource.runMigrations).toHaveBeenCalledTimes(3);
+    expect(dataSource.showMigrations).toHaveBeenCalledTimes(4);
   });
 });
