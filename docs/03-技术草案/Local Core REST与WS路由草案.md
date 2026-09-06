@@ -165,7 +165,7 @@ interface ServerPushEventV1 extends ServerPushEvent {
 ## 5. 契约收口结果
 
 1. `CancelTaskPayload` 已补齐，并映射 `POST /api/v1/tasks/cancel`。
-2. 旧 WS `chat/cancel/resume_session` 仅作弃用兼容契约；v1 业务 Command/Query 走 REST。
-3. v1 推送使用 `ServerPushEventV1`，统一 `snake_case` 和 `event_type`；旧 `AgentEvent` 已标记 deprecated。
+2. 旧 WS `chat/cancel/resume_session` 运行时、开关与契约已删除；Socket.IO 根命名空间明确拒绝连接，业务 Command/Query 只走 REST。
+3. 服务端推送只使用 `ServerPushEventV1`，统一 `snake_case` 和 `event_type`。
 4. 归档/删除/恢复类 Command 已统一为 `Create*CandidatePayload`，不提供正式对象旁路写入。
 5. 当前控制器登记 38 个 Command 和 37 个 Query；其中 7 个 Command、5 个 Query 已接通，其余 handler 显式返回 `501 NOT_IMPLEMENTED_001`，不伪造成功。历史预留的 undo 候选路由不在当前登记内。

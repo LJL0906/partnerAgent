@@ -78,7 +78,8 @@ git -C pi pull
 - 已接入无副作用的 `get_current_time` 工具；
 - `/api/v1` 已登记 38 个 Command 和 37 个 Query；已接通 7 个 Command（会话重命名/归档、文字输入、消息模型选择、任务取消、隐私决定、确认批次）与 5 个 Query（健康、会话列表/详情、模型配置列表、任务状态），其余 31 个 Command 和 32 个 Query handler 显式返回 501；
 - Local Core Entity/Migration 已加固，复用并扩展现有会话/消息表，候选 24 小时期限和高风险单候选由数据库约束；
-- `/ws/v1` 已基于 PostgreSQL 权威数据授权 session/task/operation 频道，并支持顺序推送、已有水位的断线重放、LISTEN 重连主动 catch-up 和保留窗缺口的 REST 恢复提示；旧 Agent WS 已移出默认模块图，只允许开发环境显式启用兼容；
+- `/ws/v1` 已基于 PostgreSQL 权威数据授权 session/task/operation 频道，并支持顺序推送、已有水位的断线重放、LISTEN 重连主动 catch-up 和保留窗缺口的 REST 恢复提示；旧 Agent WS 运行时、开关和 wire 契约已删除；
+- Windows Metro 仅预监听外部共享契约目录并限制 transform worker；Web/Android export 与短时冷启动通过，长时间多轮 HMR 稳定性仍待观察；
 - ChatTask 生命周期和工具确认/拒绝/执行结果/撤销通知均已使用各自的 transactional outbox；relay 以稳定幂等键、lease/fence、同会话头阻塞和有限重试投递 WS stream；
 - WS 事件按可配置 count/age 上限后台分批清理，stream position 永不因清理归零；
 - 已提供低基数 Prometheus registry/exporter 与 owner-scoped Agent Run/Turn/Tool 元数据 trace，不保存模型正文、工具参数/结果或原始异常；
@@ -104,7 +105,7 @@ git -C pi pull
 
 ## 仓库拆分原则
 
-2026 年 9 月 5 日聊天与账户集成批次数字保留为历史快照。2026 年 9 月 6 日阶段收口已完成当前代码的 build、lint、单元与 memory e2e，并以 11 个真实 PostgreSQL 文件 38 项用例验证结构化预览、A10 幂等事务、23 条迁移、旧数据升级、REST 重启恢复和 11 张正式表零变化；真实 DeepSeek 预览另有脱敏人工证据。限定结论是“聊天与结构化预览链已验通”，不是“业务生产闭环完成”；A06/A09、14 个 moderate 依赖项、Android 真机和旧 Agent WS 退役仍未完成。
+2026 年 9 月 5 日聊天与账户集成批次数字保留为历史快照。2026 年 9 月 6 日阶段收口已完成当前代码的 build、lint、单元与 memory e2e，并以 11 个真实 PostgreSQL 文件 38 项用例验证结构化预览、A10 幂等事务、23 条迁移、旧数据升级、REST 重启恢复和 11 张正式表零变化；真实 DeepSeek 预览另有脱敏人工证据。限定结论是“聊天与结构化预览链已验通”，不是“业务生产闭环完成”；A06/A09、14 个 moderate 依赖项和 Android 真机仍未完成，旧 Agent WS 已按后续明确指令整体退役。
 
 当前不按语言或框架拆分仓库。只要前端、NestJS 和 Python 服务仍然共同服务于同一个产品、需要同步接口和需求，就继续使用本仓库。
 
