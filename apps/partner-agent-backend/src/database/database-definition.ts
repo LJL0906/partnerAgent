@@ -1,5 +1,5 @@
 import { DataSource } from 'typeorm';
-import { AccountCredentialEntity, AccountSessionEntity } from './entities/账户.entity.js';
+import { AccountCredentialEntity, AccountSessionEntity } from './entities/account.entity.js';
 import { CreateAccountTables1788514000000 } from './migrations/1788514000000-create-account-tables.js';
 import { CORE_ENTITIES } from './core-entities.js';
 import { ChatSessionEntity } from './entities/chat-session.entity.js';
@@ -28,6 +28,10 @@ import { CreateAgentRunTraces1788511000000 } from './migrations/1788511000000-cr
 import { AddToolReconciliation1788512000000 } from './migrations/1788512000000-add-tool-reconciliation.js';
 import { AddToolControlOutboxRemediation1788513000000 } from './migrations/1788513000000-add-tool-control-outbox-remediation.js';
 import { WsV1EventEntity } from './entities/ws-v1-event.entity.js';
+import { AddChatTaskModelSelection1788515000000 } from './migrations/1788515000000-add-chat-task-model-selection.js';
+import { AddSessionMessageModelMetadata1788516000000 } from './migrations/1788516000000-add-session-message-model-metadata.js';
+import { ExpandReasoningLevels1788517000000 } from './migrations/1788517000000-expand-reasoning-levels.js';
+import { AddOffReasoningLevel1788518000000 } from './migrations/1788518000000-add-off-reasoning-level.js';
 
 export const DATABASE_ENTITIES = [
   AccountCredentialEntity,
@@ -63,6 +67,10 @@ export const DATABASE_MIGRATIONS = [
   AddToolReconciliation1788512000000,
   AddToolControlOutboxRemediation1788513000000,
   CreateAccountTables1788514000000,
+  AddChatTaskModelSelection1788515000000,
+  AddSessionMessageModelMetadata1788516000000,
+  ExpandReasoningLevels1788517000000,
+  AddOffReasoningLevel1788518000000,
 ] as const;
 
 export function createDatabaseDataSource(url: string): DataSource {
@@ -74,3 +82,4 @@ export function createDatabaseDataSource(url: string): DataSource {
     synchronize: false,
   });
 }
+

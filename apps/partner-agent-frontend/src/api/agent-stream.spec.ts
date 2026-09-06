@@ -1,5 +1,5 @@
-import type { ServerPushEventV1, SubscriptionAckV1 } from '@partner-agent/contracts';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ServerPushEventV1, SubscriptionAckV1, ToolControlAckV1 } from '@partner-agent/contracts';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { apiConfig } from './config';
 import { requireAccessToken } from './access-token';
@@ -88,6 +88,7 @@ class FakeSocket {
 }
 
 describe('agent stream', () => {
+  afterEach(() => { closeAllAgentStreams(); vi.useRealTimers(); });
   beforeEach(() => {
     closeAllAgentStreams();
     (apiConfig as { serverUrl: string }).serverUrl = 'http://example.test';
@@ -169,6 +170,82 @@ describe('agent stream', () => {
     connection.close();
   });
 
+  it('sends type-safe tool controls over v1 and resolves correlated acknowledgements', async () => {
+    vi.useFakeTimers();
+    const connection = await openConnection();
+    const confirmation = connection.confirmTool({ session_id: 'session-1', confirmation_id: 'confirmation-1' });
+    const confirmRequest = mocks.socket!.lastRequest('confirm_tool_execution');
+    expect(vi.getTimerCount()).toBe(1);
+
+    expect(confirmRequest).toMatchObject({ session_id: 'session-1', confirmation_id: 'confirmation-1' });
+    mocks.socket!.serverEmit('tool_control_ack', {
+      request_id: String(confirmRequest.request_id),
+      action: 'confirm',
+      status: 'completed',
+    } satisfies ToolControlAckV1);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(confirmation).resolves.toEqual({
+      request_id: String(confirmRequest.request_id),
+      action: 'confirm',
+      status: 'completed',
+    });
+    connection.close();
+  });
+
+  it('keeps rejected tool-control acknowledgements explicit instead of treating them as transport failures', async () => {
+    const connection = await openConnection();
+    const dismissal = connection.dismissTool({ session_id: 'session-1', confirmation_id: 'confirmation-1' });
+    const request = mocks.socket!.lastRequest('dismiss_tool_execution');
+    const ack = {
+      request_id: String(request.request_id),
+      action: 'dismiss',
+      status: 'rejected',
+      error: { code: 'EXPIRED', message: 'confirmation expired' },
+    } satisfies ToolControlAckV1;
+    mocks.socket!.serverEmit('tool_control_ack', ack);
+    await expect(dismissal).resolves.toEqual(ack);
+    connection.close();
+  });
+
+  it('sends undo with execution_id and rejects pending controls when the stream closes', async () => {
+    vi.useFakeTimers();
+    const connection = await openConnection();
+    const undo = connection.undoTool({ session_id: 'session-1', execution_id: 'execution-1' });
+    expect(mocks.socket!.lastRequest('undo_tool_execution')).toMatchObject({
+      session_id: 'session-1',
+      execution_id: 'execution-1',
+    });
+    connection.close();
+    await expect(undo).rejects.toMatchObject({ name: 'StreamDisconnectedError' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('clears the pending ACK timer immediately on disconnect', async () => {
+    vi.useFakeTimers();
+    const connection = await openConnection();
+    const pending = connection.confirmTool({ session_id: 'session-1', confirmation_id: 'confirmation-1' });
+    mocks.socket!.simulateDisconnect();
+    await expect(pending).rejects.toMatchObject({ name: 'StreamDisconnectedError' });
+    expect(vi.getTimerCount()).toBe(0);
+    mocks.socket!.serverEmit('tool_control_ack', { ...mocks.socket!.lastRequest('confirm_tool_execution'), action: 'confirm', status: 'completed' });
+    await expect(pending).rejects.toMatchObject({ name: 'StreamDisconnectedError' });
+  });
+  it.each(['confirmTool', 'dismissTool', 'undoTool'] as const)('bounds %s ACK waits without replay on reconnect', async (method) => {
+    vi.useFakeTimers();
+    const connection = await openConnection();
+    const pending = method === 'undoTool'
+      ? connection[method]({ session_id: 'session-1', execution_id: 'execution-1' })
+      : connection[method]({ session_id: 'session-1', confirmation_id: 'confirmation-1' });
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'ToolControlTimeoutError' });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(vi.getTimerCount()).toBe(0);
+    mocks.socket!.simulateDisconnect();
+    mocks.socket!.simulateReconnect();
+    acknowledge(mocks.socket!, mocks.socket!.lastRequest(), ['user:self', 'session:session-1']);
+    expect(mocks.socket!.sent.filter(({ event }) => event.endsWith('_tool_execution'))).toHaveLength(1);
+    await rejected;
+    connection.close();
+  });
   it('setChannels emits only incremental subscribe and unsubscribe requests', async () => {
     const connection = await openConnection();
     const updating = connection.setChannels(['user:self', 'task:task-1']);

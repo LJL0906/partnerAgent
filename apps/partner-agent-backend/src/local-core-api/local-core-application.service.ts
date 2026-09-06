@@ -15,6 +15,8 @@ import { ChatTaskConflictError, ChatTaskStore } from './chat-task.store.js';
 import { ChatTaskScheduler } from './chat-task-scheduler.js';
 import { PrivacyDecisionService } from './privacy-decision.service.js';
 import { requestedInputAnalysis } from './input-analysis.validator.js';
+import { ModelSelectionService } from './model-selection.service.js';
+import { buildChatItemsSnapshot } from './chat-item-adapter.js';
 
 @Injectable()
 export class LocalCoreApplicationService extends LocalCoreApplicationPort {
@@ -24,6 +26,7 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     private readonly chatTasks: ChatTaskStore,
     private readonly scheduler: ChatTaskScheduler,
     private readonly privacyDecisions: PrivacyDecisionService,
+    private readonly modelSelection?: ModelSelectionService,
   ) {
     super();
   }
@@ -34,6 +37,15 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
   ): Promise<unknown> {
     if (command === 'SubmitTextInput') {
       return this.submitTextInput(request);
+    }
+    if (command === 'RenameChatSession') {
+      return this.renameChatSession(request);
+    }
+    if (command === 'ArchiveChatSession') {
+      return this.archiveChatSession(request);
+    }
+    if (command === 'SetMessageModelSelection') {
+      return this.setMessageModelSelection(request);
     }
     if (command === 'CancelTask') {
       return this.cancelTask(request);
@@ -78,6 +90,11 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
       return this.getChatSession(request);
     }
 
+    if (query === 'ListModelConfigs') {
+      if (!this.modelSelection) throw new Error('模型选择服务未初始化');
+      return { items: this.modelSelection.list() };
+    }
+
     if (query === 'GetTaskStatus') {
       return this.getTaskStatus(request);
     }
@@ -106,12 +123,38 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
       });
     }
 
+    const messages = await this.chatTasks.listSessionMessages(
+      request.userId,
+      session.id,
+    );
+    const taskRefs = await this.chatTasks.getSessionTaskRefs(
+      request.userId,
+      session.id,
+    );
+    const taskRef = taskRefs.latest_task ?? taskRefs.active_task;
+    const task = taskRef
+      ? await this.chatTasks.getTask(request.userId, taskRef.task_id)
+      : undefined;
+    const taskSnapshot = task
+      ? {
+          taskId: task.taskId,
+          ownerId: task.ownerId,
+          sessionId: task.sessionId,
+          operationId: task.operationId,
+          state: task.state,
+          updatedAt: task.updatedAt,
+          ...(task.errorCode ? { errorCode: task.errorCode } : {}),
+          ...(task.errorMessage ? { errorMessage: task.errorMessage } : {}),
+          ...(task.waitingToolConfirmationId
+            ? { waitingToolConfirmationId: task.waitingToolConfirmationId }
+            : {}),
+        }
+      : undefined;
+
     return {
       ...(await this.sessionSummary(session, request.userId)),
-      messages: await this.chatTasks.listSessionMessages(
-        request.userId,
-        session.id,
-      ),
+      messages,
+      items: buildChatItemsSnapshot(messages, taskSnapshot),
     };
   }
 
@@ -124,13 +167,54 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
       text.replace(/\s+/g, ' ').trim().slice(0, length);
     return {
       id: session.id,
-      title: title ? compact(title, 48) : '新对话',
+      title: session.title ?? (title ? compact(title, 48) : '新对话'),
       created_at: session.createdAt.toISOString(),
       updated_at: session.lastActiveAt.toISOString(),
       message_count: session.messages.length,
       ...(preview ? { last_message_preview: compact(preview, 120) } : {}),
       ...(await this.chatTasks.getSessionTaskRefs(ownerId, session.id)),
     };
+  }
+
+
+  private async renameChatSession(request: LocalCoreCommandRequest): Promise<unknown> {
+    const payload = this.objectPayload(request);
+    const sessionId = this.requiredString(payload, 'session_id');
+    const title = this.requiredString(payload, 'title').replace(/\s+/g, ' ').trim().slice(0, 48);
+    if (!title) throw new HttpException({ code: 'VALIDATION_001', message: '会话名称不能为空' }, HttpStatus.BAD_REQUEST);
+    try {
+      const session = await this.sessionStore.rename(sessionId, request.userId, title);
+      return await this.sessionSummary(session, request.userId);
+    } catch {
+      throw new NotFoundException({ code: 'AUTH_002', message: '会话不存在' });
+    }
+  }
+
+
+  private async archiveChatSession(request: LocalCoreCommandRequest): Promise<unknown> {
+    const payload = this.objectPayload(request);
+    const sessionId = this.requiredString(payload, 'session_id');
+    try {
+      const session = await this.sessionStore.archive(sessionId, request.userId);
+      return await this.sessionSummary(session, request.userId);
+    } catch {
+      throw new NotFoundException({ code: 'AUTH_002', message: '会话不存在' });
+    }
+  }
+
+  private async setMessageModelSelection(request: LocalCoreCommandRequest): Promise<unknown> {
+    const payload = this.objectPayload(request);
+    const sessionId = this.requiredString(payload, 'session_id');
+    const modelConfigId = this.requiredString(payload, 'model_config_id');
+    const previous = this.optionalString(payload, 'previous_model_config_id') ?? `${process.env.DEFAULT_PROVIDER ?? 'deepseek'}:${process.env.DEFAULT_MODEL ?? 'deepseek-v4-flash'}`;
+    const reasoningLevel = this.optionalString(payload, 'reasoning_level');
+    const selection = this.modelSelection?.resolve(modelConfigId, reasoningLevel);
+    if (!selection) throw new Error('模型选择服务未初始化');
+    if (previous === modelConfigId) return { changed: false, model_config_id: modelConfigId, reasoning_level: selection.reasoningLevel };
+    const fromName = previous.split(':').slice(1).join(':') || previous;
+    const toName = modelConfigId.split(':').slice(1).join(':') || modelConfigId;
+    await this.sessionStore.appendSystemTip(sessionId, request.userId, `模型由 ${fromName} 切换成 ${toName}`, { model_config_id: modelConfigId, previous_model_config_id: previous });
+    return { changed: true, session_id: sessionId, model_config_id: modelConfigId, reasoning_level: selection.reasoningLevel, tip: `模型由 ${fromName} 切换成 ${toName}` };
   }
 
   private async submitTextInput(
@@ -159,6 +243,11 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     const text = this.requiredString(payload, 'text');
     const inputId = this.requiredString(payload, 'input_id');
     const sessionId = this.optionalString(payload, 'session_id');
+    const modelConfigId = this.optionalString(payload, 'model_config_id') ?? `${process.env.DEFAULT_PROVIDER ?? 'deepseek'}:${process.env.DEFAULT_MODEL ?? 'deepseek-v4-flash'}`;
+    const reasoningLevel = this.optionalString(payload, 'reasoning_level');
+    const selection = this.modelSelection
+      ? this.modelSelection.resolve(modelConfigId, reasoningLevel)
+      : { provider: modelConfigId.split(':')[0], modelId: modelConfigId.split(':').slice(1).join(':'), reasoningLevel: reasoningLevel as import('@partner-agent/contracts').ReasoningLevel };
     try {
       const accepted = await this.chatTasks.submitText({
         ownerId: request.userId,
@@ -168,6 +257,8 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
         text,
         inputId,
         ...(sessionId ? { sessionId } : {}),
+        modelConfigId: `${selection.provider}:${selection.modelId}`,
+        reasoningLevel: selection.reasoningLevel,
       });
       if (accepted.task) this.scheduler.schedule(accepted.task);
       return accepted.result;

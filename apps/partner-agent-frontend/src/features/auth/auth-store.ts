@@ -3,8 +3,8 @@ import { create } from 'zustand';
 import { setAccessTokenProvider, setUnauthorizedHandler } from '@/api/access-token';
 
 import { tokenStorage } from './token-storage';
-import { refreshStorage } from './刷新凭据';
-import type { AccountTokens } from '@/api/账户接口';
+import { refreshStorage } from './refresh-credential';
+import type { AccountTokens } from '@/api/account-api';
 
 export type AuthStatus =
   | 'bootstrapping'
@@ -103,7 +103,7 @@ async function applyAccount(tokens: AccountTokens, generation: number): Promise<
 export async function signInWithPassword(username: string, password: string, register = false): Promise<void> {
   await logoutPromise;
   const generation = ++authGeneration;
-  const { accountRequest } = await import('@/api/账户接口');
+  const { accountRequest } = await import('@/api/account-api');
   const tokens = await accountRequest<AccountTokens>(register ? 'register' : 'login', { username, password });
   if (!await applyAccount(tokens, generation)) await accountRequest('logout', { refresh_token: tokens.refresh_token }).catch(() => undefined);
 }
@@ -114,7 +114,7 @@ async function refreshAccount(): Promise<string | undefined> {
   refreshPromise = (async () => {
     const refresh = await refreshStorage.get();
     if (!refresh) return undefined;
-    const { accountRequest, AccountApiError } = await import('@/api/账户接口');
+    const { accountRequest, AccountApiError } = await import('@/api/account-api');
     try {
       const tokens = await accountRequest<AccountTokens>('refresh', refresh === '@cookie' ? {} : { refresh_token: refresh });
       if (await applyAccount(tokens, generation)) return tokens.access_token;
@@ -140,9 +140,7 @@ export function registerAuthTeardown(callback: AuthTeardown): () => void {
 
 export function bootstrapAuth(): Promise<void> {
   if (logoutPromise) return logoutPromise;
-  if (bootstrapPromise) {
-    return bootstrapPromise;
-  }
+  if (bootstrapPromise) return bootstrapPromise;
 
   bootstrapPromise = (async () => {
     const generation = authGeneration;
@@ -151,33 +149,8 @@ export function bootstrapAuth(): Promise<void> {
         await refreshAccount();
         return;
       }
-      const storedToken = (await tokenStorage.get())?.trim();
       if (generation !== authGeneration) return;
-      if (!storedToken) {
-        setAuthState({ status: 'unauthenticated', isReady: true });
-        return;
-      }
-
-      let expiresAt: number | undefined;
-      try {
-        expiresAt = decodeJwtExpiry(storedToken);
-      } catch {
-        await tokenStorage.remove();
-        setAuthState({
-          status: 'error',
-          isReady: true,
-          errorMessage: '保存的登录凭据格式无效，请重新登录。',
-        });
-        return;
-      }
-
-      if (isExpired(expiresAt)) {
-        await tokenStorage.remove();
-        setAuthState({ status: 'expired', isReady: true, expiresAt });
-        return;
-      }
-
-      setAuthState({ status: 'authenticated', isReady: true, token: storedToken, expiresAt });
+      setAuthState({ status: 'unauthenticated', isReady: true });
     } catch {
       if (generation !== authGeneration) return;
       setAuthState({
@@ -259,7 +232,7 @@ async function performLogout(): Promise<void> {
     // Finish any refresh first, so logout revokes the latest rotated credential.
     await refreshPromise?.catch(() => undefined);
     if (account) {
-      const { accountRequest } = await import('@/api/账户接口');
+      const { accountRequest } = await import('@/api/account-api');
       const refresh = await refreshStorage.get();
       await accountRequest('logout', refresh === '@cookie' ? {} : { refresh_token: refresh });
     }

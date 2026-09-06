@@ -1,4 +1,4 @@
-import { postgresSessionTaskRefs } from './会话任务引用.js';
+import { postgresSessionTaskRefs } from './session-task-reference.js';
 import { randomUUID } from 'node:crypto';
 import { DataSource, IsNull, type EntityManager } from 'typeorm';
 import { ChatSessionEntity } from '../database/entities/chat-session.entity.js';
@@ -179,6 +179,8 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         taskId,
         originalRecordId: recordId,
         analysisResultId: null,
+        modelConfigId: command.modelConfigId ?? `${process.env.DEFAULT_PROVIDER ?? 'deepseek'}:${process.env.DEFAULT_MODEL ?? 'deepseek-v4-flash'}`,
+        reasoningLevel: command.reasoningLevel ?? 'medium',
         createdAt: now,
         completedAt: now,
       });
@@ -197,6 +199,8 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         sessionId,
         operationId: command.operationId,
         inputId: command.inputId,
+        modelConfigId: command.modelConfigId ?? `${process.env.DEFAULT_PROVIDER ?? 'deepseek'}:${process.env.DEFAULT_MODEL ?? ''}`,
+        reasoningLevel: command.reasoningLevel ?? 'medium',
         originalRecordId: recordId,
         userMessageId: messageId,
         resultMessageId: null,
@@ -401,18 +405,14 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       .getRepository(SessionMessageEntity)
       .find({ where: { ownerId, sessionId }, order: { sequence: 'ASC' } });
     return rows
-      .filter(
-        (
-          message,
-        ): message is SessionMessageEntity & {
-          role: 'user' | 'assistant';
-        } => message.role !== 'system',
-      )
       .map((m) => ({
         id: m.id,
         role: m.role,
         content: m.content,
         created_at: m.createdAt.toISOString(),
+        ...(m.modelConfigId ? { model_config_id: m.modelConfigId } : {}),
+        ...(m.reasoningLevel ? { reasoning_level: m.reasoningLevel } : {}),
+        ...(m.metadataJson ? { metadata: m.metadataJson } : {}),
       }));
   }
   private async loadStored(

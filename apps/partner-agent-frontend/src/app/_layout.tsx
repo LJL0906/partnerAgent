@@ -3,29 +3,38 @@ import { View } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
-import { FeedbackState } from '@/components/ui/feedback-state';
+import { ConnectionLoadingScreen } from '@/components/ui/connection-loading-screen';
+import { AppThemeProvider, ToastProvider } from '@/components/ui/toast';
+import { FloatingNavigation } from '@/components/navigation/floating-menu';
 import { bootstrapAuth, registerAuthTeardown, useAuthStore } from '@/features/auth';
 import { resetChatRuntime } from '@/features/chat/use-chat';
-import { reset会话管理 } from '@/features/chat/会话管理';
+import { resetSessionManagement } from '@/features/chat/session-management';
 import { colors } from '@/theme/colors';
 import { typography } from '@/theme/typography';
-
-import AuthRoute from './auth';
-
 export default function RootLayout() {
+  return (
+    <AppThemeProvider>
+      <ToastProvider>
+        <RootLayoutContent />
+      </ToastProvider>
+    </AppThemeProvider>
+  );
+}
+
+function RootLayoutContent() {
   const isReady = useAuthStore((state) => state.isReady);
   const status = useAuthStore((state) => state.status);
   const router = useRouter();
   const [firstSegment] = useSegments();
 
   useEffect(() => {
-    if (status === 'authenticated' && firstSegment === 'auth') router.replace('/');
+    if (status === 'authenticated' && firstSegment === 'auth') router.replace('/chat');
   }, [firstSegment, router, status]);
 
   useEffect(() => {
     const unregisterTeardown = registerAuthTeardown(async () => {
       resetChatRuntime();
-      await reset会话管理();
+      await resetSessionManagement();
     });
     void bootstrapAuth();
     return unregisterTeardown;
@@ -33,27 +42,18 @@ export default function RootLayout() {
 
   if (!isReady) {
     return (
-      <View style={{ backgroundColor: colors.canvas, flex: 1, justifyContent: 'center' }}>
+      <View style={{ flex: 1 }}>
         <StatusBar style="dark" />
-        <FeedbackState description="正在恢复安全会话。" title="正在准备伙伴" type="loading" />
+        <ConnectionLoadingScreen />
       </View>
     );
   }
 
-  if (status !== 'authenticated') {
-    return (
-      <>
-        <StatusBar style="dark" />
-        <AuthRoute />
-      </>
-    );
-  }
-
   return (
-    <>
+    <View style={{ flex: 1 }}>
       <StatusBar style="dark" />
       <Stack
-        initialRouteName="(tabs)"
+        initialRouteName={status === 'authenticated' ? 'chat' : 'auth/index'}
         screenOptions={{
           contentStyle: { backgroundColor: colors.canvas },
           headerBackButtonDisplayMode: 'minimal',
@@ -62,8 +62,10 @@ export default function RootLayout() {
           headerTintColor: colors.ink,
           headerTitleStyle: typography.pageTitle,
         }}>
+        <Stack.Screen name="auth/index" options={{ headerShown: false }} />
+        <Stack.Screen name="auth/register" options={{ headerShown: false }} />
+        <Stack.Screen name="chat" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="sessions" options={{ title: '历史对话' }} />
         <Stack.Screen
           name="privacy-decision"
           options={{
@@ -74,6 +76,7 @@ export default function RootLayout() {
           }}
         />
       </Stack>
-    </>
+      {status === 'authenticated' ? <FloatingNavigation /> : null}
+    </View>
   );
 }

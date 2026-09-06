@@ -1,4 +1,4 @@
-import type { CommandResult, SubmitTextInputResult } from '@partner-agent/contracts';
+import type { CommandResult, ReasoningLevel, SubmitTextInputResult } from '@partner-agent/contracts';
 import * as Crypto from 'expo-crypto';
 import type { MutableRefObject } from 'react';
 
@@ -12,8 +12,7 @@ import {
 } from '@/api/chat-api';
 import { useChatStore } from '@/store/chat-store';
 
-import { remember会话 } from './会话管理';
-
+import { rememberSession } from './session-management';
 import { desiredChannels, PENDING_CHAT_TASK_ID } from './chat-event-routing';
 
 export interface PendingChatSubmission {
@@ -32,6 +31,8 @@ interface SendChatMessageContext {
   reconcileFromRest: (taskId: string, sessionId: string) => Promise<void>;
   reportError: (error: unknown, fallback: string) => void;
   streamReadyRef: MutableRefObject<Promise<AgentStreamConnection> | undefined>;
+  modelConfigId: string;
+  reasoningLevel: ReasoningLevel;
   submit?: (
     params: SubmitTextInputParams,
   ) => Promise<CommandResult<SubmitTextInputResult>>;
@@ -68,7 +69,7 @@ export async function sendChatMessage(
   context.previousTaskIdRef.current = context.currentTaskIdRef.current;
   context.currentTaskIdRef.current = PENDING_CHAT_TASK_ID;
   state.beginTask();
-  state.addMessage({ id: attempt.optimisticMessageId, role: 'user', content: message });
+  state.addMessage({ id: attempt.optimisticMessageId, role: 'user', content: message, createdAt: new Date().toISOString() });
   context.assistantMessageIdRef.current = undefined;
 
   try {
@@ -77,6 +78,8 @@ export async function sendChatMessage(
       sessionId: state.sessionId,
       inputId: attempt.inputId,
       operationId: attempt.operationId,
+      modelConfigId: context.modelConfigId,
+      reasoningLevel: context.reasoningLevel,
     });
     if (!isCurrent()) return false;
     if (result.status === 'rejected') {
@@ -96,7 +99,7 @@ export async function sendChatMessage(
     }
     if (acceptedSessionId !== state.sessionId) state.setSessionId(acceptedSessionId);
     state.setSessionPersisted(true);
-    remember会话(acceptedSessionId);
+    rememberSession(acceptedSessionId);
     context.currentTaskIdRef.current = taskId;
     context.previousTaskIdRef.current = undefined;
     state.setActiveOperationId(result.operation_id);

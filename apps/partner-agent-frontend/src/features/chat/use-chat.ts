@@ -1,14 +1,17 @@
 import type {
+  ReasoningLevel,
   ServerPushEventV1,
   SubscriptionAckV1,
   SubscriptionChannel,
+  ToolControlAckV1,
 } from '@partner-agent/contracts';
 import * as Crypto from 'expo-crypto';
 import type { MutableRefObject } from 'react';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppState } from 'react-native';
 
-import { initialize会话, useConversationStore } from './会话管理';
+import { initializeSession, useConversationStore } from './session-management';
+import { applyChatSessionSnapshot } from './chat-session-snapshot';
 
 import {
   closeAllAgentStreams,
@@ -27,6 +30,7 @@ import {
 import { useChatStore } from '@/store/chat-store';
 
 import { applyAgentEvent, applyRecoveredTask } from './chat-event-state';
+import { createChatToolControls, type ChatToolControlTransport, type ChatToolControls } from './chat-tool-controls';
 import {
   channelId,
   dispatchApplicationEvent,
@@ -91,14 +95,13 @@ export async function reconcileChatFromRest(
     options.assistantMessageIdRef ?? ({ current: undefined } as MutableRefObject<string | undefined>);
 
   if (sessionResult.status === 'fulfilled' && sessionResult.value) {
-    useChatStore.getState().reconcileMessages(
-      sessionResult.value.messages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-      })),
-    );
-    assistantMessageIdRef.current = findLatestAssistantId();
+    try {
+      applyChatSessionSnapshot(sessionResult.value, sessionId ?? initial.sessionId);
+      assistantMessageIdRef.current = findLatestAssistantId();
+    } catch (error) {
+      // A bad session response must not suppress an independently valid task result.
+      results[1] = { status: 'rejected', reason: error };
+    }
   }
 
   if (
@@ -119,7 +122,18 @@ export function resetChatRuntime(): void {
   useChatStore.getState().resetChat();
 }
 
-export function useChat() {
+export interface UseChatOptions {
+  toolControls?: ChatToolControlTransport;
+}
+
+export function createUseChatToolControls(
+  getSessionId: () => string | undefined,
+  getTransport: () => ChatToolControlTransport | undefined,
+): ChatToolControls {
+  return createChatToolControls(getSessionId, getTransport);
+}
+
+export function useChat(options: UseChatOptions = {}) {
   const ready = useConversationStore((state) => state.ready);
   const sessionRevision = useChatStore((state) => state.sessionRevision);
   const sessionPersisted = useChatStore((state) => state.sessionPersisted);
@@ -134,6 +148,19 @@ export function useChat() {
   const streamConnectionRef = useRef<AgentStreamConnection | undefined>(undefined);
   const streamReadyRef = useRef<Promise<AgentStreamConnection> | undefined>(undefined);
   const reconciliationsRef = useRef(new Map<string, Promise<void>>());
+  const runTool = useCallback((action: keyof ChatToolControls, resourceId: string) => {
+    return createUseChatToolControls(
+      () => useChatStore.getState().sessionId,
+      () => options.toolControls ?? streamConnectionRef.current,
+    )[action](resourceId);
+  }, [options.toolControls]);
+  const toolControls = useMemo<ChatToolControls>(() => ({
+    confirmTool: (id) => runTool('confirmTool', id),
+    dismissTool: (id) => runTool('dismissTool', id),
+    undoTool: (id) => runTool('undoTool', id),
+  }), [runTool]);
+
+
 
   const reportError = useCallback((error: unknown, fallback: string) => {
     const state = useChatStore.getState();
@@ -242,7 +269,7 @@ export function useChat() {
     [reconcileFromRest, reportError],
   );
 
-  useEffect(() => { void initialize会话(); }, []);
+  useEffect(() => { void initializeSession(); }, []);
 
   useEffect(() => {
     if (!sessionId || !ready) return;
@@ -318,7 +345,7 @@ export function useChat() {
     return () => subscription.remove();
   }, [reconcileFromRest]);
 
-  const sendMessage = useCallback(async (rawMessage: string) => {
+  const sendMessage = useCallback(async (rawMessage: string, modelConfigId: string, reasoningLevel: ReasoningLevel) => {
     if (!useConversationStore.getState().ready) return false;
     return sendChatMessage(rawMessage, {
       assistantMessageIdRef,
@@ -329,6 +356,8 @@ export function useChat() {
         reconcileFromRest(taskId, recoverySessionId),
       reportError,
       streamReadyRef,
+      modelConfigId,
+      reasoningLevel,
     });
   }, [reconcileFromRest, reportError]);
 
@@ -364,7 +393,21 @@ export function useChat() {
     }
   }, [reconcileFromRest, reportError]);
 
-  return { sendMessage, stopStreaming, isStreaming };
+  return {
+    sendMessage,
+    stopStreaming,
+    isStreaming,
+    ...toolControls,
+    toolControls,
+  } satisfies {
+    sendMessage: typeof sendMessage;
+    stopStreaming: typeof stopStreaming;
+    isStreaming: typeof isStreaming;
+    toolControls: ChatToolControls;
+    confirmTool: (confirmationId: string) => Promise<ToolControlAckV1>;
+    dismissTool: (confirmationId: string) => Promise<ToolControlAckV1>;
+    undoTool: (executionId: string) => Promise<ToolControlAckV1>;
+  };
 }
 
 function findLatestAssistantId(): string | undefined {

@@ -1,7 +1,7 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { jwtVerify } from 'jose';
-import { AccountStore } from './账户存储.js';
+import { AccountStore } from './account-store.js';
 
 const MINIMUM_SECRET_BYTES = 32;
 
@@ -46,7 +46,12 @@ export class AuthService {
       throw new Error('访问令牌缺少用户标识');
     }
 
-    if (payload.sid !== undefined) {
+    const isAccountAccessToken =
+      payload.sid !== undefined ||
+      protectedHeader.typ === 'at+jwt' ||
+      payload.iss === 'partner-agent' ||
+      payload.aud === 'partner-agent';
+    if (isAccountAccessToken) {
       if (
         typeof payload.sid !== 'string' ||
         !/^[a-f0-9-]{36}$/.test(payload.sid) ||

@@ -1,3 +1,4 @@
+import type { ReasoningLevel } from '@partner-agent/contracts';
 import { Column, Entity, Index, PrimaryColumn, Unique } from 'typeorm';
 
 export type ChatTaskState =
@@ -48,6 +49,8 @@ export class ChatTaskEntity {
   @Column({ name: 'session_id', type: 'text' }) sessionId: string;
   @Column({ name: 'operation_id', type: 'text' }) operationId: string;
   @Column({ name: 'input_id', type: 'text' }) inputId: string;
+  @Column({ name: 'model_config_id', type: 'text', default: 'deepseek:deepseek-v4-flash' }) modelConfigId: string;
+  @Column({ name: 'reasoning_level', type: 'text', default: 'medium' }) reasoningLevel: ReasoningLevel;
   @Column({ name: 'original_record_id', type: 'uuid' })
   originalRecordId: string;
   @Column({ name: 'user_message_id', type: 'uuid' }) userMessageId: string;

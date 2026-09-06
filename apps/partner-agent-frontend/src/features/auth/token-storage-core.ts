@@ -6,6 +6,23 @@ export interface TokenStorage {
   remove(): Promise<void>;
 }
 
+function normalizeServerUrl(serverUrl: string): string {
+  return serverUrl.trim().replace(/\/+$/, '');
+}
+
+function stableHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function getScopedAccessTokenStorageKey(serverUrl: string): string {
+  return `${ACCESS_TOKEN_STORAGE_KEY}.${stableHash(normalizeServerUrl(serverUrl))}`;
+}
+
 export interface SecureTokenStorageAdapter {
   getItemAsync(key: string): Promise<string | null>;
   setItemAsync(key: string, value: string): Promise<void>;
@@ -29,16 +46,16 @@ export function createMemoryTokenStorage(): TokenStorage {
   };
 }
 
-export function createSecureTokenStorage(adapter: SecureTokenStorageAdapter): TokenStorage {
+export function createSecureTokenStorage(adapter: SecureTokenStorageAdapter, storageKey = ACCESS_TOKEN_STORAGE_KEY): TokenStorage {
   return {
     async get() {
-      return (await adapter.getItemAsync(ACCESS_TOKEN_STORAGE_KEY)) ?? undefined;
+      return (await adapter.getItemAsync(storageKey)) ?? undefined;
     },
     async set(token) {
-      await adapter.setItemAsync(ACCESS_TOKEN_STORAGE_KEY, token);
+      await adapter.setItemAsync(storageKey, token);
     },
     async remove() {
-      await adapter.deleteItemAsync(ACCESS_TOKEN_STORAGE_KEY);
+      await adapter.deleteItemAsync(storageKey);
     },
   };
 }

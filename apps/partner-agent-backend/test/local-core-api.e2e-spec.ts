@@ -24,6 +24,8 @@ describe('Local Core REST API (e2e)', () => {
   beforeAll(async () => {
     process.env.AUTH_JWT_SECRET = secret;
     process.env.SESSION_STORE = 'memory';
+    vi.stubEnv('DEFAULT_PROVIDER', 'deepseek');
+    vi.stubEnv('DEFAULT_MODEL', 'deepseek-v4-flash');
 
     const moduleFixture = await Test.createTestingModule({
       imports: [ConfigModule.forRoot({ isGlobal: true }), LocalCoreApiModule],
@@ -63,6 +65,7 @@ describe('Local Core REST API (e2e)', () => {
     await app?.close();
     delete process.env.AUTH_JWT_SECRET;
     delete process.env.SESSION_STORE;
+    vi.unstubAllEnvs();
   });
 
   it('requires HTTP bearer authentication', async () => {
@@ -120,6 +123,43 @@ describe('Local Core REST API (e2e)', () => {
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(task.status).toBe(200);
     expect(task.body).toMatchObject({ task_id: taskId, state: 'queued' });
+  });
+
+  it('resolves the model-supported default when setting a model without a reasoning level', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/messages/set-model-selection')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(command('selection-default', {
+        session_id: 'owned-session',
+        model_config_id: 'deepseek:deepseek-v4-flash',
+        previous_model_config_id: 'deepseek:deepseek-v4-flash',
+      }));
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ changed: false, reasoning_level: 'low' });
+  });
+
+  it.each([
+    ['unsupported', 'deepseek:deepseek-v4-flash', 'medium', 'reasoning_level'],
+    ['invalid', 'deepseek:deepseek-v4-flash', 'invalid', 'reasoning_level'],
+    ['missing-model', 'deepseek:does-not-exist', 'low', 'model_config_id'],
+  ])('rejects %s model selections as validation errors without creating messages', async (key, model, level, field) => {
+    const before = await request(app.getHttpServer())
+      .get('/api/v1/chat-sessions/owned-session')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/inputs/text')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(command(`selection-${key}`, {
+        session_id: 'owned-session', input_id: `selection-${key}`, text: 'validation only',
+        model_config_id: model, reasoning_level: level,
+      }));
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({ code: 'VALIDATION_001', details: { field } });
+    const after = await request(app.getHttpServer())
+      .get('/api/v1/chat-sessions/owned-session')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(after.body.message_count).toBe(before.body.message_count);
+    expect(after.body.latest_task).toEqual(before.body.latest_task);
   });
 
   it('maps maintenance routes to candidate-only handlers', async () => {

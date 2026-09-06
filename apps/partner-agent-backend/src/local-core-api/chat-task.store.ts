@@ -1,4 +1,4 @@
-import type { ChatSessionTaskRef } from '@partner-agent/contracts';
+import type { ChatSessionTaskRef, ReasoningLevel } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import type { ChatTaskState } from '../database/entities/chat-task.entity.js';
 import type { TypeOrmChatTaskLifecycleOutbox } from './chat-task-lifecycle-outbox.js';
@@ -11,6 +11,8 @@ export interface SubmitTextCommand {
   text: string;
   inputId: string;
   sessionId?: string;
+  modelConfigId?: string;
+  reasoningLevel?: ReasoningLevel;
 }
 
 export interface RejectInputAnalysisCommand {
@@ -44,6 +46,8 @@ export interface AcceptedChatTask {
   operationId: string;
   inputId: string;
   text: string;
+  modelConfigId: string;
+  reasoningLevel: ReasoningLevel;
 }
 
 export interface StoredChatTask extends AcceptedChatTask {
@@ -65,9 +69,17 @@ export interface StoredChatTask extends AcceptedChatTask {
 
 export interface SessionMessageView {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   created_at: string;
+  sequence: number;
+  status?: 'pending' | 'streaming' | 'complete' | 'failed' | 'cancelled';
+  session_id?: string;
+  task_id?: string;
+  operation_id?: string;
+  metadata?: Record<string, unknown>;
+  model_config_id?: string;
+  reasoning_level?: ReasoningLevel;
 }
 
 export class ChatTaskConflictError extends Error {}

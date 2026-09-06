@@ -19,6 +19,7 @@ import {
   type AgentRuntimeTelemetry,
 } from './agent-runtime-telemetry.js';
 import { trimCompleteTurns } from './pi-agent-context.js';
+import { buildAgentSystemPrompt } from './agent-system-prompt.js';
 
 const fakeModel = {
   id: 'fake-model',
@@ -82,6 +83,37 @@ function mockGateway(legacy: {
 }
 
 describe('PiAgentService', () => {
+  it('assembles the versioned chat workspace system prompt into each Pi agent', async () => {
+    const sessions = new SessionManager(new ConfigService(), new MemorySessionStore());
+    const tools = createToolServices();
+    let systemPrompt = '';
+    const service = new PiAgentService(
+      new ConfigService({ DEFAULT_PROVIDER: 'deepseek' }),
+      mockGateway({
+        getModels: () => [fakeModel],
+        streamSimple: (_model, context) => {
+          systemPrompt = context.systemPrompt;
+          const stream = new AssistantMessageEventStream();
+          queueMicrotask(() => {
+            stream.push({ type: 'start', partial: assistantMessage });
+            stream.push({ type: 'done', reason: 'stop', message: assistantMessage });
+            stream.end(assistantMessage);
+          });
+          return stream;
+        },
+      }),
+      sessions,
+      tools.execution,
+      tools.registry,
+    );
+
+    for await (const _event of service.chat('prompt-session', '你好', 'user-a')) {
+      // Consume the run.
+    }
+
+    expect(systemPrompt).toBe(buildAgentSystemPrompt());
+  });
+
   it('applies request maxTokens and creates isolated metadata for consecutive runs', async () => {
     const sessions = new SessionManager(
       new ConfigService(),
@@ -1073,3 +1105,4 @@ describe('PiAgentService', () => {
     );
   });
 });
+

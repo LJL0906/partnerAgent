@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  ACCESS_TOKEN_STORAGE_KEY,
+  getScopedAccessTokenStorageKey,
   createMemoryTokenStorage,
   createSecureTokenStorage,
 } from './token-storage-core';
@@ -24,14 +24,22 @@ describe('token storage adapters', () => {
       setItemAsync: vi.fn(async () => undefined),
       deleteItemAsync: vi.fn(async () => undefined),
     };
-    const storage = createSecureTokenStorage(adapter);
+    const storage = createSecureTokenStorage(adapter, getScopedAccessTokenStorageKey('https://one.example'));
 
     expect(await storage.get()).toBe('stored-jwt');
     await storage.set('next-jwt');
     await storage.remove();
 
-    expect(adapter.getItemAsync).toHaveBeenCalledWith(ACCESS_TOKEN_STORAGE_KEY);
-    expect(adapter.setItemAsync).toHaveBeenCalledWith(ACCESS_TOKEN_STORAGE_KEY, 'next-jwt');
-    expect(adapter.deleteItemAsync).toHaveBeenCalledWith(ACCESS_TOKEN_STORAGE_KEY);
+    const key = getScopedAccessTokenStorageKey('https://one.example');
+    expect(adapter.getItemAsync).toHaveBeenCalledWith(key);
+    expect(adapter.setItemAsync).toHaveBeenCalledWith(key, 'next-jwt');
+    expect(adapter.deleteItemAsync).toHaveBeenCalledWith(key);
+    expect(getScopedAccessTokenStorageKey('https://two.example')).not.toBe(key);
+  });
+
+  it('normalizes equivalent server URLs into the same access-token scope', () => {
+    expect(getScopedAccessTokenStorageKey('https://one.example/')).toBe(
+      getScopedAccessTokenStorageKey('https://one.example'),
+    );
   });
 });

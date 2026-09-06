@@ -11,6 +11,8 @@ export function toStoredChatTask(
     sessionId: task.sessionId,
     operationId: task.operationId,
     inputId: task.inputId,
+    modelConfigId: task.modelConfigId,
+    reasoningLevel: task.reasoningLevel,
     text,
     state: task.state,
     originalRecordId: task.originalRecordId,

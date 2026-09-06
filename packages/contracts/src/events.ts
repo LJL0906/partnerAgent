@@ -103,7 +103,8 @@ export interface ToolControlAckV1 {
 }
 
 export interface SessionMessageV1 {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
+  metadata?: Record<string, unknown>;
   content: string;
   timestamp: number;
 }
@@ -288,7 +289,8 @@ export interface ToolUndoRequest extends SessionRequest {
 }
 
 export interface SessionMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
+  metadata?: Record<string, unknown>;
   content: string;
   timestamp: number;
 }

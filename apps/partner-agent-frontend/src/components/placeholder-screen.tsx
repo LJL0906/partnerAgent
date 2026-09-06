@@ -29,7 +29,7 @@ export function PlaceholderScreen({ description }: PlaceholderScreenProps) {
           title={description}
           description={null}
           actionLabel="前往助手"
-          onAction={() => router.navigate('/')}
+          onAction={() => router.navigate('/chat')}
         />
       </View>
     </ScrollView>

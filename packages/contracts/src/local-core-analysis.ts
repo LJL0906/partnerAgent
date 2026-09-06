@@ -1,4 +1,5 @@
 import type { ResourceRef, TaskRef } from './local-core.js';
+import type { ReasoningLevel } from './local-core-model.js';
 
 /** Local Core 支持的结构化分析类型。 */
 export const ANALYSIS_TYPES = [
@@ -50,6 +51,8 @@ export interface SubmitTextInputPayload {
   analysis_types?: NonEmptyAnalysisTypes;
   /** 前端输入幂等标识，重复网络重试不重复创建记录。 */
   input_id: string;
+  model_config_id: string;
+  reasoning_level: ReasoningLevel;
 }
 
 export interface SubmitTextInputResult {

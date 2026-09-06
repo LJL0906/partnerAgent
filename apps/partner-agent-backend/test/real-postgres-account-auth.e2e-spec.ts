@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest';
 import { createDatabaseDataSource } from '../src/database/database-definition.js';
-import { AccountStore } from '../src/auth/账户存储.js';
-import { accountContract } from './账户契约.js';
+import { AccountStore } from '../src/auth/account-store.js';
+import { accountContract } from './account-contract.js';
 
 const url = process.env.REAL_POSTGRES_DATABASE_URL;
 if (!url)

@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 
-import { createSecureTokenStorage } from './token-storage-core';
+import { createSecureTokenStorage, getScopedAccessTokenStorageKey } from './token-storage-core';
+import { apiConfig } from '@/api/config';
 
-export const tokenStorage = createSecureTokenStorage(SecureStore);
+export const tokenStorage = createSecureTokenStorage(SecureStore, getScopedAccessTokenStorageKey(apiConfig.serverUrl));

@@ -80,6 +80,8 @@ export function chatTaskStream(
     taskId: task.taskId,
     operationId: task.operationId,
     source: 'submit_text_input',
+    modelConfigId: task.modelConfigId,
+    reasoningLevel: task.reasoningLevel,
   });
 }
 

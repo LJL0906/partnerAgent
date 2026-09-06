@@ -1,4 +1,4 @@
-import { memorySessionTaskRefs } from './会话任务引用.js';
+import { memorySessionTaskRefs } from './session-task-reference.js';
 import { randomUUID } from 'node:crypto';
 import { SessionStore } from '../database/session-store.js';
 import {
@@ -127,6 +127,8 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       sessionId,
       operationId: command.operationId,
       inputId: command.inputId,
+      modelConfigId: command.modelConfigId ?? `${process.env.DEFAULT_PROVIDER ?? 'deepseek'}:${process.env.DEFAULT_MODEL ?? ''}`,
+      reasoningLevel: command.reasoningLevel ?? 'medium',
       text: command.text,
       state: 'queued',
       originalRecordId: randomUUID(),

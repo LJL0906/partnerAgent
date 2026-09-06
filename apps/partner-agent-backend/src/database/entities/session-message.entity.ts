@@ -1,3 +1,4 @@
+import type { ReasoningLevel } from '@partner-agent/contracts';
 import { Column, Entity, Index, PrimaryColumn, Unique } from 'typeorm';
 
 @Entity({ name: 'session_messages' })
@@ -40,6 +41,15 @@ export class SessionMessageEntity {
 
   @Column({ name: 'analysis_result_id', type: 'uuid', nullable: true })
   analysisResultId: string | null;
+
+  @Column({ name: 'metadata_json', type: 'jsonb', nullable: true })
+  metadataJson: Record<string, unknown> | null;
+
+  @Column({ name: 'model_config_id', type: 'text', nullable: true })
+  modelConfigId: string | null;
+
+  @Column({ name: 'reasoning_level', type: 'text', nullable: true })
+  reasoningLevel: ReasoningLevel | null;
 
   @Column({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

@@ -1,4 +1,8 @@
 import type { SessionMessage } from '@partner-agent/contracts';
+function compactTitle(content: string): string {
+  return content.replace(/\s+/g, ' ').trim().slice(0, 48) || '新对话';
+}
+
 import { SessionStore, type StoredSession } from './session-store.js';
 
 export class MemorySessionStore extends SessionStore {
@@ -6,7 +10,7 @@ export class MemorySessionStore extends SessionStore {
 
   async list(ownerId: string): Promise<StoredSession[]> {
     return [...this.sessions.values()]
-      .filter((session) => session.ownerId === ownerId)
+      .filter((session) => session.ownerId === ownerId && session.archivedAt === null)
       .sort(
         (a, b) =>
           b.lastActiveAt.getTime() - a.lastActiveAt.getTime() ||
@@ -43,13 +47,28 @@ export class MemorySessionStore extends SessionStore {
     const session: StoredSession = {
       id: sessionId,
       ownerId,
+      title: null,
       messages: [],
       contextMessages: [],
       contextRevision: 0,
       createdAt: now,
       lastActiveAt: now,
+      archivedAt: null,
     };
     this.sessions.set(sessionId, session);
+    return this.copy(session);
+  }
+
+  async rename(sessionId: string, ownerId: string, title: string): Promise<StoredSession> {
+    const session = this.requireOwned(sessionId, ownerId);
+    session.title = title;
+    session.lastActiveAt = new Date();
+    return this.copy(session);
+  }
+
+  async archive(sessionId: string, ownerId: string): Promise<StoredSession> {
+    const session = this.requireOwned(sessionId, ownerId);
+    session.archivedAt ??= new Date();
     return this.copy(session);
   }
 
@@ -60,12 +79,19 @@ export class MemorySessionStore extends SessionStore {
     content: string,
   ): Promise<void> {
     const session = this.requireOwned(sessionId, ownerId);
+    if (role === 'user' && session.title === null) session.title = compactTitle(content);
     session.messages.push({
       sequence: (session.messages.at(-1)?.sequence ?? 0) + 1,
       role,
       content,
       timestamp: Date.now(),
     });
+    session.lastActiveAt = new Date();
+  }
+
+  async appendSystemTip(sessionId: string, ownerId: string, content: string, metadata: { model_config_id: string; previous_model_config_id: string }): Promise<void> {
+    const session = this.requireOwned(sessionId, ownerId);
+    session.messages.push({ sequence: (session.messages.at(-1)?.sequence ?? 0) + 1, role: 'system', content, timestamp: Date.now(), metadata });
     session.lastActiveAt = new Date();
   }
 
@@ -109,6 +135,7 @@ export class MemorySessionStore extends SessionStore {
       contextMessages: structuredClone(session.contextMessages),
       createdAt: new Date(session.createdAt),
       lastActiveAt: new Date(session.lastActiveAt),
+      archivedAt: session.archivedAt ? new Date(session.archivedAt) : null,
     };
   }
 }

@@ -33,6 +33,8 @@ describe('submitTextInput', () => {
     await submitTextInput({
       text: '重试这条消息',
       sessionId: 'session-1',
+      modelConfigId: 'deepseek:deepseek-v4-flash',
+      reasoningLevel: 'medium',
       inputId: 'stable-input',
       operationId: 'stable-operation',
     });
@@ -45,7 +47,7 @@ describe('submitTextInput', () => {
   });
 
   it('generates ids when the caller starts a new command', async () => {
-    await submitTextInput({ text: '新消息', sessionId: 'session-1' });
+    await submitTextInput({ text: '新消息', sessionId: 'session-1', modelConfigId: 'deepseek:deepseek-v4-flash', reasoningLevel: 'medium' });
 
     expect(mocks.createCommandEnvelope).toHaveBeenCalledWith(
       expect.objectContaining({ input_id: 'generated-input' }),

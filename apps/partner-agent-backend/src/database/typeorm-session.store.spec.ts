@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ChatTaskEntity } from './entities/chat-task.entity.js';
-import { postgresSessionTaskRefs } from '../local-core-api/会话任务引用.js';
+import { postgresSessionTaskRefs } from '../local-core-api/session-task-reference.js';
 import { ConfigService } from '@nestjs/config';
 import { DataType, newDb } from 'pg-mem';
 import type { DataSource } from 'typeorm';
@@ -23,6 +23,28 @@ const entities = [
 ];
 
 describe('TypeOrmSessionStore', () => {
+  it('persists archivedAt and excludes archived sessions from list', async () => {
+    const database = newDb();
+    database.public.registerFunction({ name: 'version', returns: DataType.text, implementation: () => 'PostgreSQL 16.0' });
+    database.public.registerFunction({ name: 'current_database', returns: DataType.text, implementation: () => 'partner_agent_test' });
+    database.public.registerFunction({ name: 'quote_ident', args: [DataType.text], returns: DataType.text, implementation: (value) => `"${value}"` });
+    database.public.registerFunction({ name: 'obj_description', args: [DataType.regclass, DataType.text], returns: DataType.text, implementation: () => null });
+    database.public.registerFunction({ name: 'hashtext', args: [DataType.text], returns: DataType.integer, implementation: () => 1 });
+    database.public.registerFunction({ name: 'pg_advisory_xact_lock', args: [DataType.integer], returns: DataType.integer, implementation: () => 1 });
+    const dataSource = database.adapters.createTypeormDataSource({ type: 'postgres', entities, synchronize: true });
+    await dataSource.initialize();
+    const store = new TypeOrmSessionStore(new ConfigService(), dataSource);
+    await store.createIfAllowed('active', 'owner', 10);
+    await store.createIfAllowed('archived', 'owner', 10);
+
+    const archived = await store.archive('archived', 'owner');
+
+    expect(archived.archivedAt).toBeInstanceOf(Date);
+    expect((await store.find('archived', 'owner'))?.archivedAt).toBeInstanceOf(Date);
+    expect((await store.list('owner')).map((session) => session.id)).toEqual(['active']);
+    await dataSource.destroy();
+  });
+
   it('restores messages and Agent context through a new database connection', async () => {
     const database = newDb();
     database.public.registerFunction({

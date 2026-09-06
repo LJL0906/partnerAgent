@@ -1,93 +1,75 @@
-import { Text, View } from 'react-native';
+import type { ChatItem } from '@partner-agent/contracts';
 
-import { AppIcon } from '@/components/ui/app-icon';
-import { StatusBadge } from '@/components/ui/status-badge';
+import { UserMessage } from './messages/user-message';
+import { AssistantMessage } from './messages/assistant-message';
+import { SystemMessage } from './messages/system-message';
+import { ToolMessage } from './messages/tool-message';
+import { ApprovalCard } from './approval-card';
+import { CandidateCard } from './candidate-card';
+import { RuntimeStatusCard } from './runtime-status-card';
+import { SystemCard } from './system-card';
+import { ThinkingCard } from './thinking-card';
+import { ToolCallCard } from './tool-call-card';
+import { ReminderCard } from './reminder-card';
+import { SummaryCard } from './summary-card';
 import type { ChatMessage } from '@/store/chat-store';
-import { colors } from '@/theme/colors';
-import { radius } from '@/theme/radius';
-import { spacing } from '@/theme/spacing';
-import { typography } from '@/theme/typography';
+import type { CandidatePreviewDecision } from './chat-item-types';
+import { toolActionKey, type ToolActionFeedbackMap } from '../chat-tool-action-state';
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
-  if (message.role === 'tool') {
-    const finished = message.toolSuccess !== undefined;
-    const succeeded = message.toolSuccess === true;
-    const label = finished
-      ? `${message.tool ?? '工具'}执行${succeeded ? '完成' : '失败'}`
-      : message.content;
-    return (
-      <View style={{ alignSelf: 'stretch', alignItems: 'flex-start' }}>
-        <StatusBadge
-          label={label}
-          tone={!finished ? 'ai' : succeeded ? 'success' : 'danger'}
-        />
-      </View>
-    );
+  switch (message.role) {
+    case 'user': return <UserMessage message={message} />;
+    case 'assistant': return <AssistantMessage message={message} />;
+    case 'system': return <SystemMessage message={message} />;
+    case 'tool': return <ToolMessage message={message} />;
+    default: return <AssistantMessage message={message} />;
   }
+}
 
-  const isUser = message.role === 'user';
-  const isSystem = message.role === 'system';
+export type ChatItemBubbleActions = {
+  toolFeedback?: ToolActionFeedbackMap;
+  onConfirmTool?: (confirmationId: string) => void;
+  onDismissTool?: (confirmationId: string) => void;
+  onUndoTool?: (executionId: string) => void;
+  onCandidateDecision?: (decision: CandidatePreviewDecision) => void;
+};
 
-  if (isSystem) {
-    return (
-      <View
-        accessibilityRole="alert"
-        style={{
-          alignSelf: 'stretch',
-          flexDirection: 'row',
-          alignItems: 'flex-start',
-          gap: spacing.xs,
-          paddingHorizontal: 14,
-          paddingVertical: spacing.sm,
-          backgroundColor: colors.dangerSoft,
-          borderRadius: radius.medium,
-          borderCurve: 'continuous',
-        }}>
-        <AppIcon decorative color={colors.danger} name="error" size={18} />
-        <Text selectable style={{ flex: 1, color: colors.danger, ...typography.label }}>
-          {message.content}
-        </Text>
-      </View>
-    );
+export function ChatItemBubble({ item, actions = {} }: { item: ChatItem; actions?: ChatItemBubbleActions }) {
+  switch (item.type) {
+    case 'message':
+      return <MessageBubble message={{ id: item.id, role: item.payload.role, content: item.payload.content, createdAt: new Date(item.created_at).toISOString() }} />;
+    case 'thinking':
+      return <ThinkingCard content={item.payload.text ?? '正在整理信息…'} />;
+    case 'tool': {
+      const executionId = item.execution_id;
+      return <ToolCallCard toolName={item.payload.tool} state={item.status}
+        undoAvailable={item.payload.undo_available === true}
+        inputPreview={item.payload.input_summary} outputPreview={item.payload.output_summary}
+        feedback={executionId ? actions.toolFeedback?.[toolActionKey('undo', executionId)] : undefined}
+        onUndo={item.payload.undo_available && executionId && actions.onUndoTool
+          ? () => actions.onUndoTool?.(executionId) : undefined} />;
+    }
+    case 'candidate':
+      return <CandidateCard candidateId={item.candidate_id} title={`${item.payload.kind} 候选`} candidateType={item.payload.kind} summary={typeof item.payload.preview.summary === 'string' ? item.payload.preview.summary : undefined} previewOnly onDecision={actions.onCandidateDecision} />;
+    case 'approval': {
+      const confirmationId = item.approval_id ?? item.payload.approval_id;
+      return <ApprovalCard title="工具需要确认" status={item.status}
+        summary={item.payload.request_summary} previewOnly={false}
+        feedback={actions.toolFeedback?.[toolActionKey('confirm', confirmationId)]}
+        onApprove={actions.onConfirmTool ? () => actions.onConfirmTool?.(confirmationId) : undefined}
+        onReject={actions.onDismissTool ? () => actions.onDismissTool?.(confirmationId) : undefined} />;
+    }
+    case 'runtime':
+      return <RuntimeStatusCard state={item.payload.state === 'completed' ? 'completed' : item.payload.state === 'failed' ? 'failed' : item.payload.state === 'paused' ? 'paused' : 'running'} summary={item.payload.detail} />;
+    case 'error':
+      return <SystemCard title="处理失败" content={`${item.payload.code}：${item.payload.message}`} />;
+    case 'system':
+      return <SystemCard content={item.payload.message} />;
+    case 'reminder':
+      return <ReminderCard title={item.payload.title} dueAt={item.payload.due_at} />;
+    case 'summary':
+      return <SummaryCard content={item.payload.content} period={item.payload.period} />;
+    default:
+      return null;
   }
-
-  return (
-    <View style={{ alignSelf: isUser ? 'flex-end' : 'stretch', maxWidth: isUser ? '88%' : '100%' }}>
-      {!isUser ? (
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm }}>
-          <View
-            style={{
-              width: 36,
-              height: 36,
-              flexShrink: 0,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: radius.medium,
-              borderCurve: 'continuous',
-              backgroundColor: colors.aiCore,
-            }}>
-            <AppIcon accessibilityLabel="伙伴" color={colors.violet500} name="sparkle" size={18} />
-          </View>
-          <Text selectable style={{ flex: 1, color: colors.ink, ...typography.body }}>
-            {message.content}
-          </Text>
-        </View>
-      ) : (
-        <View
-          style={{
-            paddingHorizontal: spacing.md,
-            paddingVertical: spacing.sm,
-            backgroundColor: colors.surfaceSubtle,
-            borderColor: colors.border,
-            borderWidth: 1,
-            borderRadius: radius.large,
-            borderCurve: 'continuous',
-          }}>
-          <Text selectable style={{ color: colors.ink, ...typography.body }}>
-            {message.content}
-          </Text>
-        </View>
-      )}
-    </View>
-  );
 }

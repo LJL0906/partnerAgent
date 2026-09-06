@@ -1,5 +1,5 @@
-import { AccountStore } from '../src/auth/账户存储.js';
-import { accountContract } from './账户契约.js';
+import { AccountStore } from '../src/auth/account-store.js';
+import { accountContract } from './account-contract.js';
 accountContract('username/password accounts (memory)', async () => ({
   store: new AccountStore(),
 }));

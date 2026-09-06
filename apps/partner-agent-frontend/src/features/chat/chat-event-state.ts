@@ -1,20 +1,27 @@
-import { SENSITIVE_CATEGORIES } from '@partner-agent/contracts';
-import type { PrivacyDecisionStatus, ServerPushEventV1 } from '@partner-agent/contracts';
 import * as Crypto from 'expo-crypto';
 import type { MutableRefObject } from 'react';
 
+import { SENSITIVE_CATEGORIES } from '@partner-agent/contracts';
+import type { PrivacyDecisionStatus, ServerPushEventV1 } from '@partner-agent/contracts';
 import type { RecoverableTaskStatus } from '@/api/chat-api';
+import { mapServerPushEventToChatItems } from './chat-event-routing';
+
 import {
   isTerminalTaskStatus,
   useChatStore,
   type ChatTaskStatus,
 } from '@/store/chat-store';
 
+export { mapServerPushEventToChatItems } from './chat-event-routing';
+
 export function applyAgentEvent(
   event: ServerPushEventV1,
   assistantIdRef: MutableRefObject<string | undefined>,
 ): void {
   const state = useChatStore.getState();
+  for (const item of mapServerPushEventToChatItems(event)) {
+    if (!(item.type === 'message' && event.event_type === 'text_delta') && !(item.type === 'thinking' && event.event_type === 'thinking_delta')) state.upsertItem(item);
+  }
   switch (event.event_type) {
     case 'history':
       state.reconcileMessages(
@@ -22,6 +29,7 @@ export function applyAgentEvent(
           id: `history:${event.session_id ?? 'unknown'}:${message.timestamp}:${index}`,
           role: message.role,
           content: message.content,
+          createdAt: new Date(message.timestamp).toISOString(),
         })),
       );
       assistantIdRef.current = findLatestAssistantId();
@@ -32,31 +40,26 @@ export function applyAgentEvent(
       if (!assistantId) {
         assistantId = Crypto.randomUUID();
         assistantIdRef.current = assistantId;
-        state.addMessage({ id: assistantId, role: 'assistant', content: '' });
+        state.addMessage({ id: assistantId, role: 'assistant', content: '', createdAt: new Date().toISOString() });
       }
       state.setStreaming(true);
       state.setThinking(false);
-      state.appendAssistantContent(assistantId, event.data);
+      state.upsertItem({ schema_version: 1, id: assistantId, type: 'message', status: 'streaming', collapsed: false, created_at: Date.now(), updated_at: Date.now(), session_id: event.session_id, task_id: event.task_id, operation_id: event.operation_id, message_id: assistantId, payload: { role: 'assistant', content: event.data, format: 'markdown' } });
       return;
     }
-    case 'thinking_delta':
+    case 'thinking_delta': {
       if (!state.setTaskStatus('running')) return;
       state.setStreaming(true);
       state.setThinking(true);
+      const [item] = mapServerPushEventToChatItems(event);
+      if (item) state.upsertItem(item);
       return;
+    }
     case 'tool_execution_start':
-      if (!state.setTaskStatus('running')) return;
-      state.addMessage({
-        id: `tool:${event.data.tool_call_id}`,
-        role: 'tool',
-        content: `正在执行 ${event.data.tool}`,
-        tool: event.data.tool,
-        toolCallId: event.data.tool_call_id,
-      });
+      state.setTaskStatus('running');
       return;
     case 'tool_execution_end':
       if (isTerminalTaskStatus(state.taskStatus)) return;
-      state.completeTool(event.data.tool_call_id, event.data.success);
       return;
     case 'task_state':
       applyTaskState(
@@ -164,3 +167,7 @@ function findLatestAssistantId(): string | undefined {
   const last = messages[messages.length - 1];
   return last?.role === 'assistant' ? last.id : undefined;
 }
+
+
+
+

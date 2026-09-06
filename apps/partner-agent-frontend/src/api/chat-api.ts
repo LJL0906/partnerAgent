@@ -2,10 +2,13 @@ import type {
   CommandEnvelope,
   CommandResult,
   ChatSessionSummary,
+  ChatSessionListItem,
   ListChatSessionsResult,
   SubmitTextInputPayload,
   SubmitTextInputResult,
   TaskStatus,
+  ModelConfig,
+  ReasoningLevel,
 } from '@partner-agent/contracts';
 
 import { createCommandEnvelope, createOperationId } from './command-envelope';
@@ -19,6 +22,8 @@ export interface SubmitTextInputParams {
   operationId?: string;
   requestAnalysis?: boolean;
   analysisTypes?: SubmitTextInputPayload['analysis_types'];
+  modelConfigId: string;
+  reasoningLevel: ReasoningLevel;
   signal?: AbortSignal;
 }
 
@@ -37,6 +42,8 @@ export async function submitTextInput(
     request_analysis: params.requestAnalysis ?? false,
     analysis_types: params.analysisTypes,
     input_id: inputId,
+    model_config_id: params.modelConfigId,
+    reasoning_level: params.reasoningLevel,
   };
   const envelope = await createCommandEnvelope(payload, { operationId });
 
@@ -50,7 +57,6 @@ export async function submitTextInput(
 export type RecoverableTaskStatus = TaskStatus;
 
 export type RecoverableChatSession = ChatSessionSummary;
-
 export function getTaskStatus(
   taskId: string,
   options: RequestOptions = {},
@@ -81,4 +87,32 @@ export async function cancelTask(
 
 export function listChatSessions(options: RequestOptions = {}): Promise<ListChatSessionsResult> {
   return getJson(apiConfig.chatSessionPath, options);
+}
+
+
+export async function renameChatSession(sessionId: string, title: string): Promise<ChatSessionListItem> {
+  const operationId = createOperationId();
+  const envelope = await createCommandEnvelope({ title }, { operationId });
+  return postJson<typeof envelope, ChatSessionListItem>(
+    `${apiConfig.renameChatSessionPath}/${encodeURIComponent(sessionId)}/rename`,
+    envelope,
+  );
+}
+
+export async function archiveChatSession(sessionId: string): Promise<ChatSessionListItem> {
+  const operationId = createOperationId();
+  const envelope = await createCommandEnvelope({}, { operationId });
+  return postJson<typeof envelope, ChatSessionListItem>(
+    `${apiConfig.archiveChatSessionPath}/${encodeURIComponent(sessionId)}/archive`,
+    envelope,
+  );
+}
+
+export function listModelConfigs(): Promise<{ items: ModelConfig[] }> { return getJson(apiConfig.modelConfigsPath); }
+
+
+export async function setMessageModelSelection(params: { sessionId: string; previousModelConfigId?: string; modelConfigId: string; reasoningLevel: ReasoningLevel }): Promise<CommandResult> {
+  const operationId = createOperationId();
+  const envelope = await createCommandEnvelope({ session_id: params.sessionId, previous_model_config_id: params.previousModelConfigId, model_config_id: params.modelConfigId, reasoning_level: params.reasoningLevel }, { operationId });
+  return postJson<typeof envelope, CommandResult>(apiConfig.setModelSelectionPath, envelope);
 }

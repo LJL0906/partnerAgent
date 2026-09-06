@@ -22,7 +22,11 @@ export const apiConfig = {
   submitTextPath: '/api/v1/inputs/text',
   cancelTaskPath: '/api/v1/tasks/cancel',
   submitPrivacyDecisionPath: '/api/v1/privacy-decisions/submit',
+  setModelSelectionPath: '/api/v1/messages/set-model-selection',
   taskPath: '/api/v1/tasks',
+  modelConfigsPath: '/api/v1/model-configs',
   chatSessionPath: '/api/v1/chat-sessions',
+  renameChatSessionPath: '/api/v1/chat-sessions',
+  archiveChatSessionPath: '/api/v1/chat-sessions',
   streamNamespace: '/ws/v1',
 } as const;

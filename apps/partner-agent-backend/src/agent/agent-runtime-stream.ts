@@ -1,15 +1,15 @@
 import type { Model } from '@earendil-works/pi-ai';
+import type { ReasoningLevel } from '@partner-agent/contracts';
 import type { ModelGatewayService } from '../model-gateway/model-gateway.service.js';
 import type { AgentRuntimePolicy } from './agent-runtime-policy.js';
-import type {
-  AgentRuntimeTelemetry,
-  AgentRunTrace,
-} from './agent-runtime-telemetry.js';
+import type { AgentRuntimeTelemetry, AgentRunTrace } from './agent-runtime-telemetry.js';
 
 export interface PiChatContext {
   taskId?: string;
   operationId?: string;
   source?: string;
+  modelConfigId?: string;
+  reasoningLevel?: ReasoningLevel;
 }
 
 export function startAgentRunTrace(
@@ -55,6 +55,7 @@ export function createBudgetedAgentStream(
     const requestBudget = trace.budget.startModelRequest(model.maxTokens);
     return stream(model, agentContext, {
       ...options,
+      ...(context.reasoningLevel && context.reasoningLevel !== 'off' ? { reasoning: context.reasoningLevel } : {}),
       maxTokens: Math.min(
         options?.maxTokens ?? Number.POSITIVE_INFINITY,
         requestBudget.maxTokens,

@@ -464,3 +464,7 @@ export * from './local-core-queries.js';
 
 /** @deprecated 从 events.ts 导入 ServerPushEventV1。 */
 export type ServerPushEvent = import('./events').ServerPushEventV1;
+
+export interface RenameChatSessionPayload { session_id: string; title: string; }
+
+export interface RenameChatSessionPayload { session_id: string; title: string; }

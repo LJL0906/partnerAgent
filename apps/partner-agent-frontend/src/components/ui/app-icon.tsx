@@ -12,6 +12,7 @@ const iconMap = {
   profile: { ios: 'person', android: 'person', web: 'person' },
   back: { ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' },
   more: { ios: 'ellipsis', android: 'more_horiz', web: 'more_horiz' },
+  edit: { ios: 'pencil', android: 'edit', web: 'edit' },
   history: { ios: 'clock.arrow.circlepath', android: 'history', web: 'history' },
   add: { ios: 'plus', android: 'add', web: 'add' },
   send: { ios: 'arrow.up', android: 'send', web: 'send' },
@@ -31,6 +32,7 @@ const iconMap = {
   shield: { ios: 'checkmark.shield', android: 'verified_user', web: 'verified_user' },
   logout: { ios: 'rectangle.portrait.and.arrow.right', android: 'logout', web: 'logout' },
   clock: { ios: 'clock', android: 'schedule', web: 'schedule' },
+  archive: { ios: 'archivebox', android: 'inventory_2', web: 'inventory_2' },
 } as const satisfies Record<string, ComponentProps<typeof SymbolView>['name']>;
 
 export type AppIconName = keyof typeof iconMap;

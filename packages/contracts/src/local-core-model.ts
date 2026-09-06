@@ -2,6 +2,9 @@
 
 export type ProviderId = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'local';
 
+export const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
 export interface ModelConfig {
   id: string;
   provider: ProviderId;
@@ -15,6 +18,7 @@ export interface ModelConfig {
   sort_order?: number;
   /** 支持的能力（能力发现）。 */
   capabilities?: Array<'chat' | 'vision' | 'embedding' | 'reasoning'>;
+  reasoning_levels?: ReasoningLevel[];
 }
 
 /** 新增或更新模型配置。API Key 仅进入安全存储。 */
@@ -37,11 +41,11 @@ export interface SetDefaultModelPayload {
   model_config_id: string;
 }
 
-export type ReasoningLevel = 'low' | 'medium' | 'high';
-
 /** 设置当前消息的模型和推理等级。只影响当前消息。 */
 export interface SetMessageModelSelectionPayload {
-  message_id: string;
+  session_id: string;
+  message_id?: string;
+  previous_model_config_id?: string;
   model_config_id: string;
   reasoning_level: ReasoningLevel;
 }

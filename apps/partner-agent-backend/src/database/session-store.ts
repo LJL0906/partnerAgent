@@ -8,12 +8,14 @@ export interface StoredSessionMessage extends SessionMessage {
 export interface StoredSession {
   id: string;
   ownerId: string;
+  title: string | null;
   messages: StoredSessionMessage[];
   contextMessages: unknown[];
   /** 已包含在 contextMessages 中的最后一条持久消息序号。 */
   contextRevision: number;
   createdAt: Date;
   lastActiveAt: Date;
+  archivedAt: Date | null;
 }
 
 export abstract class SessionStore {
@@ -28,11 +30,19 @@ export abstract class SessionStore {
     ownerId: string,
     maxSessionsPerUser: number,
   ): Promise<StoredSession>;
+  abstract rename(sessionId: string, ownerId: string, title: string): Promise<StoredSession>;
+  abstract archive(sessionId: string, ownerId: string): Promise<StoredSession>;
   abstract appendMessage(
     sessionId: string,
     ownerId: string,
     role: SessionMessage['role'],
     content: string,
+  ): Promise<void>;
+  abstract appendSystemTip(
+    sessionId: string,
+    ownerId: string,
+    content: string,
+    metadata: { model_config_id: string; previous_model_config_id: string },
   ): Promise<void>;
   abstract completeAssistantTurn(
     sessionId: string,

@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Post,
+  Param,
   Req,
   UseGuards,
   UseInterceptors,
@@ -106,6 +107,20 @@ export class LocalCoreCommandController {
       ...trustedInput
     } = input;
     return trustedInput;
+  }
+
+  @Post('chat-sessions/:sessionId/rename')
+  @HttpCode(200)
+  renameChatSession(@Req() r: AuthenticatedRequest, @Param('sessionId') id: string, @Body() b: CommandEnvelopeBody) {
+    const payload = b.payload && typeof b.payload === 'object' ? { ...(b.payload as Record<string, unknown>), session_id: id } : { session_id: id };
+    return this.command('RenameChatSession', r, { ...b, payload });
+  }
+
+  @Post('chat-sessions/:sessionId/archive')
+  @HttpCode(200)
+  archiveChatSession(@Req() r: AuthenticatedRequest, @Param('sessionId') id: string, @Body() b: CommandEnvelopeBody) {
+    const payload = b.payload && typeof b.payload === 'object' ? { ...(b.payload as Record<string, unknown>), session_id: id } : { session_id: id };
+    return this.command('ArchiveChatSession', r, { ...b, payload });
   }
 
   @Post('inputs/text')

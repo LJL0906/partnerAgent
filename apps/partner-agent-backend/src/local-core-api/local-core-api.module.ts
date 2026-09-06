@@ -16,9 +16,11 @@ import {
   PiChatTaskScheduler,
 } from './chat-task-scheduler.js';
 import { PrivacyDecisionService } from './privacy-decision.service.js';
+import { ModelSelectionService } from './model-selection.service.js';
+import { ModelGatewayModule } from '../model-gateway/model-gateway.module.js';
 
 @Module({
-  imports: [AuthModule, DatabaseModule, AgentModule],
+  imports: [AuthModule, DatabaseModule, AgentModule, ModelGatewayModule],
   controllers: [LocalCoreCommandController, LocalCoreQueryController],
   providers: [
     CommandStatusInterceptor,
@@ -28,6 +30,7 @@ import { PrivacyDecisionService } from './privacy-decision.service.js';
     ChatTaskEventBus,
     ChatTaskOwnershipService,
     PrivacyDecisionService,
+    ModelSelectionService,
     PiChatTaskScheduler,
     { provide: ChatTaskScheduler, useExisting: PiChatTaskScheduler },
     {

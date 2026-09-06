@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Text, View } from 'react-native';
+import type { TextStyle } from 'react-native';
 
 import { colors } from '@/theme/colors';
 import { spacing } from '@/theme/spacing';
@@ -16,9 +17,10 @@ export type AppHeaderProps = {
   leadingAction?: AppHeaderAction;
   trailingAction?: AppHeaderAction;
   trailing?: ReactNode;
+  titleStyle?: TextStyle;
 };
 
-export function AppHeader({ title, subtitle, brand = false, leadingAction, trailingAction, trailing }: AppHeaderProps) {
+export function AppHeader({ title, subtitle, brand = false, leadingAction, trailingAction, trailing, titleStyle }: AppHeaderProps) {
   return (
     <View accessibilityRole="header" style={{ alignItems: 'center', flexDirection: 'row', gap: spacing.sm, minHeight: 56, paddingHorizontal: spacing.md, paddingVertical: spacing.xs }}>
       {leadingAction ? <AppButton accessibilityLabel={leadingAction.accessibilityLabel} icon={leadingAction.icon} onPress={leadingAction.onPress} variant="icon" /> : null}
@@ -29,7 +31,7 @@ export function AppHeader({ title, subtitle, brand = false, leadingAction, trail
             <Text style={{ color: colors.violet500 }}>{title.slice(1)}</Text>
           </Text>
         ) : (
-          <Text maxFontSizeMultiplier={2} numberOfLines={2} style={[typography.pageTitle, { color: colors.ink }]}>{title}</Text>
+          <Text maxFontSizeMultiplier={2} numberOfLines={2} style={[typography.pageTitle, { color: colors.ink }, titleStyle]}>{title}</Text>
         )}
         {subtitle ? <Text maxFontSizeMultiplier={2} numberOfLines={2} style={[typography.caption, { color: colors.textSecondary }]}>{subtitle}</Text> : null}
       </View>

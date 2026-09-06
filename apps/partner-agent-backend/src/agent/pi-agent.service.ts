@@ -26,6 +26,7 @@ import {
   type AgentRunTrace,
 } from './agent-runtime-telemetry.js';
 import { mapPiAgentEvent, type BackendAgentEvent } from './pi-agent-events.js';
+import { buildAgentSystemPrompt } from './agent-system-prompt.js';
 import {
   createBudgetedAgentStream,
   startAgentRunTrace,
@@ -72,15 +73,17 @@ export class PiAgentService implements OnModuleInit {
   ): AsyncGenerator<BackendAgentEvent> {
     const provider =
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
-    const modelId = this.configService.get<string>('DEFAULT_MODEL');
-    const model = this.resolveModel(provider, modelId);
+    const selected = context.modelConfigId?.split(':');
+    const selectedProvider = selected?.[0] ?? provider;
+    const selectedModelId = selected?.slice(1).join(':') || this.configService.get<string>('DEFAULT_MODEL');
+    const model = this.resolveModel(selectedProvider, selectedModelId);
 
     if (!model) {
       const availableModels = this.availableModels(provider)
         .map((entry) => entry.id)
         .join(', ');
       throw new Error(
-        `模型未配置: ${provider}/${modelId ?? '<默认模型>'}。可用模型: ${availableModels || '<无>'}`,
+        `模型未配置: ${selectedProvider}/${selectedModelId ?? '<默认模型>'}。可用模型: ${availableModels || '<无>'}`,
       );
     }
 
@@ -125,8 +128,10 @@ export class PiAgentService implements OnModuleInit {
   ): AsyncGenerator<BackendAgentEvent> {
     const provider =
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
-    const modelId = this.configService.get<string>('DEFAULT_MODEL');
-    const model = this.resolveModel(provider, modelId);
+    const selected = context.modelConfigId?.split(':');
+    const selectedProvider = selected?.[0] ?? provider;
+    const selectedModelId = selected?.slice(1).join(':') || this.configService.get<string>('DEFAULT_MODEL');
+    const model = this.resolveModel(selectedProvider, selectedModelId);
     if (!model) throw new Error('模型未配置，无法继续工具审批后的 Agent 回合');
 
     const session = await this.sessionManager.getOrCreate(sessionId, userId);
@@ -182,8 +187,10 @@ export class PiAgentService implements OnModuleInit {
   ): AsyncGenerator<BackendAgentEvent> {
     const provider =
       this.configService.get<string>('DEFAULT_PROVIDER') ?? 'deepseek';
-    const modelId = this.configService.get<string>('DEFAULT_MODEL');
-    const model = this.resolveModel(provider, modelId);
+    const selected = context.modelConfigId?.split(':');
+    const selectedProvider = selected?.[0] ?? provider;
+    const selectedModelId = selected?.slice(1).join(':') || this.configService.get<string>('DEFAULT_MODEL');
+    const model = this.resolveModel(selectedProvider, selectedModelId);
     if (!model) {
       yield* this.chat(sessionId, message, userId, context);
       return;
@@ -432,8 +439,7 @@ export class PiAgentService implements OnModuleInit {
     return new Agent({
       sessionId,
       initialState: {
-        systemPrompt:
-          '你是紫灵AI，一个友好的个人智能助手。请使用中文回答，回答清晰、准确、简洁。',
+        systemPrompt: buildAgentSystemPrompt(),
         model,
         messages,
         tools: this.toolExecution.createAgentTools({
@@ -478,3 +484,4 @@ export class PiAgentService implements OnModuleInit {
     return buildDirectChatContext(session, acceptedPrompt, model);
   }
 }
+

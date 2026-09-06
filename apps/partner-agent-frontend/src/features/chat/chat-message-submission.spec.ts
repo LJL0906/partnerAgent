@@ -78,7 +78,7 @@ describe('chat message submission', () => {
       operationId: 'uuid-2',
     });
     expect(useChatStore.getState().messages.filter((message) => message.role === 'user')).toEqual([
-      { id: 'message-1', role: 'user', content: '同一条消息' },
+      expect.objectContaining({ id: 'message-1', role: 'user', content: '同一条消息' }),
     ]);
     expect(sharedRefs.pendingSubmissionRef.current).toBeUndefined();
   });
@@ -92,6 +92,8 @@ function refs() {
     currentTaskIdRef: { current: undefined },
     pendingSubmissionRef: { current: undefined as PendingChatSubmission | undefined },
     previousTaskIdRef: { current: undefined },
+    modelConfigId: 'deepseek:deepseek-v4-flash',
+    reasoningLevel: 'medium' as const,
   };
 }
 
@@ -113,3 +115,4 @@ function fakeConnection(): AgentStreamConnection {
   connection.unsubscribe = vi.fn(async () => undefined);
   return connection;
 }
+

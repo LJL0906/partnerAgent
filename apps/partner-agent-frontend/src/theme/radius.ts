@@ -1,11 +1,11 @@
 export const radius = {
-  small: 10,
-  medium: 16,
-  large: 22,
+  small: 6,
+  medium: 10,
+  large: 14,
   pill: 999,
-  sm: 10,
-  md: 16,
-  lg: 22,
+  sm: 6,
+  md: 10,
+  lg: 14,
 } as const;
 
-export const cut = { corner: 10 } as const;
+export const cut = { corner: 6 } as const;

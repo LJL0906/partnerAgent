@@ -35,7 +35,7 @@ npm run start --workspace @partner-agent/frontend -- -c
 
 ## 传输边界
 
-正式账户提供用户名密码注册、登录、刷新与退出；访问令牌仅在内存中，Native 刷新凭据按服务地址隔离保存在 SecureStore，Web 刷新凭据为 HttpOnly Cookie。退出撤销当前登录会话并清理聊天引用。旧 JWT 输入页面已移除，开发 CLI 仅用于工程验证；不自动迁移旧开发身份的会话。账户接口及验收边界见 [用户名密码登录闭环](../../docs/05-任务架构/2026-09-05-用户名密码登录闭环.md)。
+正式account提供用户名密码注册、登录、刷新与退出；访问令牌仅在内存中，Native refresh-credential按服务地址隔离保存在 SecureStore，Web refresh-credential为 HttpOnly Cookie。退出撤销当前登录会话并清理聊天引用。旧 JWT 输入页面已移除，开发 CLI 仅用于工程验证；不自动迁移旧开发身份的会话。account-controller及验收边界见 [用户名密码登录闭环](../../docs/05-任务架构/2026-09-05-用户名密码登录闭环.md)。
 
 页面和 feature 不直接调用 `fetch`、`socket.emit` 或后端 DTO：
 

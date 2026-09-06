@@ -1,3 +1,4 @@
+import type { ChatItem } from './chat-items.js';
 import type {
   BusinessObjectKind,
   CandidateStatus,
@@ -46,6 +47,8 @@ export interface ListChatSessionsResult {
   items: ChatSessionListItem[];
 }
 export interface ChatSessionSummary extends ChatSessionListItem {
+  /** Presence is authoritative, including an empty array; absent on legacy responses. */
+  items?: ChatItem[];
   id: string;
   title?: string;
   created_at: string;
@@ -55,8 +58,11 @@ export interface ChatSessionSummary extends ChatSessionListItem {
   /** REST 恢复所需的已持久化消息，按 created_at 升序返回。 */
   messages: Array<{
     id: string;
-    role: 'user' | 'assistant';
+    role: 'user' | 'assistant' | 'system';
     content: string;
+    model_config_id?: string;
+    reasoning_level?: 'low' | 'medium' | 'high';
+    metadata?: Record<string, unknown>;
     created_at: string;
   }>;
 }

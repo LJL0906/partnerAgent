@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   dispatchApplicationEvent,
+  mapServerPushEventToChatItems,
   type ApplicationEvent,
   PENDING_CHAT_TASK_ID,
   routeAgentEvent,
@@ -106,3 +107,19 @@ function event(
     data: {},
   };
 }
+
+
+describe('maps non-text runtime events into recoverable items', () => {
+  const base = { schema_version: 1 as const, channel: 'session:s1' as const, sequence: 2, session_id: 's1', task_id: 't1', operation_id: 'o1', timestamp: 2 };
+  it('does not drop reminder, summary, approval, undo, or recovery events', () => {
+    const events: ServerPushEventV1[] = [
+      { ...base, event_id: 'r', event_type: 'reminder', data: { reminder_instance_id: 'rem-1' } },
+      { ...base, event_id: 's', event_type: 'summary', data: { summary_id: 'sum-1', summary_kind: 'daily' } },
+      { ...base, event_id: 'a', event_type: 'tool_confirmation_pending', data: { confirmation_id: 'a-1', tool: 'search', tool_call_id: 'c-1', risk_level: 'low', request_summary: '查询资料', expires_at: 3 } },
+      { ...base, event_id: 'u', event_type: 'tool_undo_available', data: { execution_id: 'x-1', tool: 'search', expires_at: 3 } },
+      { ...base, event_id: 'x', event_type: 'recovery_required', data: { reason: 'event_expired' } },
+    ];
+    expect(events.flatMap(mapServerPushEventToChatItems).map((item) => item.type)).toEqual(['reminder', 'summary', 'approval', 'tool', 'system']);
+  });
+});
+

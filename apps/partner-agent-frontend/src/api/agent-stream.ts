@@ -4,25 +4,33 @@ import type {
   SubscriptionAckV1,
   SubscriptionChannel,
   UnsubscribeRequestV1,
+  ToolConfirmationControlRequestV1,
+  ToolUndoControlRequestV1,
+  ToolControlAckV1,
 } from '@partner-agent/contracts';
 import { WS_CONTROL_EVENTS, WS_SERVER_EVENTS } from '@partner-agent/contracts';
 import * as Crypto from 'expo-crypto';
 import { io, type Socket } from 'socket.io-client';
 
 import { requireAccessToken } from './access-token';
-import { configureStreamAuthentication } from './实时鉴权';
+import { configureStreamAuthentication } from './realtime-auth';
 import { apiConfig } from './config';
+import { ToolControlRequests } from './tool-control-requests';
 const MAX_SEEN_EVENT_IDS = 500;
 const activeStreamClosers = new Set<() => void>();
 
 interface ServerToClientEvents {
   agent_event: (event: ServerPushEventV1) => void;
   subscription_ack: (ack: SubscriptionAckV1) => void;
+  tool_control_ack: (ack: unknown) => void;
 }
 
 interface ClientToServerEvents {
   subscribe: (request: SubscribeRequestV1) => void;
   unsubscribe: (request: UnsubscribeRequestV1) => void;
+  confirm_tool_execution: (request: ToolConfirmationControlRequestV1) => void;
+  dismiss_tool_execution: (request: ToolConfirmationControlRequestV1) => void;
+  undo_tool_execution: (request: ToolUndoControlRequestV1) => void;
 }
 
 interface ChannelWatermark {
@@ -72,6 +80,9 @@ export interface AgentStreamConnection {
   setChannels: (channels: SubscriptionChannel[]) => Promise<StreamChannelUpdate>;
   subscribe: (channels: SubscriptionChannel[]) => Promise<SubscriptionAckV1>;
   unsubscribe: (channels: SubscriptionChannel[]) => Promise<SubscriptionAckV1 | undefined>;
+  confirmTool: (request: Omit<ToolConfirmationControlRequestV1, 'request_id'>) => Promise<ToolControlAckV1>;
+  dismissTool: (request: Omit<ToolConfirmationControlRequestV1, 'request_id'>) => Promise<ToolControlAckV1>;
+  undoTool: (request: Omit<ToolUndoControlRequestV1, 'request_id'>) => Promise<ToolControlAckV1>;
 }
 
 export class SubscriptionRejectedError extends Error {
@@ -145,6 +156,7 @@ export async function subscribeAgentStream(
   const seenEventOrder: string[] = [];
   const pendingRequests = new Map<string, PendingRequest>();
   const deferredSubscriptions: DeferredSubscription[] = [];
+  const toolControls = new ToolControlRequests();
   let closed = false;
   const authentication = configureStreamAuthentication(socket, accessToken, () => closed, () => subscription.onStatusChange?.('auth_required'));
   let hasBeenReady = false;
@@ -186,6 +198,15 @@ export async function subscribeAgentStream(
       }
       else deferred.resolve(deferredAck);
     }
+  };
+
+  const sendToolControl = (
+    action: ToolControlAckV1['action'],
+    emit: (requestId: string) => void,
+  ): Promise<ToolControlAckV1> => {
+    if (closed || !socket.connected) return Promise.reject(new StreamDisconnectedError());
+    const requestId = Crypto.randomUUID();
+    return toolControls.send(requestId, action, () => emit(requestId));
   };
 
   const handleSubscriptionAck = (ack: SubscriptionAckV1) => {
@@ -300,6 +321,7 @@ export async function subscribeAgentStream(
     acknowledgedChannels.clear();
     for (const pending of pendingRequests.values()) pending.reject(new StreamDisconnectedError());
     pendingRequests.clear();
+    toolControls.rejectAll(new StreamDisconnectedError());
     if (!closed) subscription.onStatusChange?.('disconnected');
     authentication.disconnected(reason);
   };
@@ -326,6 +348,7 @@ export async function subscribeAgentStream(
     activeStreamClosers.delete(close);
     for (const pending of pendingRequests.values()) pending.reject(error);
     pendingRequests.clear();
+    toolControls.rejectAll(error);
     for (const deferred of deferredSubscriptions.splice(0)) deferred.reject(error);
     desiredChannels.clear();
     acknowledgedChannels.clear();
@@ -344,6 +367,7 @@ export async function subscribeAgentStream(
   socket.on('connect_error', handleConnectError);
   socket.on(WS_SERVER_EVENTS.AGENT_EVENT, handleEvent);
   socket.on(WS_CONTROL_EVENTS.SUBSCRIPTION_ACK, handleSubscriptionAck);
+  socket.on(WS_CONTROL_EVENTS.TOOL_CONTROL_ACK, (ack) => toolControls.acknowledge(ack));
   socket.connect();
 
   try {
@@ -358,6 +382,15 @@ export async function subscribeAgentStream(
   connection.getChannels = () => [...desiredChannels];
   connection.subscribe = subscribeChannels;
   connection.unsubscribe = unsubscribeChannels;
+  connection.confirmTool = (request) => sendToolControl('confirm', (requestId) => {
+    socket.emit(WS_CONTROL_EVENTS.CONFIRM_TOOL_EXECUTION, { ...request, request_id: requestId });
+  });
+  connection.dismissTool = (request) => sendToolControl('dismiss', (requestId) => {
+    socket.emit(WS_CONTROL_EVENTS.DISMISS_TOOL_EXECUTION, { ...request, request_id: requestId });
+  });
+  connection.undoTool = (request) => sendToolControl('undo', (requestId) => {
+    socket.emit(WS_CONTROL_EVENTS.UNDO_TOOL_EXECUTION, { ...request, request_id: requestId });
+  });
   connection.setChannels = async (channels) => {
     const next = new Set(channels);
     const additions = [...next].filter((channel) => !desiredChannels.has(channel));

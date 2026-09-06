@@ -42,26 +42,23 @@ describe('auth store', () => {
     await expect(getAccessToken()).resolves.toBe(token);
   });
 
-  it('restores a valid token before marking auth ready', async () => {
+  it('does not restore a persisted access token without a refresh credential', async () => {
     const token = jwt({ exp: Math.floor(Date.now() / 1000) + 600 });
     storage.get.mockResolvedValue(token);
 
     await bootstrapAuth();
 
-    expect(useAuthStore.getState()).toMatchObject({
-      status: 'authenticated',
-      isReady: true,
-      token,
-    });
+    expect(useAuthStore.getState()).toMatchObject({ status: 'unauthenticated', isReady: true });
+    expect(useAuthStore.getState().token).toBeUndefined();
   });
 
-  it('removes an expired restored token and exposes the expired state', async () => {
+  it('does not inspect or remove an expired access token during bootstrap', async () => {
     storage.get.mockResolvedValue(jwt({ exp: Math.floor(Date.now() / 1000) - 1 }));
 
     await bootstrapAuth();
 
-    expect(storage.remove).toHaveBeenCalledOnce();
-    expect(useAuthStore.getState()).toMatchObject({ status: 'expired', isReady: true });
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(useAuthStore.getState()).toMatchObject({ status: 'unauthenticated', isReady: true });
     expect(useAuthStore.getState().token).toBeUndefined();
   });
 
