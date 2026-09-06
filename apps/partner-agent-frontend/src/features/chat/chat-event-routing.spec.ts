@@ -2,8 +2,7 @@ import type { CandidateEventV1, ServerPushEventV1 } from '@partner-agent/contrac
 import { describe, expect, it } from 'vitest';
 
 import {
-  dispatchApplicationEvent, mapServerPushEventToChatItems, PENDING_CHAT_TASK_ID,
-  routeAgentEvent, subscribeApplicationEvents, type ApplicationEvent,
+  mapServerPushEventToChatItems, PENDING_CHAT_TASK_ID, routeAgentEvent,
 } from './chat-event-routing';
 
 const operationId = '11111111-1111-4111-8111-111111111111';
@@ -29,14 +28,22 @@ function done(taskId: string, sessionId: string): ServerPushEventV1 {
 }
 
 describe('chat event routing', () => {
-  it('routes owner-scoped application events outside the current chat store', () => {
-    const received: ApplicationEvent[] = [];
-    const unsubscribe = subscribeApplicationEvents((event) => received.push(event));
-    const event = candidate('user:self', 'analysis-task-1', 'session-2');
-    expect(routeAgentEvent(event, context)).toBe('application');
-    dispatchApplicationEvent(event);
-    unsubscribe();
-    expect(received).toEqual([event]);
+  it('keeps candidates in their matching chat timeline', () => {
+    expect(routeAgentEvent(candidate('task:chat-task-1', 'chat-task-1', 'session-1'), context)).toBe('chat');
+    expect(routeAgentEvent(candidate('user:self', 'analysis-task-1', 'session-2'), context)).toBe('ignore');
+  });
+
+  it('projects a formal candidate with the canonical identity', () => {
+    expect(mapServerPushEventToChatItems(candidate(
+      'task:chat-task-1', 'chat-task-1', 'session-1',
+    ))).toEqual([
+      expect.objectContaining({
+        id: 'candidate:candidate-1',
+        type: 'candidate',
+        task_id: 'chat-task-1',
+        candidate_id: 'candidate-1',
+      }),
+    ]);
   });
 
   it('isolates sessions and accepts a pending task only for its operation', () => {

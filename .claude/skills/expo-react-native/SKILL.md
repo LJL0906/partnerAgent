@@ -1,15 +1,11 @@
 ---
 name: expo-react-native
-description: Workflow for the Expo / React Native app at apps/partner-agent-frontend. Covers version-locked docs, expo-router file routing, platform split files, the SDK 57 stack, and the verify-before-claiming rule. Use for any frontend, mobile, or Expo/RN task in this repo.
+description: Use when modifying Expo / React Native code or configuration in apps/partner-agent-frontend, especially routing and platform-specific modules.
 ---
 
 # Expo / React Native Development (apps/partner-agent-frontend)
 
-This repo's frontend is a monorepo workspace at `apps/partner-agent-frontend`. Root convention in that app's `AGENTS.md` is a hard rule:
-
-> **Expo HAS CHANGED. Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before writing any code.**
-
-The stack is pinned to Expo SDK 57, React Native 0.86.3, React 19.2.3. Do not copy patterns from older tutorials or from memory — APIs drift across SDK majors. Check the versioned page for anything you touch.
+This repo's frontend is a monorepo workspace at `apps/partner-agent-frontend`; documentation lookup follows its [AGENTS.md](../../../apps/partner-agent-frontend/AGENTS.md). Check `package.json` when changing dependencies; the current stack uses Expo SDK 57, React Native 0.86.3, and React 19.2.3.
 
 ## Stack facts (verified in app.json / package.json)
 
@@ -27,11 +23,10 @@ The stack is pinned to Expo SDK 57, React Native 0.86.3, React 19.2.3. Do not co
 
 ## Routing
 
-Routes are files under `src/app/`. The root `_layout.tsx` owns auth gating and the `Stack`; `(tabs)/_layout.tsx` owns the tab bar.
+Routes are files under `src/app/`. The root `_layout.tsx` handles authentication navigation, owns the `Stack`, and mounts `FloatingNavigation` from `src/components/navigation/floating-menu.tsx`.
 
-- Adding a screen = adding a file under `src/app/`. Adding a tab = adding a `Tabs.Screen` in `(tabs)/_layout.tsx`.
-- New routes are typed (typedRoutes experiment) — after adding a route the generated types update on next `expo start` / `tsc`. Type errors on `router.push('/new-route')` until then are expected; do not work around them with casts.
-- `href: null` in a `Tabs.Screen` hides a tab from the bar while keeping the file routable (a pattern already used for `today`, `execute`, `memory`).
+- Add screens under `src/app/`; inspect `floating-menu.tsx` when adding a navigation entry. The current `(tabs)/_layout.tsx` hides the tab bar with `display: 'none'`.
+- New routes use generated types (`typedRoutes`). Refresh declarations through Expo CLI, for example with `npx expo start`, before checking new route references. `tsc --noEmit` checks types but does not generate Expo route declarations; do not hide missing declarations with casts.
 
 ## Platform split files
 
@@ -48,5 +43,5 @@ Several modules use React Native's platform-extension resolution (`token-storage
 
 ## Always verify before claiming done
 
-- After any change that touches code: run type check (`npm run build`) and, if you modified tests or logic, `npm run test`. Do not report a change as verified unless you ran the check that covers it.
+- Choose checks that cover the change: run `npm run build` for TypeScript changes; run affected tests for logic or test changes (for example `npm run test -- src/api/server-url.spec.ts`). Broaden to the frontend suite when shared behavior is affected. Verify UI or platform changes on the affected surface; report any unverified platform explicitly. Documentation-only edits need content and link checks. Do not report verification you did not run.
 - Env vars / API config live in `src/api/config.ts` — check there before assuming a base URL or a missing endpoint is a bug in the component.

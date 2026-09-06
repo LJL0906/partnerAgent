@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Animated, PanResponder, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { Animated, Modal, PanResponder, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -15,14 +15,104 @@ const EDGE_GAP = 18;
 const CHAT_INPUT_OFFSET = 120;
 const MENU_GAP = 10;
 const POPOVER_WIDTH = 156;
-const POPOVER_HEIGHT = 5 * 42 + 2 * 8 + 2 * 8 + 34;
+const POPOVER_HEIGHT = 6 * 42 + 2 * 8 + 2 * 8 + 34;
+export const HEADER_NAV_BUTTON_SIZE = spacing.minTouchTarget;
+const HEADER_NAV_POPOVER_GAP = 6;
 const ITEMS = [
   { label: '聊天', icon: 'assistant' as const, path: '/chat' },
   { label: '今日', icon: 'today' as const, path: '/today' },
   { label: '执行', icon: 'execute' as const, path: '/execute' },
+  { label: '确认中心', icon: 'check' as const, path: '/confirmations' },
   { label: '记忆', icon: 'memory' as const, path: '/memory' },
   { label: '设置', icon: 'profile' as const, path: '/profile' },
 ];
+
+export function shouldRenderFloatingNavigation(pathname: string): boolean {
+  return pathname !== '/chat';
+}
+
+export function getHeaderNavigationPopoverTop(triggerTop: number, triggerHeight: number): number {
+  return triggerTop + triggerHeight + HEADER_NAV_POPOVER_GAP;
+}
+
+function NavigationItems({ pathname, onNavigate }: { pathname: string; onNavigate: (path: string) => void }) {
+  return <View style={{ backgroundColor: colors.floatingMenuSurface, borderColor: colors.floatingMenuBorder, borderRadius: radius.medium, borderWidth: 1, padding: spacing.sm, boxShadow: shadows.overlay }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.xs, paddingBottom: spacing.xs }}>
+      <View style={{ width: 5, height: 5, borderRadius: radius.pill, backgroundColor: colors.brand500 }} />
+      <Text style={[typography.caption, { color: colors.textSecondary, letterSpacing: 0.5 }]}>导航</Text>
+    </View>
+    {ITEMS.map((item) => (
+      <Pressable key={item.path} accessibilityRole="button" accessibilityLabel={`打开${item.label}`}
+        onPress={() => onNavigate(item.path)}
+        style={({ pressed }) => ({ alignItems: 'center', backgroundColor: pathname === item.path ? colors.floatingMenuActive : pressed ? colors.infoSoft : colors.floatingMenuSurface, borderRadius: radius.small, flexDirection: 'row', gap: spacing.sm, minHeight: 42, paddingHorizontal: spacing.xs, opacity: pressed ? 0.82 : 1 })}>
+        <View style={{ width: 3, height: 22, borderRadius: radius.pill, backgroundColor: pathname === item.path ? colors.brand500 : 'transparent' }} />
+        <View style={{ alignItems: 'center', backgroundColor: pathname === item.path ? colors.floatingMenuIconActive : colors.surfaceSubtle, borderColor: pathname === item.path ? colors.floatingMenuIconBorder : 'transparent', borderRadius: radius.small, borderWidth: 1, height: 28, justifyContent: 'center', width: 28 }}>
+          <AppIcon decorative color={pathname === item.path ? colors.brand600 : colors.textSecondary} name={item.icon} size={17} />
+        </View>
+        <Text style={[typography.label, { color: pathname === item.path ? colors.brand600 : colors.ink, flex: 1, fontWeight: pathname === item.path ? '700' : '500' }]}>{item.label}</Text>
+        {pathname === item.path ? <View style={{ backgroundColor: colors.brand500, borderRadius: radius.pill, height: 6, width: 6 }} /> : null}
+      </Pressable>
+    ))}
+  </View>;
+}
+
+export function HeaderNavigation() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const insets = useSafeAreaInsets();
+  const triggerRef = useRef<View>(null);
+  const [open, setOpen] = useState(false);
+  const [popoverTop, setPopoverTop] = useState(0);
+  const navigate = (path: string) => {
+    setOpen(false);
+    if (pathname === path) return;
+    if (pathname === '/chat' && path === '/profile') {
+      router.push({ pathname: '/profile', params: { returnTo: 'chat' } } as never);
+      return;
+    }
+    router.push(path as never);
+  };
+
+  const toggle = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const showBelowTrigger = (triggerTop: number, triggerHeight: number) => {
+      setPopoverTop(getHeaderNavigationPopoverTop(triggerTop, triggerHeight));
+      setOpen(true);
+    };
+    if (triggerRef.current) {
+      triggerRef.current.measureInWindow((_x, triggerTop, _width, triggerHeight) => {
+        showBelowTrigger(triggerTop, triggerHeight);
+      });
+      return;
+    }
+    showBelowTrigger(insets.top + spacing.xs, HEADER_NAV_BUTTON_SIZE);
+  };
+
+  return <>
+    <View ref={triggerRef} collapsable={false} style={{ height: HEADER_NAV_BUTTON_SIZE, width: HEADER_NAV_BUTTON_SIZE }}>
+      <Pressable accessibilityRole="button" accessibilityLabel={open ? '关闭页面菜单' : '打开页面菜单'}
+        onPress={toggle}
+        style={({ pressed }) => ({ alignItems: 'center', justifyContent: 'center', width: HEADER_NAV_BUTTON_SIZE,
+          height: HEADER_NAV_BUTTON_SIZE, borderRadius: radius.medium,
+          backgroundColor: colors.floatingButtonSurface, borderColor: open ? colors.brand500 : colors.floatingButtonBorder,
+          borderWidth: 1, opacity: pressed ? 0.82 : 1 })}>
+        <AppIcon decorative color={colors.floatingButtonIcon} name={open ? 'close' : 'sparkle'} size={20} />
+      </Pressable>
+    </View>
+    <Modal animationType="fade" onRequestClose={() => setOpen(false)} transparent visible={open}>
+      <Pressable accessibilityLabel="关闭页面菜单" onPress={() => setOpen(false)} style={StyleSheet.absoluteFill}>
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: 'transparent' }]} />
+        <Pressable accessibilityLabel="页面导航菜单" onPress={(event) => event.stopPropagation()}
+          style={{ position: 'absolute', right: spacing.md, top: popoverTop, width: POPOVER_WIDTH }}>
+          <NavigationItems pathname={pathname} onNavigate={navigate} />
+        </Pressable>
+      </Pressable>
+    </Modal>
+  </>;
+}
 
 export function FloatingNavigation() {
   const router = useRouter();
@@ -74,6 +164,8 @@ export function FloatingNavigation() {
   );
   const opensAbove = popoverTop < centeredPopoverTop;
 
+  if (!shouldRenderFloatingNavigation(pathname)) return null;
+
   return <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
     {open ? <Pressable accessibilityLabel="关闭页面菜单" style={StyleSheet.absoluteFill} onPress={toggle} /> : null}
     <Animated.View
@@ -89,26 +181,8 @@ export function FloatingNavigation() {
           { scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
         ],
       }}>
-      <View onLayout={(event) => { const nextHeight = event.nativeEvent.layout.height; if (nextHeight !== popoverHeight) setPopoverHeight(nextHeight); }} style={{ backgroundColor: colors.floatingMenuSurface, borderColor: colors.floatingMenuBorder, borderRadius: radius.medium, borderWidth: 1, padding: spacing.sm, boxShadow: shadows.overlay }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.xs, paddingBottom: spacing.xs }}>
-          <View style={{ width: 5, height: 5, borderRadius: radius.pill, backgroundColor: colors.brand500 }} />
-          <Text style={[typography.caption, { color: colors.textSecondary, letterSpacing: 0.5 }]}>导航</Text>
-        </View>
-        {ITEMS.map((item) => (
-          <Pressable
-            key={item.path}
-            accessibilityRole="button"
-            accessibilityLabel={`打开${item.label}`}
-            onPress={() => navigate(item.path)}
-            style={({ pressed }) => ({ alignItems: 'center', backgroundColor: pathname === item.path ? colors.floatingMenuActive : pressed ? colors.infoSoft : colors.floatingMenuSurface, borderRadius: radius.small, flexDirection: 'row', gap: spacing.sm, minHeight: 42, paddingHorizontal: spacing.xs, opacity: pressed ? 0.82 : 1 })}>
-            <View style={{ width: 3, height: 22, borderRadius: radius.pill, backgroundColor: pathname === item.path ? colors.brand500 : 'transparent' }} />
-            <View style={{ alignItems: 'center', backgroundColor: pathname === item.path ? colors.floatingMenuIconActive : colors.surfaceSubtle, borderColor: pathname === item.path ? colors.floatingMenuIconBorder : 'transparent', borderRadius: radius.small, borderWidth: 1, height: 28, justifyContent: 'center', width: 28 }}>
-              <AppIcon decorative color={pathname === item.path ? colors.brand600 : colors.textSecondary} name={item.icon} size={17} />
-            </View>
-            <Text style={[typography.label, { color: pathname === item.path ? colors.brand600 : colors.ink, flex: 1, fontWeight: pathname === item.path ? '700' : '500' }]}>{item.label}</Text>
-            {pathname === item.path ? <View style={{ backgroundColor: colors.brand500, borderRadius: radius.pill, height: 6, width: 6 }} /> : null}
-          </Pressable>
-        ))}
+      <View onLayout={(event) => { const nextHeight = event.nativeEvent.layout.height; if (nextHeight !== popoverHeight) setPopoverHeight(nextHeight); }}>
+        <NavigationItems pathname={pathname} onNavigate={navigate} />
       </View>
     </Animated.View>
     <Animated.View {...panResponder.panHandlers} style={{ position: 'absolute', left: pan.x, top: pan.y, width: BUTTON_SIZE, height: BUTTON_SIZE, borderRadius: radius.medium, backgroundColor: colors.floatingButtonSurface, borderColor: open ? colors.brand500 : colors.floatingButtonBorder, borderWidth: 1, alignItems: 'center', justifyContent: 'center', boxShadow: shadows.float, transform: [{ rotate: progress.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '45deg'] }) }] }}>

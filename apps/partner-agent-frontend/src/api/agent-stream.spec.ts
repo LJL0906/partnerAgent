@@ -366,6 +366,19 @@ describe('agent stream', () => {
     expect(mocks.socket!.connected).toBe(false);
   });
 
+  it('rejects channel updates immediately after the connection is closed', async () => {
+    const connection = await openConnection();
+    connection.close();
+    const rejected = vi.fn();
+
+    void connection.subscribe(['task:task-1']).catch(rejected);
+    await nextMicrotask();
+
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'StreamDisconnectedError',
+    }));
+  });
+
   it('classifies 401 connect_error as auth_required without exposing server details', async () => {
     const statuses: string[] = [];
     const onConnectionError = vi.fn();

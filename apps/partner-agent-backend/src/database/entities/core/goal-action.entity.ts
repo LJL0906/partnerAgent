@@ -71,6 +71,8 @@ export class ActionEntity {
   @Column({ name: 'user_id', type: 'text' }) userId: string;
   @Column({ type: 'text' }) title: string;
   @Column({ type: 'text', nullable: true }) description: string | null;
+  @Column({ type: 'text', nullable: true }) priority: 'low' | 'medium' | 'high' | null;
+  @Column({ type: 'text', nullable: true }) timezone: string | null;
   @Column({ name: 'execution_status', type: 'text', default: 'todo' })
   executionStatus: ActionExecutionStatus;
   @Column({ name: 'plan_status', type: 'text', default: 'normal' })

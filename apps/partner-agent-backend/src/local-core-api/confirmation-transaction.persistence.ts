@@ -54,15 +54,16 @@ export class ConfirmationTransactionPersistence {
   }
 
   async lockCandidates(userId: string, batchId: string, candidateIds: string[]): Promise<CandidateRow[]> {
+    const placeholders = candidateIds.map((_, index) => `$${index + 3}`).join(',');
     return (await this.runner.query(
       `select id, batch_id, kind, action, candidate_status, risk, payload,
               edited_payload, target_object_id, expected_version, source_refs, expires_at,
               version, editable_fields
        from candidate_items
-       where user_id = $1 and batch_id = $2 and id = any($3::uuid[])
+       where user_id = $1 and batch_id = $2 and id in (${placeholders})
        order by id
        for update`,
-      [userId, batchId, candidateIds],
+      [userId, batchId, ...candidateIds],
     )) as CandidateRow[];
   }
 
@@ -117,8 +118,8 @@ export class ConfirmationTransactionPersistence {
     await this.runner.query(
       `insert into confirmation_actions
         (id, user_id, batch_id, operation_id, request_fingerprint, action_type,
-         submitted_payload, client_source, reverses_action_id, created_at)
-       values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
+         submitted_payload, client_source, reverses_action_id, attempts, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,1,$10)`,
       [
         input.actionId,
         input.userId,
@@ -160,18 +161,20 @@ export class ConfirmationTransactionPersistence {
   }
 
   async completeBatch(userId: string, batchId: string, now: Date | string): Promise<void> {
+    const rows = (await this.runner.query(
+      `select candidate_status from candidate_items where user_id=$1 and batch_id=$2`,
+      [userId, batchId],
+    )) as Array<{ candidate_status: string }>;
+    const status = rows.some((row) => row.candidate_status === 'pending')
+      ? 'partially_processed'
+      : rows.some((row) => ['confirmed', 'confirmed_after_edit'].includes(row.candidate_status))
+        ? 'confirmed'
+        : 'cancelled';
     await this.runner.query(
-      `update confirmation_batches b set
-         batch_status = case
-           when exists (select 1 from candidate_items c where c.user_id=b.user_id and c.batch_id=b.id and c.candidate_status='pending')
-             then 'partially_processed'
-           when exists (select 1 from candidate_items c where c.user_id=b.user_id and c.batch_id=b.id and c.candidate_status in ('confirmed','confirmed_after_edit'))
-             then 'confirmed'
-           else 'cancelled'
-         end,
+      `update confirmation_batches set batch_status = $4,
          last_processed_at = $3, updated_at = $3, version = version + 1
-       where b.user_id = $1 and b.id = $2`,
-      [userId, batchId, now],
+       where user_id = $1 and id = $2`,
+      [userId, batchId, now, status],
     );
   }
 
@@ -198,8 +201,8 @@ export class ConfirmationTransactionPersistence {
     const id = randomUUID();
     const [object] = (await this.runner.query(
       `insert into business_objects
-        (id,user_id,kind,created_by_batch_id,last_confirmation_batch_id,created_at,updated_at)
-       values ($1,$2,$3,$4,$4,$5,$5)
+        (id,user_id,kind,version,lifecycle_status,created_by_batch_id,last_confirmation_batch_id,created_at,updated_at)
+       values ($1,$2,$3,1,'active',$4,$4,$5,$5)
        returning id,user_id,kind,version,lifecycle_status,created_by_batch_id,
                  last_confirmation_batch_id,archived_at,deleted_at,purged_at`,
       [id, userId, candidate.kind, batchId, now],
@@ -279,10 +282,11 @@ export class ConfirmationTransactionPersistence {
       await this.runner.query(
         create
           ? `insert into actions (user_id,id,title,description,execution_status,plan_status,
-               timeliness_status,deadline_at,planned_at,started_at,completed_at)
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`
+               timeliness_status,deadline_at,planned_at,started_at,completed_at,priority,timezone)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
           : `update actions set title=$3,description=$4,execution_status=$5,plan_status=$6,
-               timeliness_status=$7,deadline_at=$8,planned_at=$9,started_at=$10,completed_at=$11
+               timeliness_status=$7,deadline_at=$8,planned_at=$9,started_at=$10,completed_at=$11,
+               priority=$12,timezone=$13
              where user_id=$1 and id=$2`,
         [
           object.user_id,
@@ -296,6 +300,8 @@ export class ConfirmationTransactionPersistence {
           payload.planned_at ?? null,
           payload.started_at ?? null,
           payload.completed_at ?? null,
+          payload.priority ?? null,
+          payload.timezone ?? null,
         ],
       );
       return;
@@ -387,14 +393,60 @@ export class ConfirmationTransactionPersistence {
 
   private async restoreDomain(object: BusinessRow, domain: JsonObject): Promise<void> {
     const table = domainTable(object.kind);
+    if (table === 'actions') {
+      await this.runner.query(
+        `update actions set title=$3,description=$4,execution_status=$5,
+           plan_status=$6,timeliness_status=$7,deadline_at=$8,planned_at=$9,
+           started_at=$10,completed_at=$11,priority=$12,timezone=$13
+         where user_id=$1 and id=$2`,
+        [
+          object.user_id,
+          object.id,
+          domain.title,
+          domain.description,
+          domain.execution_status,
+          domain.plan_status,
+          domain.timeliness_status,
+          domain.deadline_at,
+          domain.planned_at,
+          domain.started_at,
+          domain.completed_at,
+          domain.priority,
+          domain.timezone,
+        ],
+      );
+      return;
+    }
+    if (table === 'goals') {
+      await this.runner.query(
+        `update goals set title=$3,description=$4,goal_status=$5,
+           deadline_at=$6,deadline_observation=$7,confirmed_at=$8
+         where user_id=$1 and id=$2`,
+        [
+          object.user_id,
+          object.id,
+          domain.title,
+          domain.description,
+          domain.goal_status,
+          domain.deadline_at,
+          domain.deadline_observation,
+          domain.confirmed_at,
+        ],
+      );
+      return;
+    }
     await this.runner.query(
-      `update ${table} set ${
-        table === 'formal_object_details' ? 'content=$3::jsonb' : 'title=$3'
-      } where user_id=$1 and id=$2`,
+      `update formal_object_details set content=$3::jsonb,domain_status=$4,
+         confidence=$5,is_sensitive=$6,confirmed_at=$7
+       where user_id=$1 and id=$2`,
       [
         object.user_id,
         object.id,
-        table === 'formal_object_details' ? JSON.stringify(domain.content ?? domain) : domain.title,
+        JSON.stringify(domain.content),
+        domain.domain_status,
+        domain.confidence,
+        domain.is_sensitive,
+        domain.confirmed_at,
       ],
     );
   }
@@ -430,8 +482,8 @@ export class ConfirmationTransactionPersistence {
       if (!source.kind || !source.id) continue;
       await this.runner.query(
         `insert into source_relations
-          (user_id,object_id,source_kind,source_id,relation_type,source_excerpt)
-         values ($1,$2,$3,$4,$5,$6)`,
+          (user_id,object_id,source_kind,source_id,relation_type,source_excerpt,created_at)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
         [
           userId,
           object.id,
@@ -439,13 +491,14 @@ export class ConfirmationTransactionPersistence {
           String(source.id),
           String(source.relation_type ?? 'derived_from'),
           source.excerpt ?? null,
+          now,
         ],
       );
     }
     await this.runner.query(
       `insert into object_index_jobs
-        (user_id,object_id,object_version,status,created_at,updated_at)
-       values ($1,$2,$3,'pending',$4,$4)`,
+        (user_id,object_id,object_version,status,attempts,created_at,updated_at)
+       values ($1,$2,$3,'pending',0,$4,$4)`,
       [userId, object.id, object.version, now],
     );
   }

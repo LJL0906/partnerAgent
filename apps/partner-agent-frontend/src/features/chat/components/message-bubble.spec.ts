@@ -5,26 +5,44 @@ import { describe, expect, it, vi } from 'vitest';
 
 let currentUsername: string | undefined = '测试用户';
 const openURL = vi.hoisted(() => vi.fn(async () => undefined));
+const setStringAsync = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('react-native', () => ({
   Linking: { openURL },
+  Modal: ({ children, visible, ...props }: { children?: React.ReactNode; visible?: boolean; [key: string]: unknown }) => visible ? React.createElement('modal', props, children) : null,
+  Platform: { OS: 'web', select: (values: Record<string, unknown>) => values.web ?? values.default },
   Pressable: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => React.createElement('pressable', props, children),
+  StyleSheet: { create: (styles: unknown) => styles, flatten: (style: unknown) => style ?? {} },
   Text: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => React.createElement('text', props, children),
+  TouchableWithoutFeedback: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => React.createElement('touchable', props, children),
   View: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => React.createElement('view', props, children),
+}));
+vi.mock('expo-clipboard', () => ({ setStringAsync }));
+vi.mock('expo-audio', () => ({
+  useAudioPlayer: (source: string | null) => ({ source, pause: vi.fn(), play: vi.fn(), seekTo: vi.fn() }),
+  useAudioPlayerStatus: () => ({ currentTime: 0, duration: 125, playing: false }),
+}));
+vi.mock('expo-image', () => ({ Image: ({ contentFit: _contentFit, source, ...props }: Record<string, unknown>) => React.createElement('image', { ...props, src: (source as { uri?: string })?.uri }) }));
+vi.mock('expo-video', () => ({
+  useVideoPlayer: (source: string) => ({ source, loop: false, muted: false, play: vi.fn(), pause: vi.fn() }),
+  VideoView: ({ contentFit: _contentFit, player, ...props }: Record<string, unknown>) => React.createElement('video-view', { ...props, src: (player as { source?: string })?.source }),
 }));
 vi.mock('@/features/auth/auth-store', () => ({ useAuthStore: (selector: (state: { username?: string }) => unknown) => selector({ username: currentUsername }) }));
 vi.mock('@/components/ui/app-icon', () => ({ AppIcon: (props: Record<string, unknown>) => React.createElement('icon', props) }));
 vi.mock('@/components/ui/assistant-avatar', () => ({ AssistantAvatar: (props: Record<string, unknown>) => React.createElement('assistant-avatar', props) }));
 vi.mock('@/components/ui/status-badge', () => ({ StatusBadge: (props: Record<string, unknown>) => React.createElement('status-badge', props) }));
 vi.mock('./structured-preview-card', () => ({ StructuredPreviewCard: (props: Record<string, unknown>) => React.createElement('structured-preview-card', props) }));
+vi.mock('./candidate-card', () => ({ CandidateCard: (props: Record<string, unknown>) => React.createElement('candidate-card', props) }));
 
 // eslint-disable-next-line import/first
 import { ChatItemBubble, MessageBubble } from './message-bubble';
 // eslint-disable-next-line import/first
 import { openSafeLink } from './messages/message-content';
 // eslint-disable-next-line import/first
+import { copyCode } from './messages/message-code-block';
+// eslint-disable-next-line import/first
 import type { ChatMessage } from '@/store/chat-store';
 
-const message = (role: ChatMessage['role'], overrides: Partial<ChatMessage> = {}): ChatMessage => ({ id: role, role, content: `${role} 内容`, ...overrides });
+const message = (role: ChatMessage['role'], overrides: Partial<ChatMessage> = {}): ChatMessage => ({ id: role, role, content: `${role} 内容`, format: role === 'assistant' ? 'markdown' : 'text', ...overrides });
 const markup = (input: ChatMessage) => renderToStaticMarkup(React.createElement(MessageBubble, { message: input }));
 
 describe('MessageBubble characterization', () => {
@@ -33,6 +51,8 @@ describe('MessageBubble characterization', () => {
     const html = markup(message('user', { content: '你好', createdAt: '2026-09-05T08:09:00.000Z' }));
     expect(html).toContain('你好');
     expect(html).toContain('我的头像');
+    expect(html).toContain('align-self:flex-end');
+    expect(html).toContain('text-align:left');
   });
 
   it('uses the fallback user name and omits invalid time', () => {
@@ -46,11 +66,20 @@ describe('MessageBubble characterization', () => {
     expect(html).toContain('紫灵AI');
     expect(html).toContain('答案');
     expect(html).toContain('assistant-avatar');
+    expect(html).toContain('align-self:flex-start');
   });
 
-  it.each(['模型由 A 切换为 B', '系统错误'])('preserves system information/error rendering: %s', (content) => {
-    const html = markup(message('system', { content }));
-    expect(html).toContain(content);
+  it('renders model switches as muted tips without a highlighted alert surface', () => {
+    const html = markup(message('system', { content: '模型由 A 切换成 B' }));
+    expect(html).toContain('模型由 A 切换成 B');
+    expect(html).toContain('accessibilityLabel="提示"');
+    expect(html).not.toContain('accessibilityRole="alert"');
+    expect(html).not.toContain('background-color');
+  });
+
+  it('keeps system errors visually emphasized as alerts', () => {
+    const html = markup(message('system', { content: '系统错误' }));
+    expect(html).toContain('系统错误');
     expect(html).toContain('accessibilityRole="alert"');
   });
 
@@ -78,7 +107,7 @@ describe('MessageBubble characterization', () => {
   });
 
   it('renders user multiline content without collapsing it', () => {
-    const html = markup(message('user', { content: '第一行\n第二行\n```\nconst value = true;\n```' }));
+    const html = markup(message('user', { content: '第一行\n第二行\n```\nconst value = true;\n```', format: 'markdown' }));
     expect(html).toContain('第一行');
     expect(html).toContain('第二行');
     expect(html).toContain('const value = true;');
@@ -94,7 +123,8 @@ describe('MessageBubble characterization', () => {
   it('keeps unsupported markup as escaped plain text', () => {
     const html = markup(message('assistant', { content: '<script>alert("xss")</script> **未支持语法**' }));
     expect(html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
-    expect(html).toContain('**未支持语法**');
+    expect(html).toContain('未支持语法');
+    expect(html).not.toContain('**未支持语法**');
     expect(html).not.toContain('<script>');
   });
 
@@ -114,6 +144,105 @@ describe('ChatItem action wiring', () => {
     };
 
     expect(ChatItemBubble({ item })).toBeNull();
+  });
+
+  it('renders a formal candidate using its persisted title and summary', () => {
+    const onCardLayoutChange = vi.fn();
+    const item: import('@partner-agent/contracts').CandidateChatItem = {
+      ...base, id: 'candidate-1', type: 'candidate', status: 'pending', candidate_id: 'candidate-1',
+      payload: { candidate_id: 'candidate-1', kind: 'candidate', preview: {
+        title: '周五提交周报', description: '上午九点提醒我提交',
+        planned_at: '2026-09-11T09:00:00+08:00', timezone: 'Asia/Shanghai',
+      }, applied: false, source_refs: [], risk: 'normal' },
+    };
+    const element = ChatItemBubble({ item, actions: { onCardLayoutChange } });
+    expect((element?.type as { name?: string })?.name).toBe('CandidateCard');
+    expect(element?.props).toMatchObject({
+      title: '周五提交周报', summary: '上午九点提醒我提交', candidateType: '候选建议',
+      plannedAt: '2026-09-11T09:00:00+08:00', timezone: 'Asia/Shanghai',
+      onLayoutChangeIntent: onCardLayoutChange,
+    });
+  });
+
+  it('renders standard markdown semantics instead of showing the source markers', () => {
+    const html = markup(message('assistant', {
+      content: '# 标题\n\n**重点**、*强调* 与 `inline`\n\n- 第一项\n- 第二项\n\n> 引用',
+    }));
+    expect(html).not.toContain('<streamdown-text');
+    expect(html).toContain('accessibilityRole="header"');
+    expect(html).toContain('标题');
+    expect(html).not.toContain('**重点**');
+  });
+
+  it('uses icon-only copy actions for fenced and indented code blocks', () => {
+    const html = markup(message('assistant', { content: '```ts\nconst answer = 42;\n```\n\n    echo hello' }));
+    expect(html.match(/accessibilityLabel="复制代码"/g)).toHaveLength(2);
+    expect(html).toContain('TypeScript');
+    expect(html).toContain('name="copy"');
+    expect(html).not.toContain('>复制<');
+  });
+
+  it('adds an icon-only copy action only to standalone markdown blocks', () => {
+    const markdownHtml = markup(message('assistant', { content: '# 普通正文\n\n```markdown\n# 可复制\n\n块正文\n```', format: 'markdown' }));
+    const ordinaryHtml = markup(message('assistant', { content: '# 普通正文\n\n正文', format: 'markdown' }));
+    const textHtml = markup(message('user', { content: '# 普通文本', format: 'text' }));
+    expect(markdownHtml.match(/accessibilityLabel="复制 Markdown"/g)).toHaveLength(1);
+    expect(markdownHtml).toContain('name="copy"');
+    expect(markdownHtml).not.toContain('>复制 Markdown<');
+    expect(ordinaryHtml).not.toContain('accessibilityLabel="复制 Markdown"');
+    expect(textHtml).not.toContain('accessibilityLabel="复制 Markdown"');
+    expect(textHtml).toContain('<view accessibilityLabel="消息正文"');
+  });
+
+  it('copies the exact code block content', async () => {
+    setStringAsync.mockClear();
+    await copyCode('const answer = 42;');
+    expect(setStringAsync).toHaveBeenCalledWith('const answer = 42;');
+  });
+
+  it('renders markdown and HTML image/video sources as inline media', () => {
+    const html = markup(message('assistant', {
+      content: '![预览](https://cdn.example.com/result.png)\n\n<img src="https://cdn.example.com/other.jpg" alt="另一张图" />\n\n<video controls src="https://cdn.example.com/demo.mp4"></video>',
+    }));
+    expect(html.match(/accessibilityLabel="打开图片预览"/g)).toHaveLength(2);
+    expect(html.match(/accessibilityLabel="打开视频预览"/g)).toHaveLength(1);
+    expect(html).toContain('result.png');
+    expect(html).toContain('另一张图');
+    expect(html).toContain('demo.mp4');
+    expect(html).not.toContain('放大');
+    expect(html).toContain('<image');
+    expect(html).toContain('<video-view');
+    expect(html).not.toContain('&lt;img');
+    expect(html).not.toContain('&lt;video');
+  });
+
+  it('embeds standalone media links while keeping ordinary URLs clickable', () => {
+    const html = markup(message('assistant', {
+      content: 'https://cdn.example.com/photo.webp\n\nhttps://cdn.example.com/clip.webm\n\nhttps://example.com/docs',
+    }));
+    expect(html.match(/accessibilityLabel="打开图片预览"/g)).toHaveLength(1);
+    expect(html.match(/accessibilityLabel="打开视频预览"/g)).toHaveLength(1);
+    expect(html).toContain('accessibilityRole="link"');
+  });
+
+  it('renders HTML and standalone audio sources as playable message content', () => {
+    const html = markup(message('assistant', {
+      content: '<audio src="https://cdn.example.com/voice.mp3"></audio>\n\nhttps://cdn.example.com/reply.ogg',
+    }));
+    expect(html.match(/accessibilityLabel="播放音频"/g)).toHaveLength(2);
+    expect(html).toContain('voice.mp3');
+    expect(html).toContain('reply.ogg');
+    expect(html).toContain('2:05');
+    expect(html).not.toContain('&lt;audio');
+  });
+
+  it('rejects non-HTTP playback sources while allowing safe image data URLs', () => {
+    const html = markup(message('assistant', {
+      content: '<audio src="data:image/png;base64,AAAA"></audio>\n\n<video src="javascript:alert(1)"></video>\n\n![内嵌图片](data:image/png;base64,AAAA)',
+    }));
+    expect(html).not.toContain('accessibilityLabel="播放音频"');
+    expect(html).not.toContain('accessibilityLabel="打开视频预览"');
+    expect(html).toContain('accessibilityLabel="打开图片预览"');
   });
 
   it('shows the authoritative model and reasoning recorded on an assistant item', () => {
@@ -160,6 +289,7 @@ describe('ChatItem action wiring', () => {
     expect(element?.props).not.toHaveProperty('onDecision');
     expect(element?.props).not.toHaveProperty('onApprove');
     expect(element?.props).not.toHaveProperty('onReject');
+    expect(element?.props).not.toHaveProperty('onClose');
   });
   it('passes pending undo state and operation feedback without downgrading it to queued', () => {
     const onUndo = vi.fn();

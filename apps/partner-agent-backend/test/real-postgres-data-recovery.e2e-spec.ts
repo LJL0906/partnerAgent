@@ -56,12 +56,10 @@ run('real PostgreSQL data recovery', () => {
         operationId: randomUUID(),
         requestFingerprint: `preview-${randomUUID()}`,
         clientSource: 'web',
-        text: '结构化预览测试输入',
+        text: '帮我安排明天下午回访客户',
         inputId: randomUUID(),
         modelConfigId: 'test:model',
         reasoningLevel: 'low',
-        outputMode: 'structured_preview',
-        previewKind: 'action',
       });
       const task = accepted.task!;
       sessionId = task.sessionId;
@@ -143,11 +141,11 @@ run('real PostgreSQL data recovery', () => {
 
   it.each([
     {
-      name: 'chat mode with a preview',
+      name: 'chat mode with an applied preview',
       outputMode: 'chat' as const,
       previewKind: undefined,
-      previews: (userMessageId: string): ChatPreviewV1[] => [
-        validPreview(randomUUID(), userMessageId),
+      previews: (userMessageId: string): unknown[] => [
+        { ...validPreview(randomUUID(), userMessageId), applied: true },
       ],
       code: 'STRUCTURED_PREVIEW_INVALID',
     },
@@ -155,7 +153,7 @@ run('real PostgreSQL data recovery', () => {
       name: 'structured preview mode without a preview',
       outputMode: 'structured_preview' as const,
       previewKind: 'action' as const,
-      previews: (): ChatPreviewV1[] => [],
+      previews: (): unknown[] => [],
       code: 'STRUCTURED_PREVIEW_MISSING',
     },
   ])('rejects $name without changing formal tables', async (scenario) => {

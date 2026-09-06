@@ -6,9 +6,9 @@ import {
   type SubscriptionChannel,
 } from '@partner-agent/contracts';
 
-type ApplicationEventType = 'candidate' | 'reminder' | 'summary';
+type ApplicationEventType = 'reminder' | 'summary';
 export type ApplicationEvent = Extract<ServerPushEventV1, { event_type: ApplicationEventType }>;
-const APPLICATION_EVENT_TYPES = new Set<ApplicationEventType>(['candidate', 'reminder', 'summary']);
+const APPLICATION_EVENT_TYPES = new Set<ApplicationEventType>(['reminder', 'summary']);
 const applicationEventListeners = new Set<(event: ApplicationEvent) => void>();
 
 export const PENDING_CHAT_TASK_ID = '__pending_task__';
@@ -116,11 +116,13 @@ export function mapServerPushEventToChatItems(event: ServerPushEventV1): ChatIte
         payload: { tool: event.data.tool, undo_available: true } }];
     case 'candidate':
       return event.data.candidate_refs.map((ref) => ({ ...common,
-        id: ref.id, type: 'candidate', status: 'pending', collapsed: true,
+        id: chatItemIds.candidate(ref.id), type: 'candidate', status: 'pending', collapsed: true,
         candidate_id: ref.id, payload: { candidate_id: ref.id, kind: ref.kind,
-          preview: { summary: event.data.safe_summary, candidate_count: event.data.candidate_count,
-            risk_level: event.data.risk_level }, applied: false, source_refs: [ref],
-          risk: event.data.risk_level } } as ChatItem));
+          batch_ref: event.data.batch_ref,
+          preview: { summary: event.data.safe_summary,
+            candidate_count: event.data.candidate_count,
+            risk_level: event.data.risk_level },
+          applied: false, source_refs: [ref], risk: event.data.risk_level } } as ChatItem));
     case 'reminder':
       return [{ ...common, type: 'reminder', status: 'pending', collapsed: true,
         payload: { reminder_id: event.data.reminder_instance_id, title: '提醒' } }];

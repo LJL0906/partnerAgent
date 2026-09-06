@@ -31,10 +31,12 @@ const requireId = (value: string, field: string): string => {
 export const chatItemIds = {
   message: (messageId: string): string => `message:${requireId(messageId, 'messageId')}`,
   taskAssistant: (taskId: string): string => `task:${requireId(taskId, 'taskId')}:assistant`,
+  taskThinking: (taskId: string): string => `task:${requireId(taskId, 'taskId')}:thinking`,
   taskRuntime: (taskId: string): string => `task:${requireId(taskId, 'taskId')}:runtime`,
   tool: (toolCallId: string): string => `tool:${requireId(toolCallId, 'toolCallId')}`,
   approval: (confirmationId: string): string => `approval:${requireId(confirmationId, 'confirmationId')}`,
   preview: (previewId: string): string => `preview:${requireId(previewId, 'previewId')}`,
+  candidate: (candidateId: string): string => `candidate:${requireId(candidateId, 'candidateId')}`,
 } as const;
 
 export const TASK_STATE_TO_CHAT_ITEM_STATUS = {

@@ -30,7 +30,7 @@ export class ConfirmationDomainService {
       const item = itemFor(payload, candidate.id);
       const effectivePayload =
         item.decision === 'modify_confirm'
-          ? item.modified_payload
+          ? { ...candidate.payload, ...item.modified_payload }
           : candidate.payload;
       if (!effectivePayload) {
         throw confirmationError(
@@ -44,8 +44,13 @@ export class ConfirmationDomainService {
             this.requireTarget(objectMap, candidate.target_object_id),
           )
         : null;
-      const mergedPayload = before?.domain
-        ? { ...before.domain, ...effectivePayload }
+      const priorPayload = before?.domain
+        ? candidate.kind === 'goal' || candidate.kind === 'action'
+          ? before.domain
+          : jsonObject(before.domain.content)
+        : undefined;
+      const mergedPayload = priorPayload
+        ? { ...priorPayload, ...effectivePayload }
         : effectivePayload;
       const object = await this.applyOne(
         userId,
@@ -215,4 +220,10 @@ export class ConfirmationDomainService {
     }
     return current;
   }
+}
+
+function jsonObject(value: unknown): JsonObject {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as JsonObject)
+    : {};
 }

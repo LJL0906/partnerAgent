@@ -1,11 +1,10 @@
-import type {
-  ChatOutputMode,
-  ModelConfig,
-  ReasoningLevel,
-} from '@partner-agent/contracts';
+import type { ModelConfig, ReasoningLevel } from '@partner-agent/contracts';
 import { useState } from 'react';
 import { Keyboard, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
-import { Brain, Check, Cpu, PaperPlaneTilt, StopCircle } from 'phosphor-react-native';
+import {
+  Brain, Camera, Check, Cpu, File, ImageSquare, Keyboard as KeyboardIcon,
+  PaperPlaneTilt, PhoneCall, Plus, StopCircle, Waveform, X,
+} from 'phosphor-react-native';
 
 import { AppButton } from '@/components/ui/app-button';
 import { colors } from '@/theme/colors';
@@ -25,12 +24,38 @@ interface ChatInputProps {
   reasoningLevel?: ReasoningLevel;
   onModelConfigChange: (id: string) => void;
   onReasoningLevelChange: (level: ReasoningLevel) => void;
-  onSend: (message: string, modelConfigId: string, reasoningLevel: ReasoningLevel, outputMode: ChatOutputMode) => Promise<boolean>;
+  onSend: (message: string, modelConfigId: string, reasoningLevel: ReasoningLevel) => Promise<boolean>;
   onCancel: () => Promise<void>;
   connectionStatus: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error' | 'auth_required';
 }
 
 const reasoningLabels: Record<ReasoningLevel, string> = { off: '关闭', minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高' };
+export const MODEL_TRIGGER_MAX_WIDTH = '48%';
+export const CLEAR_ACTION_WIDTH = 28;
+export const CHAT_MORE_ACTIONS = [
+  { id: 'image', label: '图片' },
+  { id: 'camera', label: '拍摄' },
+  { id: 'file', label: '文件' },
+] as const;
+type ChatMoreActionId = (typeof CHAT_MORE_ACTIONS)[number]['id'];
+
+export function getChatMorePlaceholder(actionId: ChatMoreActionId): string {
+  const action = CHAT_MORE_ACTIONS.find((item) => item.id === actionId);
+  return `${action?.label ?? '该'}功能开发中`;
+}
+
+export function getVoiceModePresentation(active: boolean): {
+  toggleLabel: string;
+  placeholder: string | undefined;
+} {
+  return active
+    ? { toggleLabel: '返回文字聊天', placeholder: '实时语音通话 · 即将开放' }
+    : { toggleLabel: '进入实时语音通话', placeholder: undefined };
+}
+
+export function isChatInputClearable(value: string): boolean {
+  return value.length > 0;
+}
 
 export function getReasoningOptions(model: ModelConfig | undefined): ReasoningLevel[] {
   return model ? [...model.reasoning_levels] : [];
@@ -68,24 +93,47 @@ export function resolveModelSelection(
   };
 }
 
+export async function submitChatInput({
+  onSend,
+  dismissKeyboard,
+  onSubmitted,
+  onRejected,
+}: {
+  onSend: () => Promise<boolean>;
+  dismissKeyboard: () => void;
+  onSubmitted: () => void;
+  onRejected: () => void;
+}): Promise<boolean> {
+  dismissKeyboard();
+  onSubmitted();
+  const submitted = await onSend();
+  if (!submitted) onRejected();
+  return submitted;
+}
+
 export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError, modelSelectionError, onRetryModels, modelConfigId, reasoningLevel, onModelConfigChange, onReasoningLevelChange, onSend, onCancel, connectionStatus }: ChatInputProps) {
   const { width } = useWindowDimensions();
   const [value, setValue] = useState('');
-  const [outputMode, setOutputMode] = useState<ChatOutputMode>('chat');
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreFeedback, setMoreFeedback] = useState<string>();
   const [picker, setPicker] = useState<'model' | 'reasoning'>();
   const [providerPicker, setProviderPicker] = useState<string>();
   const [modelAnchor, setModelAnchor] = useState<{ x: number; width: number }>({ x: spacing.page, width: 0 });
   const [reasoningAnchor, setReasoningAnchor] = useState<{ x: number; width: number }>({ x: spacing.page, width: 0 });
+  const voicePresentation = getVoiceModePresentation(voiceMode);
 
   async function handleSend() {
     if (!effectiveReasoningLevel) return;
     const submittedValue = value;
-    const submitted = await onSend(submittedValue, modelConfigId, effectiveReasoningLevel, outputMode);
-    if (submitted) {
-      setValue((currentValue) => (currentValue === submittedValue ? '' : currentValue));
-      setOutputMode('chat');
-      Keyboard.dismiss();
-    }
+    await submitChatInput({
+      onSend: () => onSend(submittedValue, modelConfigId, effectiveReasoningLevel),
+      dismissKeyboard: () => Keyboard.dismiss(),
+      onSubmitted: () => setValue((currentValue) => (
+        currentValue === submittedValue ? '' : currentValue
+      )),
+      onRejected: () => setValue((currentValue) => currentValue || submittedValue),
+    });
   }
 
   const selectedModel = models.find((model) => model.id === modelConfigId);
@@ -95,7 +143,7 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
   const effectiveReasoningLevel = reasoningLevel && reasoningOptions.includes(reasoningLevel)
     ? reasoningLevel
     : selectedModel?.default_reasoning_level;
-  const reasoningLabel = effectiveReasoningLevel ? `思考 ${reasoningLabels[effectiveReasoningLevel]}` : '思考';
+  const reasoningLabel = effectiveReasoningLevel ? reasoningLabels[effectiveReasoningLevel] : '思考';
   const providers = Array.from(new Set(models.map((model) => model.provider)));
   const providerModels = models.filter((model) => model.provider === providerPicker);
   const providerLabel = (provider: string) => ({ deepseek: 'DeepSeek', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', local: '本地模型' } as Record<string, string>)[provider] ?? provider;
@@ -116,7 +164,7 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
           disabled={isStreaming}
           onLayout={(event) => setModelAnchor({ x: event.nativeEvent.layout.x + spacing.page, width: event.nativeEvent.layout.width })}
           onPress={() => setPicker('model')}
-          style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: spacing.xs, maxWidth: '58%', paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: radius.pill, backgroundColor: colors.infoSoft, borderColor: colors.toastInfoBorder, borderWidth: 1, opacity: isStreaming ? 0.5 : pressed ? 0.72 : 1 })}>
+          style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', flexShrink: 1, gap: spacing.xs, maxWidth: MODEL_TRIGGER_MAX_WIDTH, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: radius.pill, backgroundColor: colors.infoSoft, borderColor: colors.toastInfoBorder, borderWidth: 1, opacity: isStreaming ? 0.5 : pressed ? 0.72 : 1 })}>
           <Cpu color={modelsLoadError ? colors.danger : colors.brand500} size={16} weight="duotone" />
           <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.brand600, ...typography.caption }}>{modelLabel}</Text>
         </Pressable>
@@ -132,30 +180,66 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
             <Text style={{ color: colors.textSecondary, ...typography.caption }}>{reasoningLabel}</Text>
           </Pressable>
         ) : null}
-        <Pressable
-          accessibilityLabel={outputMode === 'structured_preview' ? '关闭行动预览' : '开启行动预览'}
-          accessibilityRole="button"
-          accessibilityState={{ checked: outputMode === 'structured_preview', disabled: isStreaming }}
-          disabled={isStreaming}
-          onPress={() => setOutputMode((current) => current === 'chat' ? 'structured_preview' : 'chat')}
-          style={({ pressed }) => ({
-            paddingHorizontal: spacing.sm,
-            paddingVertical: spacing.xs,
-            borderRadius: radius.pill,
-            borderWidth: 1,
-            borderColor: outputMode === 'structured_preview' ? colors.brand400 : colors.border,
-            backgroundColor: outputMode === 'structured_preview' ? colors.infoSoft : colors.surfaceSubtle,
-            opacity: isStreaming ? 0.5 : pressed ? 0.72 : 1,
-          })}>
-          <Text style={{ color: outputMode === 'structured_preview' ? colors.brand600 : colors.textSecondary, ...typography.caption }}>行动预览</Text>
-        </Pressable>
-        <View accessibilityLabel={`连接状态：${connectionLabel}`} style={{ marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: spacing.xxs, paddingHorizontal: spacing.xs, paddingVertical: spacing.xs }}>
+        <View accessibilityLabel={`连接状态：${connectionLabel}`} style={{ marginLeft: 'auto', flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.xxs, paddingHorizontal: spacing.xs, paddingVertical: spacing.xs }}>
           <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: connectionColor }} />
           <Text numberOfLines={1} style={[typography.caption, { color: connectionColor }]}>{connectionLabel}</Text>
         </View>
       </View>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: spacing.xs }}>
-        <TextInput accessibilityLabel="聊天输入" multiline maxLength={4000} placeholder="问问我，或交给我去做…" placeholderTextColor={colors.textTertiary} value={value} onChangeText={setValue} style={{ flex: 1, minHeight: spacing.minTouchTarget, maxHeight: 116, color: colors.ink, outlineWidth: 0, ...typography.body, paddingHorizontal: spacing.xs, paddingVertical: spacing.sm }} />
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
+        <Pressable
+          accessibilityLabel={voicePresentation.toggleLabel}
+          accessibilityRole="button"
+          accessibilityState={{ checked: voiceMode, disabled: isStreaming }}
+          disabled={isStreaming}
+          onPress={() => {
+            Keyboard.dismiss();
+            setMoreOpen(false);
+            setMoreFeedback(undefined);
+            setVoiceMode((active) => !active);
+          }}
+          style={({ pressed }) => ({
+            alignItems: 'center', alignSelf: 'center', justifyContent: 'center',
+            width: spacing.minTouchTarget, height: spacing.minTouchTarget,
+            borderRadius: radius.pill, borderWidth: 1,
+            borderColor: voiceMode ? colors.brand400 : 'transparent',
+            backgroundColor: voiceMode ? colors.infoSoft : 'transparent',
+            boxShadow: voiceMode ? '0 0 14px rgba(89, 103, 242, 0.28)' : undefined,
+            opacity: isStreaming ? 0.34 : pressed ? 0.62 : 1,
+            transform: [{ scale: pressed ? 0.92 : 1 }],
+          })}>
+          {voiceMode
+            ? <KeyboardIcon color={colors.brand500} size={23} weight="duotone" />
+            : <Waveform color={colors.violet500} size={25} weight="duotone" />}
+        </Pressable>
+        {voiceMode ? (
+          <View
+            accessibilityLabel={voicePresentation.placeholder}
+            style={{ flex: 1, minHeight: spacing.minTouchTarget, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, borderRadius: radius.pill, borderCurve: 'continuous', borderColor: colors.toastInfoBorder, borderWidth: 1, backgroundColor: colors.brandActionSoft }}>
+            <PhoneCall color={colors.brand500} size={20} weight="duotone" />
+            <Text style={[typography.control, { color: colors.brand600 }]}>{voicePresentation.placeholder}</Text>
+            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.violet500, boxShadow: '0 0 8px rgba(138, 92, 246, 0.72)' }} />
+          </View>
+        ) : (
+          <TextInput accessibilityLabel="聊天输入" multiline maxLength={4000} placeholder="问问我，或交给我去做…" placeholderTextColor={colors.textTertiary} value={value} onChangeText={(nextValue) => { setValue(nextValue); if (nextValue) setMoreOpen(false); }} style={{ flex: 1, minHeight: spacing.minTouchTarget, maxHeight: 116, color: colors.ink, outlineWidth: 0, ...typography.body, paddingHorizontal: spacing.xs, paddingVertical: spacing.sm }} />
+        )}
+        {!voiceMode && isChatInputClearable(value) ? (
+          <Pressable
+            accessibilityLabel="清空输入"
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => setValue('')}
+            style={({ pressed }) => ({
+              alignItems: 'center',
+              alignSelf: 'center',
+              borderRadius: radius.pill,
+              justifyContent: 'center',
+              minHeight: spacing.minTouchTarget,
+              width: CLEAR_ACTION_WIDTH,
+              opacity: pressed ? 0.55 : 1,
+            })}>
+            <X color={colors.textTertiary} size={20} weight="bold" />
+          </Pressable>
+        ) : null}
         {isStreaming ? (
           <Pressable
             accessibilityLabel="停止回复"
@@ -174,7 +258,7 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
             })}>
             <StopCircle color={colors.danger} size={24} weight="duotone" />
           </Pressable>
-        ) : (
+        ) : !voiceMode && value.trim() ? (
           <Pressable
             accessibilityLabel="发送消息"
             accessibilityRole="button"
@@ -193,8 +277,54 @@ export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError,
             })}>
             <PaperPlaneTilt color={colors.brand500} size={24} weight="duotone" />
           </Pressable>
-        )}
+        ) : !voiceMode ? (
+          <Pressable
+            accessibilityLabel={moreOpen ? '收起更多功能' : '打开更多功能'}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: moreOpen }}
+            onPress={() => {
+              Keyboard.dismiss();
+              setMoreFeedback(undefined);
+              setMoreOpen((open) => !open);
+            }}
+            style={({ pressed }) => ({
+              alignItems: 'center', alignSelf: 'center', justifyContent: 'center',
+              minHeight: spacing.minTouchTarget, minWidth: spacing.minTouchTarget,
+              borderRadius: radius.pill, backgroundColor: moreOpen ? colors.infoSoft : 'transparent',
+              opacity: pressed ? 0.62 : 1,
+              transform: [{ rotate: moreOpen ? '45deg' : '0deg' }],
+            })}>
+            <Plus color={colors.brand500} size={25} weight="bold" />
+          </Pressable>
+        ) : null}
       </View>
+      {moreOpen ? (
+        <View style={{ borderTopColor: colors.divider, borderTopWidth: 1, paddingTop: spacing.md, gap: spacing.sm }}>
+          <View style={{ flexDirection: 'row', gap: spacing.md }}>
+            {CHAT_MORE_ACTIONS.map((action) => {
+              const Icon = action.id === 'image' ? ImageSquare : action.id === 'camera' ? Camera : File;
+              return (
+                <Pressable
+                  key={action.id}
+                  accessibilityLabel={`${action.label}，功能开发中`}
+                  accessibilityRole="button"
+                  onPress={() => setMoreFeedback(getChatMorePlaceholder(action.id))}
+                  style={({ pressed }) => ({ flex: 1, alignItems: 'center', gap: spacing.xs, opacity: pressed ? 0.62 : 1 })}>
+                  <View style={{ width: 52, height: 52, alignItems: 'center', justifyContent: 'center', borderRadius: radius.medium, borderCurve: 'continuous', backgroundColor: colors.surfaceSubtle, borderColor: colors.border, borderWidth: 1 }}>
+                    <Icon color={colors.textSecondary} size={24} weight="duotone" />
+                  </View>
+                  <Text style={[typography.caption, { color: colors.textSecondary }]}>{action.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {moreFeedback ? (
+            <Text accessibilityRole="alert" style={[typography.caption, { color: colors.textTertiary, textAlign: 'center' }]}>
+              {moreFeedback}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
       {modelSelectionError ? (
         <Text accessibilityRole="alert" style={[typography.caption, { color: colors.danger, paddingHorizontal: spacing.xs }]}>
           {modelSelectionError}

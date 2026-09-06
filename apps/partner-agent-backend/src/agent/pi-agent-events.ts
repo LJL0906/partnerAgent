@@ -40,6 +40,7 @@ export function mapPiAgentEvent(
   }
 
   if (event.type === 'tool_execution_start') {
+    if (event.toolName === 'update_task_todo') return undefined;
     if (options.isApprovalRequired(event.toolName)) return undefined;
     return {
       type: 'tool_execution_start',
@@ -57,6 +58,13 @@ export function mapPiAgentEvent(
           expiresAt?: string;
         }
       | undefined;
+    if (event.toolName === 'update_task_todo') {
+      const todoDetails = event.result?.details as { status?: string; items?: unknown } | undefined;
+      if (todoDetails?.status === 'todo_updated' && Array.isArray(todoDetails.items)) {
+        return { type: 'todo_update', data: { items: todoDetails.items }, timestamp };
+      }
+      return undefined;
+    }
     if (
       details?.status === 'pending_tool_approval' &&
       details.confirmationId &&

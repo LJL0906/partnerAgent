@@ -12,7 +12,7 @@ import { MessageContent } from './message-content';
 export function AssistantMessage({ message }: { message: ChatMessage }) {
   const messageTime = formatMessageTime(message.createdAt);
   return (
-    <View style={{ alignSelf: 'stretch', width: '92%' }}>
+    <View style={{ alignSelf: 'flex-start', width: '92%' }}>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm }}>
         <AssistantAvatar size={36} />
         <View style={{ flex: 1, minWidth: 0 }}>
@@ -25,7 +25,7 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
               <Text selectable style={{ color: colors.textSecondary, ...typography.body }}>正在思考：{message.thinkingContent}</Text>
             </View>
           ) : null}
-          {message.content ? <MessageContent content={message.content} /> : null}
+          {message.content ? <MessageContent content={message.content} format={message.format ?? 'markdown'} localizeTimeMetadata /> : null}
         </View>
       </View>
     </View>

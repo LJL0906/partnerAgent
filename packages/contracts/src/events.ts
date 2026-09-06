@@ -95,6 +95,7 @@ export type SessionMessageV1 = SessionMessageDto;
 export type ServerPushEventTypeV1 =
   | "text_delta"
   | "thinking_delta"
+  | "todo_update"
   | "history"
   | "tool_execution_start"
   | "tool_execution_end"
@@ -141,6 +142,16 @@ export type TextDeltaEventV1 = ServerPushEventBaseV1<"text_delta", string>
   & { message_id: string };
 export type ThinkingDeltaEventV1 = ServerPushEventBaseV1<"thinking_delta", string>
   & TextAppendPositionV1;
+export type TaskTodoStatusV1 = "pending" | "in_progress" | "completed";
+export interface TaskTodoItemV1 {
+  id: string;
+  content: string;
+  status: TaskTodoStatusV1;
+}
+export type TodoUpdateEventV1 = ServerPushEventBaseV1<
+  "todo_update",
+  { items: TaskTodoItemV1[] }
+> & { task_id: string };
 export type SessionHistoryEventV1 = ServerPushEventBaseV1<
   "history",
   { messages: SessionMessageV1[] }
@@ -247,6 +258,7 @@ export type RecoveryRequiredEventV1 = ServerPushEventBaseV1<
 export type ServerPushEventV1 =
   | TextDeltaEventV1
   | ThinkingDeltaEventV1
+  | TodoUpdateEventV1
   | SessionHistoryEventV1
   | ToolExecutionStartEventV1
   | ToolExecutionEndEventV1

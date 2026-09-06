@@ -98,16 +98,11 @@ export function parseAssistantCompletionPreviews(
 ):
   | { valid: true; previews: ChatPreviewV1[] }
   | { valid: false; code: AssistantOutputErrorCode; message: string } {
-  if (task.outputMode === 'chat') {
-    return Array.isArray(value) && value.length === 0
-      ? { valid: true, previews: [] }
-      : {
-          valid: false,
-          code: 'STRUCTURED_PREVIEW_INVALID',
-          message: '普通聊天任务不得携带结构化预览附件。',
-        };
+  if (task.outputMode === 'chat' && Array.isArray(value) && value.length === 0) {
+    return { valid: true, previews: [] };
   }
-  if (task.outputMode !== 'structured_preview' || task.previewKind !== 'action') {
+  if (task.outputMode !== 'chat' &&
+    (task.outputMode !== 'structured_preview' || task.previewKind !== 'action')) {
     return {
       valid: false,
       code: 'STRUCTURED_PREVIEW_INVALID',
@@ -123,7 +118,8 @@ export function parseAssistantCompletionPreviews(
   }
   try {
     const previews = parseChatPreviewsV1(value);
-    return previews.every((preview) => preview.kind === task.previewKind)
+    const expectedKind = task.outputMode === 'chat' ? 'action' : task.previewKind;
+    return previews.every((preview) => preview.kind === expectedKind)
       ? { valid: true, previews }
       : {
           valid: false,
@@ -160,8 +156,19 @@ export interface AssistantCompletionCommand {
   leaseToken: string;
   expectedRevision: number;
   content: string;
+  thinkingContent?: string;
   chatPreviews: ChatPreviewV1[];
   contextMessages: unknown[];
+}
+
+export interface PersistedCandidateNotice {
+  analysisRunId: string;
+  structuredAnalysisId: string;
+  batchId: string;
+  candidateIds: string[];
+  candidateCount: number;
+  riskLevel: 'normal' | 'high';
+  safeSummary: string;
 }
 
 export type AssistantWriteResult =
@@ -169,7 +176,12 @@ export type AssistantWriteResult =
   | { outcome: 'conflict' | 'fence_rejected' };
 
 export type AssistantCompletionResult =
-  | { outcome: 'committed' | 'already_completed'; task: StoredChatTask; message: SessionMessageDto }
+  | {
+      outcome: 'committed' | 'already_completed';
+      task: StoredChatTask;
+      message: SessionMessageDto;
+      candidateBatch?: PersistedCandidateNotice;
+    }
   | { outcome: 'invalid_output'; code: AssistantOutputErrorCode; message: string }
   | { outcome: 'conflict' | 'fence_rejected' };
 
@@ -180,6 +192,21 @@ export interface StoredChatPreviewAttachment {
   message_id: string;
   message_revision: number;
   preview: ChatPreviewV1;
+}
+
+export interface StoredFormalCandidateAttachment {
+  candidate_id: string;
+  batch_id: string;
+  session_id: string;
+  task_id: string;
+  operation_id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  source_refs: Array<{ kind: string; id: string }>;
+  confidence?: number;
+  risk: 'normal' | 'high';
+  version: number;
+  created_at: Date;
 }
 
 export class ChatTaskConflictError extends Error {}
@@ -294,4 +321,8 @@ export abstract class ChatTaskStore {
     ownerId: string,
     sessionId: string,
   ): Promise<StoredChatPreviewAttachment[]>;
+  abstract listSessionFormalCandidates(
+    ownerId: string,
+    sessionId: string,
+  ): Promise<StoredFormalCandidateAttachment[]>;
 }

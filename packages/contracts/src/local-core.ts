@@ -146,6 +146,7 @@ export interface ApiError {
 // ---------------------------------------------------------------------------
 
 export * from './local-core-analysis.js';
+export * from './local-core-undo.js';
 
 /** 提交用户确认后的最终转写文本和可选音频关联。必须先完成语音转写确认。 */
 export interface SubmitVoiceInputPayload {

@@ -9,7 +9,6 @@ import {
 import {
   submitTextInput,
   type SubmitTextInputParams,
-  type SubmitTextOutputMode,
 } from '@/api/chat-api';
 import { submissionUnknownNoticeId, useChatStore } from '@/store/chat-store';
 
@@ -22,7 +21,6 @@ export interface PendingChatSubmission {
   optimisticMessageId: string;
   sessionId: string;
   text: string;
-  outputMode: SubmitTextOutputMode;
 }
 
 type ChatSubmissionParams = Omit<SubmitTextInputParams, 'sessionId'> & { sessionId?: string };
@@ -37,7 +35,6 @@ interface SendChatMessageContext {
   streamReadyRef: MutableRefObject<Promise<AgentStreamConnection> | undefined>;
   modelConfigId: string;
   reasoningLevel: ReasoningLevel;
-  outputMode?: SubmitTextOutputMode;
   submit?: (params: ChatSubmissionParams) => Promise<SubmitTextInputCommandResult>;
 }
 
@@ -68,7 +65,6 @@ export async function sendChatMessage(
     context.pendingSubmissionRef.current,
     message,
     state.sessionId,
-    context.outputMode ?? 'chat',
   );
   context.pendingSubmissionRef.current = attempt;
   context.previousTaskIdRef.current = context.currentTaskIdRef.current;
@@ -86,7 +82,7 @@ export async function sendChatMessage(
       operationId: attempt.operationId,
       modelConfigId: context.modelConfigId,
       reasoningLevel: context.reasoningLevel,
-      outputMode: attempt.outputMode,
+      outputMode: 'chat',
     });
     if (!isCurrent()) return false;
     if (result.status === 'rejected') {
@@ -172,15 +168,13 @@ function getOrCreateSubmission(
   pending: PendingChatSubmission | undefined,
   text: string,
   sessionId: string,
-  outputMode: SubmitTextOutputMode,
 ): PendingChatSubmission {
-  if (pending?.text === text && pending.sessionId === sessionId && pending.outputMode === outputMode) return pending;
+  if (pending?.text === text && pending.sessionId === sessionId) return pending;
   return {
     inputId: Crypto.randomUUID(),
     operationId: Crypto.randomUUID(),
     optimisticMessageId: Crypto.randomUUID(),
     sessionId,
     text,
-    outputMode,
   };
 }

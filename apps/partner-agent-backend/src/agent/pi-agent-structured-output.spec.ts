@@ -204,7 +204,7 @@ describe('PiAgentService structured output protocol', () => {
     },
   );
 
-  it('does not expose the output tool to ordinary chat or parse正文 JSON', async () => {
+  it('offers the preview tool to ordinary chat without parsing正文 JSON as a preview', async () => {
     const runtime = serviceWith(() =>
       response([{ type: 'text', text: '{"kind":"action"}' }], 'stop'),
     );
@@ -216,10 +216,43 @@ describe('PiAgentService structured output protocol', () => {
       { ...previewContext, outputMode: 'chat', previewKind: undefined },
     ));
 
-    expect(runtime.exposedTools()[0]).not.toContain('emit_chat_preview');
+    expect(runtime.exposedTools()[0]).toContain('emit_chat_preview');
     expect(events).toContainEqual(expect.objectContaining({
       type: 'assistant_output_complete',
       data: expect.objectContaining({ chatPreviews: [] }),
+    }));
+  });
+
+  it('accepts an action preview chosen by the model during ordinary chat', async () => {
+    const runtime = serviceWith((call) =>
+      call === 1
+        ? response([{
+            type: 'toolCall',
+            id: 'auto-preview-call',
+            name: 'emit_chat_preview',
+            arguments: {
+              ...sharedPreviewFixture.valid_proposal,
+              source_refs: [
+                { kind: 'original_record', id: previewContext.originalRecordId },
+                { kind: 'chat_message', id: previewContext.userMessageId },
+              ],
+            },
+          }], 'toolUse')
+        : response([{ type: 'text', text: '这是待确认的行动预览。' }], 'stop'),
+    );
+
+    const events = await consume(runtime.service.resumeTask(
+      'auto-preview-session',
+      '请帮我安排明天提交周报',
+      'owner',
+      { ...previewContext, outputMode: 'chat', previewKind: undefined },
+    ));
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'assistant_output_complete',
+      data: expect.objectContaining({
+        chatPreviews: [expect.objectContaining({ kind: 'action' })],
+      }),
     }));
   });
 
@@ -285,6 +318,58 @@ describe('PiAgentService structured output protocol', () => {
           confirmation_status: 'unconfirmed',
           applied: false,
         })],
+      }),
+    }));
+  });
+
+  it('counts multiple invalid preview calls in one model turn as one correction attempt', async () => {
+    const invalidCall = (id: string) => ({
+      type: 'toolCall',
+      id,
+      name: 'emit_chat_preview',
+      arguments: {
+        schema_version: 1,
+        kind: 'action',
+        source_refs: [{ kind: 'original_record', id: 'other-record' }],
+        content: { title: '提交周报', confidence: 0.9 },
+      },
+    });
+    const runtime = serviceWith((call) => {
+      if (call === 1) {
+        return response([
+          invalidCall('invalid-preview-a'),
+          invalidCall('invalid-preview-b'),
+        ], 'toolUse');
+      }
+      if (call === 2) {
+        return response([{
+          type: 'toolCall',
+          id: 'corrected-preview',
+          name: 'emit_chat_preview',
+          arguments: {
+            ...sharedPreviewFixture.valid_proposal,
+            source_refs: [
+              { kind: 'original_record', id: previewContext.originalRecordId },
+              { kind: 'chat_message', id: previewContext.userMessageId },
+            ],
+          },
+        }], 'toolUse');
+      }
+      return response([{ type: 'text', text: '已生成待确认预览。' }], 'stop');
+    });
+
+    const events = await consume(runtime.service.resumeTask(
+      'same-turn-invalid-preview-session',
+      '明天下午三点提醒我提交周报',
+      'owner',
+      previewContext,
+    ));
+
+    expect(runtime.calls()).toBe(3);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'assistant_output_complete',
+      data: expect.objectContaining({
+        chatPreviews: [expect.objectContaining({ kind: 'action' })],
       }),
     }));
   });

@@ -1,4 +1,5 @@
 import { DataType, newDb } from 'pg-mem';
+import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { describe, expect, it } from 'vitest';
 import { ChatSessionEntity } from '../database/entities/chat-session.entity.js';
@@ -10,6 +11,7 @@ import {
 import { ChatTaskLifecycleOutboxEntity } from '../database/entities/chat-task-outbox.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import { UserEntity } from '../database/entities/core/user.entity.js';
+import { CORE_ENTITIES } from '../database/core-entities.js';
 import { TypeOrmSessionStore } from '../database/typeorm-session.store.js';
 import { TypeOrmChatTaskStore } from './typeorm-chat-task.store.js';
 import type { EntityManager } from 'typeorm';
@@ -47,6 +49,12 @@ function dataSource() {
     implementation: () => 'PostgreSQL 16.0',
   });
   database.public.registerFunction({
+    name: 'uuid_generate_v4',
+    returns: DataType.uuid,
+    implementation: randomUUID,
+    impure: true,
+  });
+  database.public.registerFunction({
     name: 'current_database',
     returns: DataType.text,
     implementation: () => 'partner_agent_test',
@@ -70,10 +78,28 @@ function dataSource() {
     implementation: () => 1,
   });
   database.public.registerFunction({
+    name: 'hashtextextended',
+    args: [DataType.text, DataType.integer],
+    returns: DataType.integer,
+    implementation: () => 1,
+  });
+  database.public.registerFunction({
     name: 'pg_advisory_xact_lock',
     args: [DataType.integer],
     returns: DataType.integer,
     implementation: () => 1,
+  });
+  database.public.registerFunction({
+    name: 'transaction_timestamp',
+    returns: DataType.timestamptz,
+    implementation: () => new Date(),
+    impure: true,
+  });
+  database.public.registerFunction({
+    name: 'to_jsonb',
+    args: [DataType.record],
+    returns: DataType.jsonb,
+    implementation: (value) => value,
   });
   return database.adapters.createTypeormDataSource({
     type: 'postgres',
@@ -85,6 +111,7 @@ function dataSource() {
       LocalCoreOperationEntity,
       ChatTaskEntity,
       ChatTaskLifecycleOutboxEntity,
+      ...CORE_ENTITIES.filter((entity) => entity !== UserEntity),
     ],
     synchronize: true,
   });
@@ -197,6 +224,7 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
       ...identity,
       expectedRevision: 1,
       content: '正在整理',
+      thinkingContent: '先核对原始资料，再整理结果。',
       chatPreviews: [preview],
       contextMessages: [
         { role: 'assistant', content: [{ type: 'text', text: '正在整理' }] },
@@ -229,6 +257,7 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
         status: 'complete',
         revision: 2,
         task_id: task.taskId,
+        thinking_summary: '先核对原始资料，再整理结果。',
       }),
     ]);
     expect(
@@ -240,6 +269,9 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
         preview,
       }),
     ]);
+    await expect(
+      store.listSessionFormalCandidates(task.ownerId, task.sessionId),
+    ).resolves.toEqual([]);
     expect(
       await source
         .getRepository(ChatTaskLifecycleOutboxEntity)
@@ -248,7 +280,69 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
     await source.destroy();
   });
 
-  it('rejects chat completion with a preview without writing partial state', async () => {
+  it('auto-applies one confident model-selected action without leaving confirmation UI data', async () => {
+    const source = dataSource();
+    await source.initialize();
+    const store = new TypeOrmChatTaskStore(source);
+    const accepted = await store.submitText({
+      ownerId: 'owner',
+      operationId: '00000000-0000-4000-8000-000000000111',
+      requestFingerprint: 'fingerprint-auto-preview',
+      clientSource: 'web',
+      text: '帮我安排明天下午回访客户',
+      inputId: 'input-auto-preview',
+      modelConfigId: 'test:model',
+      reasoningLevel: 'low',
+    });
+    const task = accepted.task!;
+    await source.getRepository(ChatTaskEntity).update(
+      { id: task.taskId },
+      {
+        state: 'running',
+        leaseOwner: 'worker',
+        leaseExpiresAt: new Date(Date.now() + 30_000),
+      },
+    );
+    const preview = {
+      schema_version: 1 as const,
+      preview_id: 'preview-auto-chat',
+      kind: 'action' as const,
+      confirmation_status: 'unconfirmed' as const,
+      applied: false as const,
+      source_refs: [{ kind: 'chat_message' as const, id: task.userMessageId }],
+      content: { title: '明天下午回访客户', confidence: 0.9 },
+      warnings: [],
+    };
+
+    await expect(store.completeAssistantOutput({
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      leaseToken: 'worker',
+      expectedRevision: 0,
+      content: '正在创建行动。',
+      chatPreviews: [preview],
+      contextMessages: [],
+    })).resolves.toMatchObject({
+      outcome: 'committed',
+      task: { state: 'completed' },
+    });
+    await expect(store.listSessionChatPreviews(task.ownerId, task.sessionId)).resolves.toEqual([]);
+    await expect(store.listSessionFormalCandidates(task.ownerId, task.sessionId)).resolves.toEqual([]);
+    await expect(source.query(`select title from actions`)).resolves.toEqual([
+      expect.objectContaining({ title: '明天下午回访客户' }),
+    ]);
+    await expect(source.query(`select batch_status from confirmation_batches`)).resolves.toEqual([
+      expect.objectContaining({ batch_status: 'confirmed' }),
+    ]);
+    await expect(store.listSessionMessages(task.ownerId, task.sessionId)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining('已创建行动：明天下午回访客户') })]),
+    );
+    await source.destroy();
+  });
+
+  it('rejects chat completion with an invalid preview without writing partial state', async () => {
     const source = dataSource();
     await source.initialize();
     const store = new TypeOrmChatTaskStore(source);
@@ -288,9 +382,9 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
       preview_id: 'preview-for-chat',
       kind: 'action' as const,
       confirmation_status: 'unconfirmed' as const,
-      applied: false as const,
+      applied: true as const,
       source_refs: [{ kind: 'chat_message' as const, id: task.userMessageId }],
-      content: { title: '不应写入', confidence: 0.8 },
+      content: { title: '非法预览不应写入', confidence: 0.8 },
       warnings: [],
     };
     await expect(

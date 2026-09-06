@@ -6,6 +6,7 @@ import {
   type SessionMessageDto,
   type SessionToolView,
   type TaskState,
+  type TaskTodoItemV1,
 } from '@partner-agent/contracts';
 import { create, type StoreApi } from 'zustand';
 
@@ -15,6 +16,7 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  format?: 'markdown' | 'text';
   thinkingContent?: string;
   createdAt?: string;
   tool?: string;
@@ -63,6 +65,8 @@ interface ChatState {
   sessionPersisted: boolean;
   activeTaskId?: string;
   activeOperationId?: string;
+  todoTaskId?: string;
+  taskTodos: TaskTodoItemV1[];
   items: ChatItem[];
   toolViews: SessionToolView[];
   isStreaming: boolean;
@@ -75,6 +79,8 @@ interface ChatState {
   setSessionPersisted: (persisted: boolean) => void;
   setActiveTaskId: (activeTaskId?: string) => void;
   setActiveOperationId: (activeOperationId?: string) => void;
+  setTaskTodos: (taskId: string, items: TaskTodoItemV1[]) => void;
+  clearTaskTodos: () => void;
   setConnectionStatus: (status: ChatConnectionStatus) => void;
   beginTask: () => void;
   setTaskStatus: (status: ChatTaskStatus) => boolean;
@@ -95,6 +101,7 @@ export type ChatStateView = ChatState & { readonly messages: ChatMessage[] };
 const INITIAL_CHAT_STATE = {
   sessionId: '', sessionRevision: 0, sessionPersisted: false,
   activeTaskId: undefined, activeOperationId: undefined,
+  todoTaskId: undefined, taskTodos: [] as TaskTodoItemV1[],
   items: [] as ChatItem[], toolViews: [] as SessionToolView[],
   isStreaming: false, isThinking: false,
   connectionStatus: 'idle' as ChatConnectionStatus,
@@ -103,13 +110,60 @@ const INITIAL_CHAT_STATE = {
 };
 
 function sortItems(items: readonly ChatItem[]): ChatItem[] {
-  return [...items].sort((left, right) =>
+  const chronological = [...items].sort((left, right) =>
     (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER)
     || left.created_at - right.created_at
     || left.id.localeCompare(right.id));
+  const thinkingByTask = new Map<string, ChatItem[]>();
+  const followupsByTask = new Map<string, ChatItem[]>();
+  const unboundThinking: ChatItem[] = [];
+  for (const item of chronological) {
+    if (item.type === 'thinking') {
+      if (!item.task_id) {
+        unboundThinking.push(item);
+        continue;
+      }
+      const taskItems = thinkingByTask.get(item.task_id) ?? [];
+      taskItems.push(item);
+      thinkingByTask.set(item.task_id, taskItems);
+    } else if ((item.type === 'structured_preview' || item.type === 'candidate') && item.task_id) {
+      const taskItems = followupsByTask.get(item.task_id) ?? [];
+      taskItems.push(item);
+      followupsByTask.set(item.task_id, taskItems);
+    }
+  }
+  const ordered: ChatItem[] = [];
+  for (const item of chronological) {
+    if (item.type === 'thinking'
+      || ((item.type === 'structured_preview' || item.type === 'candidate') && item.task_id)) continue;
+    if (item.type === 'message' && item.payload.role === 'assistant' && item.task_id) {
+      const thinking = thinkingByTask.get(item.task_id);
+      if (thinking) {
+        ordered.push(...thinking);
+        thinkingByTask.delete(item.task_id);
+      }
+      ordered.push(item);
+      const followups = followupsByTask.get(item.task_id);
+      if (followups) {
+        ordered.push(...followups);
+        followupsByTask.delete(item.task_id);
+      }
+      continue;
+    }
+    ordered.push(item);
+  }
+  return [
+    ...ordered,
+    ...unboundThinking,
+    ...thinkingByTask.values(),
+    ...followupsByTask.values(),
+  ].flat();
 }
 
 function mergeItem(current: ChatItem, incoming: ChatItem): ChatItem {
+  if (current.type === 'candidate' && incoming.type === 'candidate'
+    && incoming.revision === current.revision
+    && incoming.payload.batch_ref && !current.payload.batch_ref) return incoming;
   if (incoming.revision <= current.revision) return current;
   if (current.type === 'tool' && incoming.type === 'tool') {
     return { ...current, ...incoming, payload: { ...current.payload, ...incoming.payload } };
@@ -134,7 +188,12 @@ function mergeItems(current: readonly ChatItem[], incoming: readonly ChatItem[])
     const existing = merged.get(item.id);
     merged.set(item.id, existing ? mergeItem(existing, item) : item);
   }
-  return sortItems([...merged.values()]);
+  const tasksWithFormalCandidates = new Set([...merged.values()].flatMap((item) =>
+    item.type === 'candidate' && item.task_id ? [item.task_id] : []));
+  return sortItems([...merged.values()].filter((item) =>
+    item.type !== 'structured_preview'
+    || !item.task_id
+    || !tasksWithFormalCandidates.has(item.task_id)));
 }
 
 function mergeToolViews(
@@ -177,10 +236,27 @@ export function sessionMessageToChatItem(message: SessionMessageDto): ChatItem {
   };
 }
 
+function sessionMessageToChatItems(message: SessionMessageDto): ChatItem[] {
+  const item = sessionMessageToChatItem(message);
+  if (message.role !== 'assistant' || !message.task_id || !message.thinking_summary?.trim()) {
+    return [item];
+  }
+  const createdAt = Date.parse(message.created_at);
+  return [{
+    schema_version: 1, id: chatItemIds.taskThinking(message.task_id), type: 'thinking',
+    status: sessionMessageStatusToChatItemStatus(message.status), collapsed: true,
+    created_at: createdAt, updated_at: createdAt, revision: message.revision,
+    sequence: message.sequence, session_id: message.session_id, task_id: message.task_id,
+    operation_id: message.operation_id, message_id: message.id,
+    payload: { text: message.thinking_summary, display: 'summary' },
+  }, item];
+}
+
 function itemsToMessages(items: readonly ChatItem[]): ChatMessage[] {
   return items.flatMap((item): ChatMessage[] => {
     if (item.type === 'message') return [{
       id: item.id, role: item.payload.role, content: item.payload.content,
+      format: item.payload.format,
       createdAt: new Date(item.created_at).toISOString(),
     }];
     if (item.type === 'tool') return [{
@@ -210,8 +286,16 @@ const baseStore = create<ChatState>((set) => ({
   setSessionPersisted: (sessionPersisted) => set({ sessionPersisted }),
   setActiveTaskId: (activeTaskId) => set({ activeTaskId }),
   setActiveOperationId: (activeOperationId) => set({ activeOperationId }),
+  setTaskTodos: (taskId, taskTodos) => set((state) => {
+    if (state.activeTaskId && taskId !== state.activeTaskId) return state;
+    const visible = taskTodos.length > 0
+      && taskTodos.some((item) => item.status !== 'completed');
+    return visible ? { todoTaskId: taskId, taskTodos } : { todoTaskId: undefined, taskTodos: [] };
+  }),
+  clearTaskTodos: () => set({ todoTaskId: undefined, taskTodos: [] }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
   beginTask: () => set({ activeTaskId: undefined, activeOperationId: undefined,
+    todoTaskId: undefined, taskTodos: [],
     isStreaming: true, isThinking: true, taskStatus: 'queued', privacyDecision: undefined }),
   setTaskStatus: (taskStatus) => {
     let accepted = false;
@@ -230,13 +314,16 @@ const baseStore = create<ChatState>((set) => ({
   upsertItem: (item) => set((state) =>
     itemScopeMatches(item, state) ? { items: mergeItems(state.items, [item]) } : state),
   mergeSnapshot: (items, toolViews) => set((state) => ({
-    items: mergeItems(state.items, items.filter((item) => item.session_id === state.sessionId)),
+    items: mergeItems(
+      state.items.filter((item) => item.type !== 'structured_preview' && item.type !== 'candidate'),
+      items.filter((item) => item.session_id === state.sessionId),
+    ),
     toolViews: mergeToolViews(state.toolViews, toolViews, state.sessionId),
   })),
   mergeSessionMessages: (messages) => set((state) => ({
     items: mergeItems(state.items, messages
       .filter((message) => message.session_id === state.sessionId)
-      .map(sessionMessageToChatItem)),
+      .flatMap(sessionMessageToChatItems)),
   })),
   addMessage: (message) => set((state) => {
     const now = message.createdAt ? Date.parse(message.createdAt) : Date.now();

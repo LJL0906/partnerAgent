@@ -11,10 +11,12 @@ import { AddOffReasoningLevel1788518000000 } from './migrations/1788518000000-ad
 import { AlignChatMessageRuntime1788519000000 } from './migrations/1788519000000-align-chat-message-runtime.js';
 import { AddChatTaskOutputMode1788520000000 } from './migrations/1788520000000-add-chat-task-output-mode.js';
 import { AddChatTaskRevision1788521000000 } from './migrations/1788521000000-add-chat-task-revision.js';
+import { CompleteActionWorkflow1788522000000 } from './migrations/1788522000000-complete-action-workflow.js';
 
 describe('database definition', () => {
   it('registers the latest reversible migration exactly once', () => {
-    expect(DATABASE_MIGRATIONS.at(-1)).toBe(AddChatTaskRevision1788521000000);
+    expect(DATABASE_MIGRATIONS.at(-1)).toBe(CompleteActionWorkflow1788522000000);
+    expect(DATABASE_MIGRATIONS.filter((migration) => migration === CompleteActionWorkflow1788522000000)).toHaveLength(1);
     expect(
       DATABASE_MIGRATIONS.filter(
         (migration) => migration === AddChatTaskRevision1788521000000,

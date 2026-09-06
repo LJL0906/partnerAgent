@@ -306,3 +306,58 @@ export interface AnalysisRunResult {
   updated_at: string;
   completed_at?: string;
 }
+
+const ANALYSIS_RUN_RESULT_FIELDS = [
+  'analysis_run_ref', 'original_record_ref', 'chat_task_ref', 'analysis_type',
+  'status', 'result_refs', 'error_summary', 'version', 'created_at', 'updated_at',
+  'completed_at',
+] as const;
+
+const isExactTypedRef = (value: unknown, kind: ResourceRef['kind']): boolean =>
+  isRecord(value)
+  && Object.keys(value).every((key) => key === 'kind' || key === 'id')
+  && Object.keys(value).length === 2
+  && value.kind === kind
+  && hasText(value.id);
+
+export function isGetAnalysisRunResult(value: unknown): value is AnalysisRunResult {
+  if (!isRecord(value)
+    || !Object.keys(value).every((key) =>
+      (ANALYSIS_RUN_RESULT_FIELDS as readonly string[]).includes(key))
+    || !isExactTypedRef(value.analysis_run_ref, 'analysis_run')
+    || !isExactTypedRef(value.original_record_ref, 'original_record')
+    || !isRecord(value.chat_task_ref)
+    || Object.keys(value.chat_task_ref).length !== 2
+    || !Object.keys(value.chat_task_ref).every((key) => key === 'kind' || key === 'task_id')
+    || value.chat_task_ref.kind !== 'analysis'
+    || !hasText(value.chat_task_ref.task_id)
+    || !(ANALYSIS_TYPES as readonly unknown[]).includes(value.analysis_type)
+    || !(ANALYSIS_RUN_STATUSES as readonly unknown[]).includes(value.status)
+    || !Array.isArray(value.result_refs)
+    || !value.result_refs.every((ref) => isExactTypedRef(ref, 'analysis_result'))
+    || new Set(value.result_refs.map((ref) => (ref as ResourceRef).id)).size
+      !== value.result_refs.length
+    || (typeof value.version !== 'string' || !/^[1-9]\d*$/.test(value.version))
+    || typeof value.created_at !== 'string'
+    || !Number.isFinite(Date.parse(value.created_at))
+    || typeof value.updated_at !== 'string'
+    || !Number.isFinite(Date.parse(value.updated_at))
+    || (value.error_summary !== undefined && !hasText(value.error_summary))
+    || (value.completed_at !== undefined
+      && (typeof value.completed_at !== 'string'
+        || !Number.isFinite(Date.parse(value.completed_at))))) return false;
+
+  const terminal = ['completed', 'partially_completed', 'failed', 'cancelled'].includes(
+    value.status as string,
+  );
+  return terminal === (value.completed_at !== undefined)
+    && (value.status === 'failed' ? value.error_summary !== undefined : true)
+    && (value.status === 'completed' || value.status === 'partially_completed'
+      ? value.result_refs.length > 0
+      : true);
+}
+
+export function parseGetAnalysisRunResult(value: unknown): AnalysisRunResult {
+  if (!isGetAnalysisRunResult(value)) throw new TypeError('Invalid GetAnalysisRunResult');
+  return value;
+}

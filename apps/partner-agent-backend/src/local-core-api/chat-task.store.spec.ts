@@ -355,6 +355,39 @@ describe('ChatTaskStore', () => {
       .resolves.toEqual({ outcome: 'fence_rejected' });
   });
 
+  it('accepts a valid model-selected action preview in ordinary chat mode', async () => {
+    const store = new MemoryChatTaskStore(new MemorySessionStore());
+    await store.submitText({
+      ...base,
+      operationId: '00000000-0000-4000-8000-000000000022',
+      inputId: 'input-auto-preview',
+      requestFingerprint: 'auto-preview',
+    });
+    const task = await store.claimNextRunnable('worker-auto-preview', 30_000);
+    const preview = {
+      schema_version: 1 as const,
+      preview_id: 'auto-preview-1',
+      kind: 'action' as const,
+      confirmation_status: 'unconfirmed' as const,
+      applied: false as const,
+      source_refs: [{ kind: 'chat_message' as const, id: task!.userMessageId }],
+      content: { title: '提交周报', confidence: 0.9 },
+      warnings: [],
+    };
+
+    await expect(store.completeAssistantOutput({
+      ownerId: task!.ownerId,
+      sessionId: task!.sessionId,
+      taskId: task!.taskId,
+      operationId: task!.operationId,
+      leaseToken: 'worker-auto-preview',
+      expectedRevision: 0,
+      content: '我整理了一份行动预览。',
+      chatPreviews: [preview],
+      contextMessages: [{ role: 'assistant', content: [] }],
+    })).resolves.toMatchObject({ outcome: 'committed' });
+  });
+
   it('keeps structured preview mode on the accepted and claimed task', async () => {
     const store = new MemoryChatTaskStore(new MemorySessionStore());
     const accepted = await store.submitText({

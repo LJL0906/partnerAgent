@@ -38,12 +38,22 @@ export type ChatItemBubbleActions = {
   onConfirmTool?: (confirmationId: string) => void;
   onDismissTool?: (confirmationId: string) => void;
   onUndoTool?: (executionId: string) => void;
+  onCardLayoutChange?: () => void;
 };
+
+function previewText(preview: Record<string, unknown>, key: string): string | undefined {
+  const value = preview[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function candidateTypeLabel(kind: string): string {
+  return kind === 'action' ? '行动建议' : kind === 'reminder' ? '提醒建议' : '候选建议';
+}
 
 export function ChatItemBubble({ item, actions = {}, toolView }: { item: ChatItem; actions?: ChatItemBubbleActions; toolView?: SessionToolView }) {
   switch (item.type) {
     case 'message': {
-      const bubble = <MessageBubble message={{ id: item.id, role: item.payload.role, content: item.payload.content, createdAt: new Date(item.created_at).toISOString() }} />;
+      const bubble = <MessageBubble message={{ id: item.id, role: item.payload.role, content: item.payload.content, format: item.payload.format, createdAt: new Date(item.created_at).toISOString() }} />;
       if (item.payload.role !== 'assistant' || !item.payload.model_config_id) return bubble;
       return (
         <View style={{ gap: spacing.xxs }}>
@@ -56,7 +66,7 @@ export function ChatItemBubble({ item, actions = {}, toolView }: { item: ChatIte
       );
     }
     case 'thinking':
-      return <ThinkingCard content={item.payload.text ?? '正在整理信息…'} />;
+      return <ThinkingCard content={item.payload.text ?? '正在整理信息…'} streaming={item.status === 'streaming'} />;
     case 'tool': {
       if (!toolView) {
         return <SystemCard title="工具状态待同步" content="尚未收到该工具调用的权威状态，请刷新会话后重试。" />;
@@ -73,7 +83,18 @@ export function ChatItemBubble({ item, actions = {}, toolView }: { item: ChatIte
           ? () => actions.onUndoTool?.(executionId) : undefined} />;
     }
     case 'candidate':
-      return <CandidateCard candidateId={item.candidate_id} title={`${item.payload.kind} 候选`} candidateType={item.payload.kind} summary={typeof item.payload.preview.summary === 'string' ? item.payload.preview.summary : undefined} previewOnly />;
+      return <CandidateCard
+        candidateId={item.candidate_id}
+        candidateType={candidateTypeLabel(item.payload.kind)}
+        title={previewText(item.payload.preview, 'title') ?? '候选方案'}
+        summary={previewText(item.payload.preview, 'summary')
+          ?? previewText(item.payload.preview, 'description')}
+        details={previewText(item.payload.preview, 'details')}
+        plannedAt={previewText(item.payload.preview, 'planned_at')}
+        deadlineAt={previewText(item.payload.preview, 'deadline_at')}
+        timezone={previewText(item.payload.preview, 'timezone')}
+        onLayoutChangeIntent={actions.onCardLayoutChange}
+      />;
     case 'structured_preview':
       return <StructuredPreviewCard createdAt={item.created_at} preview={item.payload} />;
     case 'approval': {

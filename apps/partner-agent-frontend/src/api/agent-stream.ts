@@ -256,6 +256,7 @@ export async function subscribeAgentStream(
   };
 
   const subscribeChannels = (channels: SubscriptionChannel[]): Promise<SubscriptionAckV1> => {
+    if (closed) return Promise.reject(new StreamDisconnectedError());
     const additions = unique(channels).filter((channel) => !desiredChannels.has(channel));
     for (const channel of additions) desiredChannels.add(channel);
     if (additions.length === 0) {

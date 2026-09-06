@@ -14,6 +14,10 @@ import {
   type TaskState,
 } from './chat-item-identity.js';
 import type {
+  ActionExecutionStatus,
+  ActionPlanStatus,
+  ActionTimelinessStatus,
+  BusinessObjectAction,
   BusinessObjectKind,
   CandidateStatus,
   ErrorCode,
@@ -201,6 +205,7 @@ export interface SessionMessageDto {
   operation_id?: string;
   model_config_id?: string;
   reasoning_level?: ReasoningLevel;
+  thinking_summary?: string;
   created_at: string;
 }
 
@@ -212,7 +217,7 @@ const isPositiveInteger = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 const SESSION_MESSAGE_FIELDS = [
   'id', 'session_id', 'sequence', 'role', 'content', 'status', 'revision',
-  'task_id', 'operation_id', 'model_config_id', 'reasoning_level', 'created_at',
+  'task_id', 'operation_id', 'model_config_id', 'reasoning_level', 'thinking_summary', 'created_at',
 ] as const;
 
 export function isSessionMessageDto(value: unknown): value is SessionMessageDto {
@@ -230,6 +235,7 @@ export function isSessionMessageDto(value: unknown): value is SessionMessageDto 
     && (value.model_config_id === undefined || hasText(value.model_config_id))
     && (value.reasoning_level === undefined
       || ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value.reasoning_level as string))
+    && (value.thinking_summary === undefined || typeof value.thinking_summary === 'string')
     && typeof value.created_at === 'string'
     && Number.isFinite(Date.parse(value.created_at));
 }
@@ -285,27 +291,66 @@ export interface CoreHealth {
 export interface ListPendingConfirmationBatchesQuery {}
 export interface PendingConfirmationBatchSummary {
   batch_id: string;
+  batch_version: string;
+  status: 'pending' | 'partially_processed';
+  risk: 'normal' | 'high';
   item_count: number;
   high_risk_count: number;
+  expires_at: string;
   created_at: string;
+  updated_at: string;
 }
 export interface GetConfirmationBatchQuery {
   batch_id: string;
+}
+export interface GetConfirmationBatchResult {
+  batch_ref: ResourceRef & { kind: 'confirmation_batch' };
+  batch_version: string;
+  status: 'pending' | 'partially_processed' | 'confirmed' | 'cancelled' | 'expired';
+  risk: 'normal' | 'high';
+  item_count: number;
+  high_risk_count: number;
+  source_refs: ResourceRef[];
+  candidates: CandidateDetail[];
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
 }
 export interface GetCandidateDetailQuery {
   candidate_id: string;
 }
 export interface CandidateDetail {
-  candidate_id: string;
+  candidate_ref: ResourceRef & { kind: 'candidate' };
+  batch_ref: ResourceRef & { kind: 'confirmation_batch' };
+  candidate_version: string;
   kind: BusinessObjectKind;
+  action: BusinessObjectAction;
   content: Record<string, unknown>;
   source_refs: ResourceRef[];
   confidence: number;
   risk: 'normal' | 'high';
   sensitive_marks: string[];
   status: CandidateStatus;
+  editable_fields: string[];
+  target_object_ref?: ResourceRef;
+  expected_target_version?: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
 }
+export type GetCandidateDetailResult = CandidateDetail;
 export interface GetConfirmationHistoryQuery { cursor?: string; }
+export interface ConfirmationHistoryItem {
+  confirmation_action_id: string;
+  batch_ref: ResourceRef & { kind: 'confirmation_batch' };
+  operation_id: string;
+  action_type: 'confirm' | 'confirm_after_edit' | 'cancel' | 'undo';
+  client_source: 'ios' | 'android' | 'web' | 'other';
+  object_refs: ResourceRef[];
+  reverses_confirmation_action_id?: string;
+  created_at: string;
+}
+export type GetConfirmationHistoryResult = PaginatedResult<ConfirmationHistoryItem>;
 export interface GetUndoEligibilityQuery {
   object_kind: BusinessObjectKind;
   object_id: string;
@@ -332,6 +377,8 @@ export interface UndoScope {
   original_confirmation_batch_id: string;
   whole_batch_required: true;
   object_refs: ResourceRef[];
+  /** 生成撤销候选时必须原样提交，服务端仍会重新读取并校验。 */
+  observed_versions: Record<string, string>;
 }
 
 /** 正式业务撤销资格；eligible=true 后仍须经新的 SubmitConfirmationBatch 生效。 */
@@ -363,6 +410,34 @@ export interface ListActionsQuery extends QueryParams {
 export interface GetActionQuery {
   action_id: string;
 }
+export type BusinessObjectLifecycleStatus =
+  | 'active'
+  | 'archived'
+  | 'soft_deleted'
+  | 'purged';
+export interface ActionSummary {
+  action_ref: ResourceRef & { kind: 'action' };
+  version: string;
+  lifecycle_status: BusinessObjectLifecycleStatus;
+  title: string;
+  description?: string;
+  priority?: 'low' | 'medium' | 'high';
+  timezone?: string;
+  execution_status: ActionExecutionStatus;
+  plan_status: ActionPlanStatus;
+  timeliness_status: ActionTimelinessStatus;
+  deadline_at?: string;
+  planned_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+export type ListActionsResult = PaginatedResult<ActionSummary>;
+export interface GetActionResult extends ActionSummary {
+  source_refs: ResourceRef[];
+  last_confirmation_batch_ref: ResourceRef & { kind: 'confirmation_batch' };
+}
 export interface ListFactsQuery extends QueryParams {}
 export interface GetFactQuery {
   fact_id: string;
@@ -382,6 +457,28 @@ export interface GetChangeHistoryQuery {
   object_kind: BusinessObjectKind;
   object_id: string;
 }
+export interface ChangeHistoryItem {
+  change_id: string;
+  object_version: string;
+  change_type: BusinessObjectAction;
+  confirmation_action_id: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  created_at: string;
+}
+export interface GetChangeHistoryResult extends PaginatedResult<ChangeHistoryItem> {
+  object_ref: ResourceRef;
+}
+
+export {
+  parseGetActionResult,
+  parseGetCandidateDetailResult,
+  parseGetChangeHistoryResult,
+  parseGetConfirmationBatchResult,
+  parseGetConfirmationHistoryResult,
+  parseGetUndoEligibilityResult,
+  parseListActionsResult,
+} from './local-core-action-results.js';
 
 // RAG 与依据
 export interface SearchRelevantContextQuery {

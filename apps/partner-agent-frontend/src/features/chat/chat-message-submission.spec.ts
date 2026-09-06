@@ -134,19 +134,9 @@ describe('chat message submission', () => {
     expect(submit.mock.calls[0]?.[0]).not.toHaveProperty('sessionId');
   });
 
-  it('forwards action preview mode to the command without changing normal chat defaults', async () => {
-    const previewSubmit = vi.fn<Submit>().mockResolvedValue(acceptedResult());
-    await sendChatMessage('预览行动', {
-      ...refs(), reconcileFromRest: vi.fn(), reportError: vi.fn(),
-      streamReadyRef: { current: Promise.resolve(fakeConnection()) },
-      outputMode: 'structured_preview', submit: previewSubmit,
-    });
-    expect(previewSubmit).toHaveBeenCalledWith(expect.objectContaining({ outputMode: 'structured_preview' }));
-
-    useChatStore.getState().resetChat();
-    useChatStore.getState().setSessionId('session-1');
+  it('always submits the normal chat mode so the Agent can recognize intent', async () => {
     const chatSubmit = vi.fn<Submit>().mockResolvedValue(acceptedResult());
-    await sendChatMessage('普通聊天', {
+    await sendChatMessage('帮我安排周一提交周报', {
       ...refs(), reconcileFromRest: vi.fn(), reportError: vi.fn(),
       streamReadyRef: { current: Promise.resolve(fakeConnection()) }, submit: chatSubmit,
     });
@@ -159,7 +149,7 @@ describe('chat message submission', () => {
     const sharedRefs = refs();
     sharedRefs.pendingSubmissionRef.current = {
       inputId: 'input-1', operationId, optimisticMessageId: 'optimistic-user',
-      sessionId: 'session-1', text: '帮我安排周一提交周报', outputMode: 'chat',
+      sessionId: 'session-1', text: '帮我安排周一提交周报',
     };
     await sendChatMessage('帮我安排周一提交周报', {
       ...sharedRefs,

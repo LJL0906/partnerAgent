@@ -33,6 +33,10 @@ const iconMap = {
   logout: { ios: 'rectangle.portrait.and.arrow.right', android: 'logout', web: 'logout' },
   clock: { ios: 'clock', android: 'schedule', web: 'schedule' },
   archive: { ios: 'archivebox', android: 'inventory_2', web: 'inventory_2' },
+  copy: { ios: 'doc.on.doc', android: 'content_copy', web: 'content_copy' },
+  play: { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' },
+  pause: { ios: 'pause.fill', android: 'pause', web: 'pause' },
+  todo: { ios: 'list.bullet', android: 'checklist', web: 'checklist' },
 } as const satisfies Record<string, ComponentProps<typeof SymbolView>['name']>;
 
 export type AppIconName = keyof typeof iconMap;

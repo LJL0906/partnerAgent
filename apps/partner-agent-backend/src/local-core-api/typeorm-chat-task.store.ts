@@ -30,6 +30,11 @@ import {
   ChatTaskLifecycleOutboxWriter,
   TypeOrmChatTaskLifecycleOutbox,
 } from './chat-task-lifecycle-outbox.js';
+import {
+  actionPreviewDisposition,
+  persistActionCandidates,
+} from './action-candidate-production.js';
+import { executeConfirmationTransaction } from './confirmation-transaction.executor.js';
 export class TypeOrmChatTaskStore extends ChatTaskStore {
   private readonly runtime: TypeOrmChatTaskRuntime;
   override readonly lifecycleOutbox: TypeOrmChatTaskLifecycleOutbox;
@@ -532,11 +537,55 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
           reasoningLevel: task.reasoningLevel,
         });
       }
+      const autoApply = task.outputMode === 'chat'
+        && actionPreviewDisposition(previews) === 'auto_apply';
       message.content = command.content;
       message.status = 'complete';
       message.revision = (message.revision ?? 0) + 1;
-      message.metadataJson = previews.length ? { chat_previews: previews } : null;
+      const messageMetadata: Record<string, unknown> = {};
+      if (!autoApply && previews.length) messageMetadata.chat_previews = previews;
+      if (command.thinkingContent?.trim()) {
+        messageMetadata.thinking_summary = command.thinkingContent.slice(0, 100_000);
+      }
+      message.metadataJson = Object.keys(messageMetadata).length ? messageMetadata : null;
       message.completedAt = new Date();
+      if (autoApply) {
+        const candidateBatch = await persistActionCandidates(
+          manager,
+          task,
+          previews,
+          message.completedAt,
+        );
+        if (!candidateBatch || !manager.queryRunner) {
+          throw new Error('自动执行行动候选事务未初始化');
+        }
+        const confirmation = await executeConfirmationTransaction(
+          manager.queryRunner,
+          {
+            userId: task.ownerId,
+            input: {},
+            envelope: {
+              operation_id: task.operationId,
+              client_source: 'other',
+              request_fingerprint: `auto-confirm:${task.operationId}:${candidateBatch.batchId}`,
+              payload: {
+                confirmation_batch_id: candidateBatch.batchId,
+                batch_version: '1',
+                items: candidateBatch.candidateIds.map((candidateId) => ({
+                  candidate_id: candidateId,
+                  candidate_version: '1',
+                  decision: 'confirm' as const,
+                })),
+              },
+            },
+          },
+        );
+        if (confirmation.outcome !== 'completed') {
+          throw new Error('自动执行行动候选未完成');
+        }
+        const title = previews[0]?.content.title;
+        message.content = `${command.content.trim()}${command.content.trim() ? '\n\n' : ''}已创建行动：${title}`;
+      }
       await messageRepository.save(message);
       await manager.getRepository(ChatSessionEntity).update(
         { id: task.sessionId, ownerId: task.ownerId },
@@ -554,7 +603,11 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       task.updatedAt = message.completedAt;
       await taskRepository.save(task);
       await ChatTaskLifecycleOutboxWriter.append(manager, task);
-      return { outcome: 'committed' as const, task: await this.loadStored(manager, task), message: this.toMessageDto(message) };
+      return {
+        outcome: 'committed' as const,
+        task: await this.loadStored(manager, task),
+        message: this.toMessageDto(message),
+      };
     });
   }
 
@@ -576,6 +629,9 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         ...(m.operationId ? { operation_id: m.operationId } : {}),
         ...(m.modelConfigId ? { model_config_id: m.modelConfigId } : {}),
         ...(m.reasoningLevel ? { reasoning_level: m.reasoningLevel } : {}),
+        ...(typeof m.metadataJson?.thinking_summary === 'string'
+          ? { thinking_summary: m.metadataJson.thinking_summary }
+          : {}),
       }));
   }
   async listSessionChatPreviews(ownerId: string, sessionId: string) {
@@ -602,6 +658,53 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       });
     });
   }
+  async listSessionFormalCandidates(ownerId: string, sessionId: string) {
+    const rows = (await this.dataSource.query(
+      `select ci.id as candidate_id,ci.batch_id,ct.session_id,ar.chat_task_id as task_id,
+              ct.operation_id,ci.kind,ci.payload,ci.source_refs,ci.confidence,
+              ci.risk,ci.version,ci.created_at
+       from candidate_items ci
+       join confirmation_batches cb
+         on cb.user_id=ci.user_id and cb.id=ci.batch_id
+       join structured_analyses sa
+         on sa.owner_id=cb.user_id and sa.id=cb.source_analysis_id
+       join analysis_runs ar
+         on ar.owner_id=sa.owner_id and ar.id=sa.analysis_run_id
+       join chat_tasks ct
+         on ct.owner_id=ar.owner_id and ct.id=ar.chat_task_id
+       where ci.user_id=$1 and ct.session_id=$2 and ci.candidate_status='pending'
+       order by ci.created_at asc,ci.id asc`,
+      [ownerId, sessionId],
+    )) as Array<{
+      candidate_id: string; batch_id: string; session_id: string; task_id: string;
+      operation_id: string; kind: string; payload: Record<string, unknown>;
+      source_refs: unknown; confidence: string | number | null; risk: 'normal' | 'high';
+      version: string | number; created_at: Date;
+    }>;
+    return rows.map((row) => ({
+      candidate_id: row.candidate_id,
+      batch_id: row.batch_id,
+      session_id: row.session_id,
+      task_id: row.task_id,
+      operation_id: row.operation_id,
+      kind: row.kind,
+      payload: row.payload,
+      source_refs: Array.isArray(row.source_refs)
+        ? row.source_refs.filter(
+            (ref): ref is { kind: string; id: string } =>
+              Boolean(ref) && typeof ref === 'object'
+              && typeof (ref as Record<string, unknown>).kind === 'string'
+              && typeof (ref as Record<string, unknown>).id === 'string',
+          )
+        : [],
+      ...(row.confidence === null
+        ? {}
+        : { confidence: Number(row.confidence) }),
+      risk: row.risk,
+      version: Number(row.version),
+      created_at: new Date(row.created_at),
+    }));
+  }
   private async lockCurrentLease(
     manager: EntityManager,
     command: { taskId: string; ownerId: string; sessionId: string; operationId: string; leaseToken: string },
@@ -626,6 +729,9 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       ...(message.operationId ? { operation_id: message.operationId } : {}),
       ...(message.modelConfigId ? { model_config_id: message.modelConfigId } : {}),
       ...(message.reasoningLevel ? { reasoning_level: message.reasoningLevel } : {}),
+      ...(typeof message.metadataJson?.thinking_summary === 'string'
+        ? { thinking_summary: message.metadataJson.thinking_summary }
+        : {}),
     };
   }
   private async loadStored(

@@ -1,5 +1,4 @@
 import type {
-  ChatOutputMode,
   ReasoningLevel,
   ServerPushEventV1,
   SubscriptionAckV1,
@@ -181,6 +180,14 @@ export interface UseChatOptions {
   toolControls?: ChatToolControlTransport;
 }
 
+/** The stream follows an explicit conversation switch, not local-to-server id adoption. */
+export function chatStreamLifecycleKey(
+  ready: boolean,
+  sessionRevision: number,
+): number | undefined {
+  return ready ? sessionRevision : undefined;
+}
+
 export function createUseChatToolControls(
   getSessionId: () => string | undefined,
   getTransport: () => ChatToolControlTransport | undefined,
@@ -203,6 +210,7 @@ export function useChat(options: UseChatOptions = {}) {
   const streamConnectionRef = useRef<AgentStreamConnection | undefined>(undefined);
   const streamReadyRef = useRef<Promise<AgentStreamConnection> | undefined>(undefined);
   const reconciliationsRef = useRef(new Map<string, Promise<void>>());
+  const streamLifecycleKey = chatStreamLifecycleKey(ready, sessionRevision);
   const runTool = useCallback((action: keyof ChatToolControls, resourceId: string) => {
     return createUseChatToolControls(
       () => useChatStore.getState().sessionId,
@@ -361,19 +369,22 @@ export function useChat(options: UseChatOptions = {}) {
   useEffect(() => { void initializeSession(); }, []);
 
   useEffect(() => {
-    if (!sessionId || !ready) return;
+    if (streamLifecycleKey === undefined) return;
+    const bootstrapState = useChatStore.getState();
+    if (!bootstrapState.sessionId) return;
     assistantMessageIdRef.current = undefined;
-    currentTaskIdRef.current = useChatStore.getState().activeTaskId;
+    currentTaskIdRef.current = bootstrapState.activeTaskId;
     previousTaskIdRef.current = undefined;
     pendingSubmissionRef.current = undefined;
     let disposed = false;
-    const isCurrent = () => !disposed && useChatStore.getState().sessionRevision === sessionRevision;
+    const isCurrent = () => !disposed
+      && useChatStore.getState().sessionRevision === streamLifecycleKey;
     const opening = subscribeAgentStream({
       // 新生成的 sessionId 在首条 REST 提交前尚未归属当前用户，不能提前
       // 订阅。先以 user:self 完成鉴权与连接握手，REST 创建会话后再追加
       // session/task/operation，并通过权威 REST 快照补齐 ACK 前的事件。
-      channels: useChatStore.getState().sessionPersisted
-        ? desiredChannels(sessionId, useChatStore.getState().activeTaskId, useChatStore.getState().activeOperationId)
+      channels: bootstrapState.sessionPersisted
+        ? desiredChannels(bootstrapState.sessionId, bootstrapState.activeTaskId, bootstrapState.activeOperationId)
         : initialChatChannels(),
       onEvent: (event) => { if (isCurrent()) handleAgentEvent(event); },
       onInvalidEvent: () => {
@@ -397,7 +408,8 @@ export function useChat(options: UseChatOptions = {}) {
           return;
         }
         streamConnectionRef.current = connection;
-        if (useChatStore.getState().sessionPersisted) void reconcileFromRest(useChatStore.getState().activeTaskId, sessionId);
+        const state = useChatStore.getState();
+        if (state.sessionPersisted) void reconcileFromRest(state.activeTaskId, state.sessionId);
       })
       .catch((error: unknown) => {
         if (
@@ -415,7 +427,7 @@ export function useChat(options: UseChatOptions = {}) {
       streamConnectionRef.current?.close();
       streamConnectionRef.current = undefined;
     };
-  }, [handleAgentEvent, handleSubscriptionAck, reconcileFromRest, reportError, sessionId, sessionRevision, ready]);
+  }, [handleAgentEvent, handleSubscriptionAck, reconcileFromRest, reportError, streamLifecycleKey]);
 
   useEffect(() => {
     const connection = streamConnectionRef.current;
@@ -441,7 +453,7 @@ export function useChat(options: UseChatOptions = {}) {
     return () => subscription.remove();
   }, [reconcileFromRest]);
 
-  const sendMessage = useCallback(async (rawMessage: string, modelConfigId: string, reasoningLevel: ReasoningLevel, outputMode: ChatOutputMode = 'chat') => {
+  const sendMessage = useCallback(async (rawMessage: string, modelConfigId: string, reasoningLevel: ReasoningLevel) => {
     if (!useConversationStore.getState().ready) return false;
     return sendChatMessage(rawMessage, {
       assistantMessageIdRef,
@@ -454,7 +466,6 @@ export function useChat(options: UseChatOptions = {}) {
       streamReadyRef,
       modelConfigId,
       reasoningLevel,
-      outputMode,
     });
   }, [reconcileFromRest, reportError]);
 

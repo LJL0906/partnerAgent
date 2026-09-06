@@ -391,6 +391,14 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
             item_revision: event.revision,
           }
         : {}),
+      ...(event.type === 'agent_event' && event.itemId
+        ? {
+            item_id: event.itemId,
+            item_revision: event.itemRevision,
+            message_id: event.messageId,
+            text_offset: event.textOffset,
+          }
+        : {}),
     } as const;
     for (const channel of [
       `task:${event.taskId}`,
@@ -448,6 +456,7 @@ export class WsV1Service implements OnModuleInit, OnModuleDestroy {
     return [
       'text_delta',
       'thinking_delta',
+      'todo_update',
       'history',
       'tool_execution_start',
       'tool_execution_end',

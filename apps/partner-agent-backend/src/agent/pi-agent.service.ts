@@ -29,6 +29,7 @@ import { mapPiAgentEvent, type BackendAgentEvent } from './pi-agent-events.js';
 import { buildAgentSystemPrompt } from './agent-system-prompt.js';
 import { ChatPreviewOutputCollector } from './chat-preview-output.js';
 import { createEmitChatPreviewTool } from '../tools/emit-chat-preview.tool.js';
+import { createUpdateTaskTodoTool } from '../tools/update-task-todo.tool.js';
 import {
   createBudgetedAgentStream,
   startAgentRunTrace,
@@ -270,6 +271,7 @@ export class PiAgentService implements OnModuleInit {
 
     const unsubscribe = agent.subscribe(async (event, signal) => {
       trace.budget.hooks().observeAgentEvent(event, signal);
+      if (event.type === 'turn_start') previewOutput?.beginModelTurn();
       const egressError = this.egressErrors.get(agent);
       if (
         event.type === 'message_end' &&
@@ -297,6 +299,7 @@ export class PiAgentService implements OnModuleInit {
       }
       if (
         event.type === 'turn_end' &&
+        context.outputMode === 'structured_preview' &&
         previewOutput &&
         previewOutput.count === 0 &&
         event.toolResults.length === 0 &&
@@ -437,7 +440,9 @@ export class PiAgentService implements OnModuleInit {
       ) {
         await agent.waitForIdle();
         agent.state.messages = trimCompleteTurns(agent.state.messages);
-        const chatPreviews = previewOutput?.complete() ?? [];
+        const chatPreviews = previewOutput?.complete({
+          allowEmpty: context.outputMode === 'chat',
+        }) ?? [];
         if (context.taskId && context.outputMode) {
           yield {
             type: 'assistant_output_complete',
@@ -526,12 +531,17 @@ export class PiAgentService implements OnModuleInit {
       { readOnlyOnly: context.outputMode === 'structured_preview' },
     );
     if (previewOutput) tools.push(createEmitChatPreviewTool(previewOutput));
+    if (context.outputMode !== 'structured_preview') tools.push(createUpdateTaskTodoTool());
     let agent: Agent;
     agent = new Agent({
       sessionId,
       initialState: {
         systemPrompt: buildAgentSystemPrompt({
-          structuredPreview: Boolean(previewOutput),
+          previewMode: context.outputMode === 'structured_preview'
+            ? 'required'
+            : previewOutput
+              ? 'auto'
+              : undefined,
         }),
         model,
         messages,
@@ -548,7 +558,7 @@ export class PiAgentService implements OnModuleInit {
       beforeToolCall: async (toolContext, signal) =>
         (await trace.budget.hooks().beforeToolCall(toolContext, signal)) ??
         guardApprovalToolBatch(toolContext, (toolName) =>
-          toolName === 'emit_chat_preview'
+          toolName === 'emit_chat_preview' || toolName === 'update_task_todo'
             ? false
             : this.toolRegistry.isToolApprovalRequired(toolName),
         ),
@@ -562,13 +572,13 @@ export class PiAgentService implements OnModuleInit {
   private createPreviewOutput(
     context: PiChatContext,
   ): ChatPreviewOutputCollector | undefined {
-    if (context.outputMode !== 'structured_preview') return undefined;
-    if (
-      context.previewKind !== 'action' ||
-      !context.taskId ||
-      !context.originalRecordId ||
-      !context.userMessageId
-    ) {
+    if (context.outputMode !== 'chat' && context.outputMode !== 'structured_preview') {
+      return undefined;
+    }
+    if (!context.taskId || !context.originalRecordId || !context.userMessageId) {
+      throw new Error('结构化预览任务上下文不完整');
+    }
+    if (context.outputMode === 'structured_preview' && context.previewKind !== 'action') {
       throw new Error('结构化预览任务上下文不完整');
     }
     return new ChatPreviewOutputCollector({

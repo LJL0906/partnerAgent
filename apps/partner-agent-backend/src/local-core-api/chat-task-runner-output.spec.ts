@@ -70,6 +70,7 @@ describe('ChatTaskRunner assistant output', () => {
       kind: 'action',
       content: { title: '提交报销', confidence: 0.9 },
     });
+    const previews = includePreview ? [{ ...preview, applied: true }] : [];
 
     await expect(store.completeAssistantOutput({
       ownerId: task.ownerId,
@@ -79,7 +80,7 @@ describe('ChatTaskRunner assistant output', () => {
       leaseToken: 'worker-runner',
       expectedRevision: 0,
       content: '',
-      chatPreviews: includePreview ? [preview] : [],
+      chatPreviews: previews,
       contextMessages: [],
     })).resolves.toMatchObject({
       outcome: 'invalid_output',
@@ -95,7 +96,7 @@ describe('ChatTaskRunner assistant output', () => {
       leaseToken: 'stale-worker',
       expectedRevision: 0,
       content: '',
-      chatPreviews: includePreview ? [preview] : [],
+      chatPreviews: previews,
       contextMessages: [],
     })).resolves.toEqual({ outcome: 'fence_rejected' });
     await expect(store.completeAssistantOutput({
@@ -106,7 +107,7 @@ describe('ChatTaskRunner assistant output', () => {
       leaseToken: 'worker-runner',
       expectedRevision: 1,
       content: '',
-      chatPreviews: includePreview ? [preview] : [],
+      chatPreviews: previews,
       contextMessages: [],
     })).resolves.toEqual({ outcome: 'conflict' });
     await expect(store.getTask(task.ownerId, task.taskId)).resolves.toMatchObject({
@@ -228,6 +229,7 @@ describe('ChatTaskRunner assistant output', () => {
       kind: 'action',
       content: { title: '违反模式约束', confidence: 0.9 },
     });
+    const previews = includePreview ? [{ ...preview, applied: true }] : [];
     const runner = new ChatTaskRunner(
       { cancel: vi.fn() } as unknown as PiAgentService,
       store,
@@ -243,7 +245,7 @@ describe('ChatTaskRunner assistant output', () => {
       type: 'assistant_output_complete',
       data: {
         content: '',
-        chatPreviews: includePreview ? [preview] : [],
+        chatPreviews: previews,
         contextMessages: [],
       },
       timestamp: 1,
@@ -287,6 +289,7 @@ describe('ChatTaskRunner assistant output', () => {
     await runner.run(
       task,
       events([
+        { type: 'thinking_delta', data: '先核对来源，再生成行动。', timestamp: 0 },
         { type: 'text_delta', data: '已生成', timestamp: 1 },
         {
           type: 'assistant_output_complete',
@@ -309,6 +312,53 @@ describe('ChatTaskRunner assistant output', () => {
     await expect(store.listSessionChatPreviews(task.ownerId, task.sessionId)).resolves.toMatchObject([
       { task_id: task.taskId, preview },
     ]);
+    await expect(store.listSessionMessages(task.ownerId, task.sessionId)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({
+        task_id: task.taskId,
+        thinking_summary: '先核对来源，再生成行动。',
+      })]),
+    );
+  });
+
+  it('publishes stable identities, revisions, and offsets for thinking and text streams', async () => {
+    const { store, task } = await claimedTask('chat');
+    const bus = new ChatTaskEventBus();
+    const published: ChatTaskEvent[] = [];
+    bus.subscribe((event) => published.push(event));
+    const runner = new ChatTaskRunner(
+      { cancel: vi.fn() } as unknown as PiAgentService,
+      store,
+      bus,
+      new MemoryEgressDecisionStore(),
+      30_000,
+      () => false,
+      () => false,
+      () => undefined,
+    );
+
+    await runner.run(task, events([
+      { type: 'thinking_delta', data: '先分析', timestamp: 1 },
+      { type: 'thinking_delta', data: '再回答', timestamp: 2 },
+      { type: 'text_delta', data: '答案', timestamp: 3 },
+      { type: 'done', timestamp: 4 },
+    ]), 'worker-runner');
+
+    const agentEvents = published.filter((event) => event.type === 'agent_event');
+    expect(agentEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventType: 'thinking_delta', data: '先分析',
+        itemId: chatItemIds.taskThinking(task.taskId), itemRevision: 1, textOffset: 0,
+      }),
+      expect.objectContaining({
+        eventType: 'thinking_delta', data: '再回答',
+        itemId: chatItemIds.taskThinking(task.taskId), itemRevision: 2, textOffset: 3,
+      }),
+      expect.objectContaining({
+        eventType: 'text_delta', data: '答案',
+        itemId: chatItemIds.taskAssistant(task.taskId), itemRevision: 1,
+        messageId: expect.any(String), textOffset: 0,
+      }),
+    ]));
   });
 
   it('fails a structured task that ends without a tool output', async () => {

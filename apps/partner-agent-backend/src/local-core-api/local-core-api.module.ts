@@ -18,6 +18,8 @@ import {
 import { PrivacyDecisionService } from './privacy-decision.service.js';
 import { ModelSelectionService } from './model-selection.service.js';
 import { ModelGatewayModule } from '../model-gateway/model-gateway.module.js';
+import { ActionQueryService } from './action-query.service.js';
+import { UndoCandidateService } from './undo-candidate.service.js';
 
 @Module({
   imports: [AuthModule, DatabaseModule, AgentModule, ModelGatewayModule],
@@ -31,6 +33,8 @@ import { ModelGatewayModule } from '../model-gateway/model-gateway.module.js';
     ChatTaskOwnershipService,
     PrivacyDecisionService,
     ModelSelectionService,
+    ActionQueryService,
+    UndoCandidateService,
     PiChatTaskScheduler,
     { provide: ChatTaskScheduler, useExisting: PiChatTaskScheduler },
     {

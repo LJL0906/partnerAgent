@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChatStore } from '../../store/chat-store';
 import { toPrivacyDecisionSummary } from './chat-event-state';
 import {
-  adoptPendingSubmissionSession, createUseChatToolControls, desiredChannels,
+  adoptPendingSubmissionSession, chatStreamLifecycleKey, createUseChatToolControls, desiredChannels,
   findAuthoritativeUserMessageId, initialChatChannels,
   loadChatReconciliation, reconcileChatFromRest,
 } from './use-chat';
@@ -29,6 +29,16 @@ beforeEach(() => {
 });
 
 describe('chat subscription bootstrap', () => {
+  it('keeps the same stream lifecycle when a pending session adopts its authoritative id', () => {
+    const revision = useChatStore.getState().sessionRevision;
+    const lifecycleKey = chatStreamLifecycleKey(true, revision);
+
+    useChatStore.getState().setSessionId('authoritative-session');
+    useChatStore.getState().setSessionPersisted(true);
+
+    expect(chatStreamLifecycleKey(true, useChatStore.getState().sessionRevision)).toBe(lifecycleKey);
+  });
+
   it('starts owner-only and adds authoritative resource channels after acceptance', () => {
     expect(initialChatChannels()).toEqual(['user:self']);
     expect(desiredChannels('session-1', 'task-1', '11111111-1111-4111-8111-111111111111'))
@@ -144,7 +154,7 @@ describe('revision-aware REST reconciliation', () => {
   it('adopts a server session only for a matching pending owner-scoped event', () => {
     useChatStore.getState().selectSession('local-session', false);
     const pending = { inputId: 'input-1', operationId: '11111111-1111-4111-8111-111111111111',
-      optimisticMessageId: 'local-user', sessionId: 'local-session', text: '消息', outputMode: 'chat' as const };
+      optimisticMessageId: 'local-user', sessionId: 'local-session', text: '消息' };
     const event = { schema_version: 1 as const, event_id: 'accepted', channel: 'user:self' as const,
       sequence: 1, session_id: 'server-session', task_id: 'task-1',
       operation_id: pending.operationId, event_type: 'done' as const, timestamp: 1, data: {} };

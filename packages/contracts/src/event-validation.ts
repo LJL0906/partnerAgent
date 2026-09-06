@@ -12,7 +12,7 @@ const DISPLAY_EVENT_TYPES = [
 ] as const;
 
 const EVENT_TYPES = [
-  ...DISPLAY_EVENT_TYPES, 'history', 'cancelled', 'done', 'recovery_required',
+  ...DISPLAY_EVENT_TYPES, 'history', 'todo_update', 'cancelled', 'done', 'recovery_required',
 ] as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -68,7 +68,10 @@ export function isServerPushEventV1(value: unknown): value is ServerPushEventV1 
         : chatItemIds.message(value.message_id));
   }
   if (type === 'thinking_delta') {
-    return typeof value.data === 'string' && isNonNegativeInteger(value.text_offset);
+    return typeof value.data === 'string'
+      && isNonNegativeInteger(value.text_offset)
+      && (!hasText(value.task_id)
+        || value.item_id === chatItemIds.taskThinking(value.task_id));
   }
   if (type === 'history') {
     return isRecord(value.data)
@@ -76,6 +79,18 @@ export function isServerPushEventV1(value: unknown): value is ServerPushEventV1 
       && value.data.messages.every(isSessionMessageDto)
       && hasText(value.session_id)
       && value.data.messages.every((message) => message.session_id === value.session_id);
+  }
+  if (type === 'todo_update') {
+    if (!hasText(value.task_id) || !isRecord(value.data) || !Array.isArray(value.data.items)
+      || value.data.items.length > 8) return false;
+    const ids = new Set<string>();
+    for (const item of value.data.items) {
+      if (!isRecord(item) || !hasText(item.id) || !hasText(item.content)
+        || !['pending', 'in_progress', 'completed'].includes(item.status as string)
+        || ids.has(item.id)) return false;
+      ids.add(item.id);
+    }
+    return value.data.items.filter((item) => isRecord(item) && item.status === 'in_progress').length <= 1;
   }
   if (type === 'task_state') {
     if (!isRecord(value.data)

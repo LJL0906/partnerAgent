@@ -12,9 +12,21 @@ import { ThinkingCard } from './thinking-card';
 import { ToolCallCard } from './tool-call-card';
 
 vi.mock('react-native', () => ({
-  Pressable: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => React.createElement('pressable', props, children),
+  Linking: { openURL: vi.fn(async () => undefined) },
+  Pressable: ({ children, accessibilityState, ...props }: { children?: React.ReactNode; accessibilityState?: { expanded?: boolean }; [key: string]: unknown }) => React.createElement('pressable', { ...props, 'data-expanded': accessibilityState?.expanded }, children),
+  ScrollView: ({ children, style, ...props }: { children?: React.ReactNode; style?: { maxHeight?: number }; [key: string]: unknown }) => React.createElement('scroll-view', { ...props, 'data-max-height': style?.maxHeight }, children),
   Text: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => React.createElement('text', props, children),
   View: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => React.createElement('view', props, children),
+}));
+vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn(async () => undefined) }));
+vi.mock('expo-audio', () => ({
+  useAudioPlayer: (source: string | null) => ({ source, pause: vi.fn(), play: vi.fn() }),
+  useAudioPlayerStatus: () => ({ currentTime: 0, duration: 0, playing: false }),
+}));
+vi.mock('expo-image', () => ({ Image: ({ contentFit: _contentFit, ...props }: Record<string, unknown>) => React.createElement('image', props) }));
+vi.mock('expo-video', () => ({
+  useVideoPlayer: (source: string) => ({ source, loop: false, muted: false, play: vi.fn(), pause: vi.fn() }),
+  VideoView: ({ contentFit: _contentFit, player, ...props }: Record<string, unknown>) => React.createElement('video-view', { ...props, src: (player as { source?: string })?.source }),
 }));
 vi.mock('@/components/ui/app-button', () => ({ AppButton: (props: Record<string, unknown>) => React.createElement('app-button', props) }));
 vi.mock('@/components/ui/app-icon', () => ({ AppIcon: (props: Record<string, unknown>) => React.createElement('icon', props) }));
@@ -55,12 +67,22 @@ describe('specialized chat item cards', () => {
     expect(findElements(element, (node) => (node.props as { children?: unknown }).children === '撤销')).toHaveLength(0);
   });
 
-  it('renders thinking content as a collapsible, non-preview reasoning card', () => {
-    const html = markup(React.createElement(ThinkingCard, { content: '正在整理上下文' }));
+  it('shows streaming reasoning in a lightweight disclosure with bounded height', () => {
+    const html = markup(React.createElement(ThinkingCard, { content: '正在整理上下文', streaming: true }));
 
     expect(html).toContain('思考过程');
-    expect(html).toContain('思考过程');
+    expect(html).toContain('正在整理上下文');
+    expect(html).toContain('data-expanded="true"');
+    expect(html).toContain('data-max-height="240"');
+    expect(html).not.toContain('box-shadow');
     expect(html).not.toContain('尚未入库');
+  });
+
+  it('keeps completed reasoning collapsed until the user opens it', () => {
+    const html = markup(React.createElement(ThinkingCard, { content: '已经完成的推理' }));
+
+    expect(html).toContain('data-expanded="false"');
+    expect(html).not.toContain('已经完成的推理');
   });
 
   it('distinguishes tool state and keeps input/output previews available', () => {
@@ -97,7 +119,7 @@ describe('specialized chat item cards', () => {
       { candidateId: 'candidate-1', action: 'later', applied: false, preview: { title: '候选提案 A', candidateType: '计划草案', summary: '安全摘要' } },
     ]);
   });
-  it('marks candidates as preview-only and includes candidate metadata', () => {
+  it('marks candidates as pending without exposing storage terminology', () => {
     const html = markup(React.createElement(CandidateCard, {
       title: '候选提案 A',
       candidateType: '计划草案',
@@ -108,8 +130,30 @@ describe('specialized chat item cards', () => {
     expect(html).toContain('候选提案 A');
     expect(html).toContain('计划草案');
     expect(html).toContain('用于后续确认的草案');
-    expect(html).toContain('预览');
-    expect(html).toContain('尚未入库');
+    expect(html).toContain('待确认');
+    expect(html).toContain('尚未生效');
+    expect(html).not.toContain('尚未入库');
+  });
+
+  it('shows only useful candidate information with a formatted schedule and neutral styling', () => {
+    const html = markup(React.createElement(CandidateCard, {
+      title: '提交本周工作周报',
+      summary: '整理本周结果并发送给团队。默认时区为 Asia/Shanghai。此为候选预览。',
+      plannedAt: '2026-09-11T09:00:00+08:00',
+      timezone: 'Asia/Shanghai',
+      candidateType: '行动建议',
+    }));
+
+    expect(html).toContain('提交本周工作周报');
+    expect(html).toContain('整理本周结果并发送给团队。');
+    expect(html).toContain('9月11日');
+    expect(html).toContain('周五');
+    expect(html).toContain('09:00');
+    expect(html).toContain('#FFFFFF');
+    expect(html).not.toContain('#EAF9F3');
+    expect(html).not.toContain('默认时区');
+    expect(html).not.toContain('applied:false');
+    expect(html).not.toContain('所有决策均为 preview');
   });
 
   it.each([
@@ -246,8 +290,8 @@ describe('specialized chat item cards', () => {
     const html = markup(React.createElement(CandidateCard, {
       title: '候选提案 A', candidateId: 'candidate-1', summary: '安全摘要', onDecision: vi.fn(),
     }));
-    expect(html).toContain('编辑预览');
-    expect(html).toContain('仅修改本地草稿');
+    expect(html).toContain('编辑候选内容');
+    expect(html).not.toContain('仅修改本地草稿');
   });
 
   it('renders safe links, markdown tables, and JSON without collapsing body content', async () => {
@@ -263,10 +307,28 @@ describe('specialized chat item cards', () => {
     expect(html).toContain('&quot;ok&quot;: true');
   });
 
+  it('hides default timezone metadata and localizes English clock periods in message text', async () => {
+    const { MessageContent, normalizeMessageMarkdown } = await import('./messages/message-content');
+    const content = '时间：9月8日 周二 5:00 PM（Asia/Shanghai）\n当前时间左右（UTC 时间为 9月7日 09:00）\n所在时区（Asia/Shanghai，北京时间）\n- **UTC 时间**：09:00\n\n```text\nAsia/Shanghai\n```';
+    const normalized = normalizeMessageMarkdown(content, true);
+
+    expect(normalized).toContain('时间：9月8日 周二 下午 5:00');
+    expect(normalized).toContain('当前时间左右');
+    expect(normalized).toContain('所在时区（北京时间）');
+    expect(normalized).not.toContain('UTC 时间');
+    expect(normalized).not.toContain('（，北京时间）');
+    expect(normalized.match(/Asia\/Shanghai/g)).toHaveLength(1);
+    expect(normalizeMessageMarkdown('用户输入 Asia/Shanghai')).toContain('Asia/Shanghai');
+    const plainText = markup(React.createElement(MessageContent, {
+      content: '明天下午五点（Asia/Shanghai）', format: 'text', localizeTimeMetadata: true,
+    }));
+    expect(plainText).not.toContain('Asia/Shanghai');
+  });
+
   it('keeps long content readable and exposes accessible labels', async () => {
     const { MessageContent } = await import('./messages/message-content');
     const longContent = '长内容 '.repeat(300);
     const html = markup(React.createElement(MessageContent, { content: longContent }));
-    expect(html).toContain(longContent);
+    expect(html).toContain(longContent.trimEnd());
     expect(html).toContain('accessibilityLabel="消息正文"');
   });

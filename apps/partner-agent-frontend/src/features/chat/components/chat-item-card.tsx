@@ -15,7 +15,7 @@ const toneStyles: Record<ChatItemTone, { background: string; border: string; acc
   neutral: { background: colors.surface, border: colors.border, accent: colors.textSecondary, icon: 'info' },
   thinking: { background: colors.infoSoft, border: colors.floatingButtonBorder, accent: colors.brand500, icon: 'sparkle' },
   tool: { background: colors.surface, border: colors.floatingMenuBorder, accent: colors.violet500, icon: 'execute' },
-  candidate: { background: colors.successSoft, border: colors.toastSuccessBorder, accent: colors.success, icon: 'archive' },
+  candidate: { background: colors.surface, border: colors.floatingMenuBorder, accent: colors.brand500, icon: 'archive' },
   approval: { background: colors.warningSoft, border: colors.toastWarningBorder, accent: colors.warning, icon: 'lock' },
   runtime: { background: colors.surfaceSubtle, border: colors.border, accent: colors.info, icon: 'clock' },
   system: { background: colors.dangerSoft, border: colors.toastDangerBorder, accent: colors.danger, icon: 'warning' },

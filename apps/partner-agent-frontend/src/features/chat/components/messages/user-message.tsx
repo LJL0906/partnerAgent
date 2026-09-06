@@ -22,7 +22,7 @@ export function UserMessage({ message }: { message: ChatMessage }) {
             <Text numberOfLines={1} ellipsizeMode="tail" style={[typography.caption, { color: colors.textSecondary, flexShrink: 1 }]}>{username}</Text>
           </View>
           <View style={{ alignSelf: 'flex-end', maxWidth: '100%', flexShrink: 1, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surfaceSubtle, borderColor: colors.border, borderWidth: 1, borderRadius: radius.large, borderCurve: 'continuous' }}>
-            <MessageContent align="right" content={message.content} />
+            <MessageContent align="right" content={message.content} format={message.format ?? 'text'} />
           </View>
         </View>
         <View accessibilityLabel="我的头像" accessibilityRole="image" style={{ width: 36, height: 36, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: colors.infoSoft, borderColor: colors.border, borderWidth: 1 }}>

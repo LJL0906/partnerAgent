@@ -63,7 +63,7 @@ export interface MessagePayload {
 export interface ThinkingPayload { text?: string; display?: 'summary' | 'progress' | 'hidden'; }
 export interface ToolPayload { tool: string; input_summary?: string; output_summary?: string; risk_level?: 'read_only' | 'low' | 'medium' | 'high'; undo_available?: boolean; }
 /** 正式确认中心候选的安全摘要；不得承载 ChatPreviewV1。 */
-export interface FormalCandidatePayload { candidate_id: string; kind: string; preview: Record<string, unknown>; applied: false; source_refs?: Array<{ kind: string; id: string }>; confidence?: number; risk?: 'normal' | 'high'; sensitive_marks?: string[]; }
+export interface FormalCandidatePayload { candidate_id: string; batch_ref?: { kind: 'confirmation_batch'; id: string }; kind: string; preview: Record<string, unknown>; applied: false; source_refs?: Array<{ kind: string; id: string }>; confidence?: number; risk?: 'normal' | 'high'; sensitive_marks?: string[]; }
 /** @deprecated 使用 FormalCandidatePayload；结构化聊天预览必须使用 ChatPreviewV1。 */
 export type PreviewOnlyBusinessOutput = FormalCandidatePayload;
 export interface ApprovalPayload { approval_id: string; tool: string; request_summary: string; risk_level: 'read_only' | 'low' | 'medium' | 'high'; expires_at?: number; }
@@ -195,6 +195,8 @@ export function isChatItem(value: unknown): value is ChatItem {
       return payload.applied === false
         && hasString(payload.candidate_id)
         && value.candidate_id === payload.candidate_id
+        && isOptional(payload.batch_ref, (ref) => isRecord(ref)
+          && ref.kind === 'confirmation_batch' && hasString(ref.id))
         && hasString(payload.kind)
         && isRecord(payload.preview)
         && isOptional(payload.source_refs, isSourceRefs)

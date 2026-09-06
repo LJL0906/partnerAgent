@@ -15,7 +15,8 @@ import { AppButton } from '@/components/ui/app-button';
 import { reconcileChatFromRest, useChat } from '@/features/chat/use-chat';
 import { useChatToolActions } from '@/features/chat/use-chat-tool-actions';
 import { getKeyboardAvoidingProps } from '@/features/chat/keyboard-avoiding';
-import { createMessageScroll } from '@/features/chat/use-message-scroll';
+import { createMessageScroll, shouldShowBackToLatest } from '@/features/chat/use-message-scroll';
+import { modelSelectionPreferenceStorage } from '@/features/chat/model-selection-storage';
 import type { ModelConfig, ReasoningLevel } from '@partner-agent/contracts';
 import { createSession, retrySession, useConversationStore } from '@/features/chat/session-management';
 import { useChatStore } from '@/store/chat-store';
@@ -38,12 +39,25 @@ export function getModelReconciliationError(
     : undefined;
 }
 
+function persistModelSelection(
+  ownerId: string | undefined,
+  selection: { modelConfigId: string; reasoningLevel: ReasoningLevel | undefined },
+): void {
+  if (!ownerId || !selection.modelConfigId || !selection.reasoningLevel) return;
+  void modelSelectionPreferenceStorage.set(ownerId, {
+    modelConfigId: selection.modelConfigId,
+    reasoningLevel: selection.reasoningLevel,
+  }).catch(() => undefined);
+}
+
 export function ChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const items = useChatStore((state) => state.items);
+  const isThinking = useChatStore((state) => state.isThinking);
   const toolViews = useChatStore((state) => state.toolViews);
+  const taskTodos = useChatStore((state) => state.taskTodos);
   const sessionId = useChatStore((state) => state.sessionId);
   const sessionRevision = useChatStore((state) => state.sessionRevision);
   const ownerId = useAuthStore((state) => state.user?.id);
@@ -88,14 +102,23 @@ export function ChatScreen() {
     setModelsLoading(true);
     setModelsLoadError(false);
     try {
-      const { items } = await listModelConfigs({ signal: controller.signal });
+      const [{ items }, storedPreference] = await Promise.all([
+        listModelConfigs({ signal: controller.signal }),
+        expectedOwnerId
+          ? modelSelectionPreferenceStorage.get(expectedOwnerId).catch(() => undefined)
+          : Promise.resolve(undefined),
+      ]);
       if (!isCurrent()) return;
       setModels(items);
-      setModelSelection((current) => resolveModelSelection(
-        items,
-        current.modelConfigId,
-        current.reasoningLevel,
-      ));
+      setModelSelection((current) => {
+        const preferred = storedPreference ?? current;
+        const resolved = resolveModelSelection(
+          items,
+          preferred.modelConfigId,
+          preferred.reasoningLevel,
+        );
+        return resolved;
+      });
     } catch {
       if (isCurrent() && !controller.signal.aborted) setModelsLoadError(true);
     } finally {
@@ -121,31 +144,50 @@ export function ChatScreen() {
   const drawerAnimation = useRef<Animated.CompositeAnimation | null>(null);
   const drawerOpenFrame = useRef<number | null>(null);
   const drawerWidth = Math.min(width * 0.78, 360);
-  const [pinned, setPinned] = useState(true);
-  const [hasOverflow, setHasOverflow] = useState(false);
+  const [scrollUiState, setScrollUiState] = useState({
+    sessionRevision,
+    pinned: true,
+    hasOverflow: false,
+  });
   // 控制器是纯闭包:所有滚动状态在闭包内,setPinned/setHasOverflow 只用来驱动
   // 渲染。切换会话时消息区以 key 重挂+sessioinRevision 重建控制器,闭包归零。
   const scroll = useMemo(
     () =>
       createMessageScroll({
         sessionRevision,
-        onPinnedChange: setPinned,
-        onOverflowChange: setHasOverflow,
+        onPinnedChange: (pinned) => setScrollUiState((current) => {
+          if (current.sessionRevision > sessionRevision) return current;
+          return {
+            sessionRevision,
+            pinned,
+            hasOverflow: current.sessionRevision === sessionRevision ? current.hasOverflow : false,
+          };
+        }),
+        onOverflowChange: (hasOverflow) => setScrollUiState((current) => {
+          if (current.sessionRevision > sessionRevision) return current;
+          return {
+            sessionRevision,
+            pinned: current.sessionRevision === sessionRevision ? current.pinned : true,
+            hasOverflow,
+          };
+        }),
       }),
     [sessionRevision],
   );
   // 只在“未贴底且内容溢出视口”时显示“回到最新”,单一状态来源。
-  const showBackToLatest = !pinned && hasOverflow;
-
+  const showBackToLatest = shouldShowBackToLatest(sessionRevision, scrollUiState);
 
   async function handleModelConfigChange(nextModelConfigId: string) {
     const previous = modelSelection;
-    const next = resolveModelSelection(models, nextModelConfigId, undefined);
+    const next = resolveModelSelection(models, nextModelConfigId, reasoningLevel);
     if (!next.modelConfigId || !next.reasoningLevel) return;
     setModelSelection(next);
     setModelSelectionError(undefined);
     if (!useChatStore.getState().sessionPersisted || !sessionId
-      || !previous.modelConfigId || previous.modelConfigId === next.modelConfigId) return;
+      || !previous.modelConfigId || previous.modelConfigId === next.modelConfigId) {
+      persistModelSelection(ownerId, next);
+      return;
+    }
     const requestId = ++modelSwitchRequestRef.current;
     const expectedOwnerId = ownerId;
     const expectedSessionId = sessionId;
@@ -186,6 +228,7 @@ export function ChatScreen() {
         throw new Error('服务端返回了不可用的模型能力。');
       }
       setModelSelection(resolved);
+      persistModelSelection(ownerId, resolved);
       try {
         const reconciliation = await reconcileChatFromRest(undefined, expectedSessionId);
         const reconciliationError = getModelReconciliationError(reconciliation);
@@ -204,6 +247,15 @@ export function ChatScreen() {
     modelSwitchRequestRef.current += 1;
     modelSwitchAbortRef.current?.abort();
   }, [ownerId, sessionRevision]);
+
+  function handleReasoningLevelChange(level: ReasoningLevel) {
+    setModelSelection((current) => {
+      const next = { ...current, reasoningLevel: level };
+      persistModelSelection(ownerId, next);
+      return next;
+    });
+    setModelSelectionError(undefined);
+  }
 
   function stopDrawerAnimation() {
     if (drawerOpenFrame.current !== null) {
@@ -264,6 +316,7 @@ export function ChatScreen() {
           disabled={opening || !ready}
           onOpenSessions={openSessions}
           onCreateSession={() => void createSession()}
+          todos={taskTodos}
         />
         {!ready || opening ? (
           <View style={{ flex: 1, justifyContent: 'center' }}>
@@ -277,10 +330,14 @@ export function ChatScreen() {
                 key={sessionRevision}
                 items={items}
                 toolViews={toolViews}
+                isThinking={isThinking}
                 privacyDecision={privacyDecision}
                 horizontalPadding={horizontalPadding}
                 scroll={scroll}
                 onPrivacyPress={() => router.push('/privacy-decision')}
+                onCandidateAnswers={(message) => reasoningLevel
+                  ? sendMessage(message, modelConfigId, reasoningLevel)
+                  : Promise.resolve(false)}
                 itemActions={{
                   toolFeedback: toolActions.feedback,
                   onConfirmTool: (id) => { void toolActions.run('confirm', id); },
@@ -315,8 +372,9 @@ export function ChatScreen() {
                 paddingHorizontal: horizontalPadding,
                 paddingTop: 4,
                 paddingBottom: Math.max(insets.bottom, spacing.sm),
+                gap: spacing.sm,
               }}>
-              <ChatInput key={sessionId} connectionStatus={connectionStatus} isStreaming={isStreaming} models={models} modelsLoading={modelsLoading} modelsLoadError={modelsLoadError} modelSelectionError={modelSelectionError} onRetryModels={() => void loadModels()} modelConfigId={modelConfigId} reasoningLevel={reasoningLevel} onModelConfigChange={handleModelConfigChange} onReasoningLevelChange={(level) => { setModelSelection((current) => ({ ...current, reasoningLevel: level })); setModelSelectionError(undefined); }} onSend={sendMessage} onCancel={stopStreaming} />
+              <ChatInput key={sessionId} connectionStatus={connectionStatus} isStreaming={isStreaming} models={models} modelsLoading={modelsLoading} modelsLoadError={modelsLoadError} modelSelectionError={modelSelectionError} onRetryModels={() => void loadModels()} modelConfigId={modelConfigId} reasoningLevel={reasoningLevel} onModelConfigChange={handleModelConfigChange} onReasoningLevelChange={handleReasoningLevelChange} onSend={sendMessage} onCancel={stopStreaming} />
             </View>
           </>
         )}

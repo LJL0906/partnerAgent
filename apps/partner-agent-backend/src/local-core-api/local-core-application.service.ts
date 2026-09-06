@@ -24,6 +24,8 @@ import {
 } from '@partner-agent/contracts';
 import { ToolOperationStore } from '../tools/tool-operation.store.js';
 import type { EntityManager } from 'typeorm';
+import { ActionQueryService } from './action-query.service.js';
+import { UndoCandidateService } from './undo-candidate.service.js';
 
 @Injectable()
 export class LocalCoreApplicationService extends LocalCoreApplicationPort {
@@ -35,6 +37,8 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     private readonly privacyDecisions: PrivacyDecisionService,
     private readonly modelSelection?: ModelSelectionService,
     private readonly toolOperations?: ToolOperationStore,
+    private readonly actionQueries?: ActionQueryService,
+    private readonly undoCandidates?: UndoCandidateService,
   ) {
     super();
   }
@@ -63,6 +67,10 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     }
     if (command === 'SubmitConfirmationBatch') {
       return this.confirmationTransaction.submit(request);
+    }
+    if (command === 'CreateUndoObjectCandidate') {
+      if (!this.undoCandidates) throw new Error('撤销候选服务未初始化');
+      return this.undoCandidates.create(request);
     }
     throw this.notImplemented(
       'command',
@@ -109,6 +117,21 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
 
     if (query === 'GetTaskStatus') {
       return this.getTaskStatus(request);
+    }
+
+    if ([
+      'GetAnalysisRun',
+      'ListPendingConfirmationBatches',
+      'GetConfirmationBatch',
+      'GetCandidateDetail',
+      'GetConfirmationHistory',
+      'ListActions',
+      'GetAction',
+      'GetChangeHistory',
+      'GetUndoEligibility',
+    ].includes(query)) {
+      if (!this.actionQueries) throw new Error('行动查询服务未初始化');
+      return this.actionQueries.execute(query, request);
     }
 
     throw this.notImplemented('query', query);
@@ -158,6 +181,7 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
     const defaultSelection = modelSelection.resolve(undefined, undefined);
     const previous = this.optionalString(payload, 'previous_model_config_id') ??
       `${defaultSelection.provider}:${defaultSelection.modelId}`;
+    const operationId = this.requiredEnvelopeString(request, 'operation_id');
     const fromName = previous.split(':').slice(1).join(':') || previous;
     const resolvedModelConfigId = `${selection.provider}:${selection.modelId}`;
     const toName = selection.modelId;
@@ -175,7 +199,7 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
           },
           manager,
         );
-        return {
+        const data = {
           session_id: sessionId,
           message_ref: { kind: 'chat_message' as const, id: message.id },
           item_id: `message:${message.id}`,
@@ -183,6 +207,15 @@ export class LocalCoreApplicationService extends LocalCoreApplicationPort {
             model_config_id: resolvedModelConfigId,
             reasoning_level: selection.reasoningLevel,
           },
+        };
+        return {
+          operation_id: operationId,
+          status: 'completed' as const,
+          resource_refs: [
+            { kind: 'session' as const, id: sessionId },
+            data.message_ref,
+          ],
+          data,
         };
       });
     } catch (error) {

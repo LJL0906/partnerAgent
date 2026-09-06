@@ -22,6 +22,19 @@ export interface ScrollDecision {
   previousOffset: number;
 }
 
+export interface SessionScrollUiState {
+  sessionRevision: number;
+  pinned: boolean;
+  hasOverflow: boolean;
+}
+
+export function shouldShowBackToLatest(
+  sessionRevision: number,
+  state: SessionScrollUiState,
+) {
+  return state.sessionRevision === sessionRevision && !state.pinned && state.hasOverflow;
+}
+
 /**
  * 纯决策函数:给定滚动事件与当前状态,决定新的 pinned 状态与下一个 offset。
  * 从控制器中抽出以便无 DOM 单测;控制器行为与这里完全一致。
@@ -47,7 +60,9 @@ export interface MessageScrollController {
   handleScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   handleContentSizeChange: (width: number, height: number) => void;
   handleLayout: (event: LayoutChangeEvent) => void;
+  preserveNextContentResize: () => void;
   scrollToLatest: () => void;
+  scrollToOffset: (offset: number) => void;
 }
 
 interface MessageScrollOptions {
@@ -79,6 +94,7 @@ export function createMessageScroll(options: MessageScrollOptions): MessageScrol
   let previousOffset = 0;
   let contentHeight = 0;
   let viewportHeight = 0;
+  let preserveNextContentResize = false;
 
   const setPinned = (value: boolean) => {
     if (pinned === value) return;
@@ -91,16 +107,32 @@ export function createMessageScroll(options: MessageScrollOptions): MessageScrol
   };
 
   const scrollToLatest = () => {
+    setPinned(true);
     requestAnimationFrame(() => {
       scrollViewRef?.current?.scrollToEnd({ animated: false });
+    });
+  };
+
+  const scrollToOffset = (offset: number) => {
+    setPinned(false);
+    requestAnimationFrame(() => {
+      scrollViewRef.current?.scrollTo({ y: Math.max(0, offset), animated: true });
     });
   };
 
   const handleContentSizeChange = (width: number, height: number) => {
     contentHeight = height;
     updateOverflow();
+    if (preserveNextContentResize) {
+      preserveNextContentResize = false;
+      return;
+    }
     // 只在仍在贴底时跟随内容增长;用户暂停读历史时不打扰。
     if (pinned) scrollToLatest();
+  };
+
+  const markNextContentResizeAsLocal = () => {
+    preserveNextContentResize = true;
   };
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -135,6 +167,8 @@ export function createMessageScroll(options: MessageScrollOptions): MessageScrol
     handleScroll,
     handleContentSizeChange,
     handleLayout,
+    preserveNextContentResize: markNextContentResizeAsLocal,
     scrollToLatest,
+    scrollToOffset,
   };
 }

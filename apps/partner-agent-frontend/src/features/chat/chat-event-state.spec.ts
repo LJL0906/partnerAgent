@@ -84,10 +84,48 @@ describe('canonical realtime event application', () => {
     expect(useChatStore.getState().messages).toEqual([]);
   });
 
+  it('marks realtime thinking complete when visible answer text starts', () => {
+    const thinking: ServerPushEventV1 = { ...base(), event_id: 'thinking-before-answer', event_type: 'thinking_delta',
+      item_id: 'task:task-1:thinking', item_revision: 1, text_offset: 0, data: '正在分析问题' };
+    const text: ServerPushEventV1 = { ...base(), event_id: 'answer-start', sequence: 2, event_type: 'text_delta',
+      item_id: 'task:task-1:assistant', item_revision: 1, message_id: 'message-1', text_offset: 0, data: '答案' };
+    applyAgentEvent(thinking, assistantRef);
+    applyAgentEvent(text, assistantRef);
+    expect(useChatStore.getState().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'task:task-1:thinking', status: 'completed' }),
+    ]));
+    expect(useChatStore.getState().isThinking).toBe(false);
+  });
+
   it('reports terminal task state so use-chat can perform final REST reconciliation', () => {
+    const thinking: ServerPushEventV1 = { ...base(), event_id: 'thinking-terminal',
+      event_type: 'thinking_delta', item_id: 'task:task-1:thinking', item_revision: 1,
+      text_offset: 0, data: '已经分析完成' };
     const event: ServerPushEventV1 = { ...base(), event_id: 'state-1', event_type: 'task_state',
       item_id: 'task:task-1:runtime', item_revision: 2, data: { state: 'completed' } };
+    applyAgentEvent(thinking, assistantRef);
     expect(applyAgentEvent(event, assistantRef)).toEqual({ recoveryRequired: false, terminalObserved: true });
     expect(useChatStore.getState().taskStatus).toBe('completed');
+    expect(useChatStore.getState().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'task:task-1:thinking', status: 'completed' }),
+    ]));
+  });
+
+  it('shows complex-task todos and clears them when every item or the task completes', () => {
+    const todo: ServerPushEventV1 = { ...base(), event_id: 'todo-1', event_type: 'todo_update',
+      data: { items: [
+        { id: 'step-1', content: '分析需求', status: 'in_progress' },
+        { id: 'step-2', content: '验证结果', status: 'pending' },
+      ] } };
+    applyAgentEvent(todo, assistantRef);
+    expect(useChatStore.getState().taskTodos).toHaveLength(2);
+
+    applyAgentEvent({ ...todo, event_id: 'todo-2', sequence: 2,
+      data: { items: todo.data.items.map((item) => ({ ...item, status: 'completed' as const })) } }, assistantRef);
+    expect(useChatStore.getState().taskTodos).toEqual([]);
+
+    applyAgentEvent(todo, assistantRef);
+    applyAgentEvent({ ...base(), event_id: 'done-1', sequence: 3, event_type: 'done', data: {} }, assistantRef);
+    expect(useChatStore.getState().taskTodos).toEqual([]);
   });
 });

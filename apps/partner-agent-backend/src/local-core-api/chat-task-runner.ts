@@ -8,7 +8,7 @@ import {
   thrownChatTaskErrorCode,
 } from './chat-task-errors.js';
 import { ChatTaskStore, type AcceptedChatTask } from './chat-task.store.js';
-import type { ChatPreviewV1 } from '@partner-agent/contracts';
+import { chatItemIds, type ChatPreviewV1 } from '@partner-agent/contracts';
 
 export type ChatTaskAgentEvent = {
   type: string;
@@ -90,6 +90,8 @@ export class ChatTaskRunner {
       let expectedRevision = priorMessage?.revision ?? 0;
       let persistedContent = priorMessage?.content ?? '';
       let generatedContent = '';
+      let thinkingContent = '';
+      let thinkingRevision = 0;
       let outputCommitted = false;
       let failure: { code: string; message: string } | undefined;
       let waitingToolConfirmationId: string | undefined;
@@ -168,8 +170,28 @@ export class ChatTaskRunner {
               type: 'agent_event',
               eventType: event.type,
               data: delta,
+              itemId: chatItemIds.taskAssistant(task.taskId),
+              itemRevision: written.message.revision,
+              messageId: written.message.id,
+              textOffset: written.textOffset,
             });
           }
+          continue;
+        }
+        if (event.type === 'thinking_delta' && typeof event.data === 'string') {
+          const textOffset = thinkingContent.length;
+          thinkingContent += event.data;
+          thinkingRevision += 1;
+          this.events.publish({
+            ...this.base(task),
+            state: 'running',
+            type: 'agent_event',
+            eventType: event.type,
+            data: event.data,
+            itemId: chatItemIds.taskThinking(task.taskId),
+            itemRevision: thinkingRevision,
+            textOffset,
+          });
           continue;
         }
         if (event.type === 'assistant_output_complete') {
@@ -183,6 +205,7 @@ export class ChatTaskRunner {
             leaseToken: leaseOwner,
             expectedRevision,
             content: output.content,
+            thinkingContent,
             chatPreviews: output.chatPreviews,
             contextMessages: output.contextMessages,
           });
@@ -204,6 +227,41 @@ export class ChatTaskRunner {
           }
           if (completed.outcome === 'committed') {
             outputCommitted = true;
+            if (completed.candidateBatch) {
+              const candidateBatch = completed.candidateBatch;
+              this.events.publish({
+                ...this.base(task),
+                state: 'completed',
+                type: 'agent_event',
+                eventType: 'candidate',
+                data: {
+                  analysis_ref: {
+                    kind: 'analysis_run',
+                    id: candidateBatch.analysisRunId,
+                  },
+                  batch_ref: {
+                    kind: 'confirmation_batch',
+                    id: candidateBatch.batchId,
+                  },
+                  candidate_refs: candidateBatch.candidateIds.map((id) => ({
+                    kind: 'candidate',
+                    id,
+                  })),
+                  task_ref: {
+                    kind: 'analysis',
+                    task_id: task.taskId,
+                    analysis_run_id: candidateBatch.analysisRunId,
+                    analysis_types: ['action'],
+                  },
+                  candidate_count: candidateBatch.candidateCount,
+                  risk_level: candidateBatch.riskLevel,
+                  safe_summary: candidateBatch.safeSummary,
+                  occurred_at: Date.now(),
+                },
+                itemId: `candidate-batch:${candidateBatch.batchId}`,
+                itemRevision: 1,
+              });
+            }
             await this.publishState(task, 'completed');
           }
           if (completed.outcome !== 'committed') return;

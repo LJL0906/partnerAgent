@@ -423,6 +423,15 @@ export class LocalCoreCommandController {
     return this.command('CreateRestoreObjectCandidate', r, b);
   }
 
+  @Post('object-change-candidates/undo')
+  @HttpCode(200)
+  createUndoCandidate(
+    @Req() r: AuthenticatedRequest,
+    @Body() b: CommandEnvelopeBody,
+  ) {
+    return this.command('CreateUndoObjectCandidate', r, b);
+  }
+
   @Post('object-change-candidates/permanently-delete')
   @HttpCode(200)
   createPermanentDeleteCandidate(

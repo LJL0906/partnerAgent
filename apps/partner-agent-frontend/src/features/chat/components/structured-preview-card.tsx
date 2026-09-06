@@ -1,64 +1,39 @@
-import type { ChatPreviewSourceRef, ChatPreviewV1 } from '@partner-agent/contracts';
+import type { ChatPreviewV1 } from '@partner-agent/contracts';
 import * as Clipboard from 'expo-clipboard';
 import { useState } from 'react';
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
-import { AppButton } from '@/components/ui/app-button';
+import { AppIcon } from '@/components/ui/app-icon';
 import { colors } from '@/theme/colors';
+import { radius } from '@/theme/radius';
 import { spacing } from '@/theme/spacing';
 import { typography } from '@/theme/typography';
 
 import { ChatItemCard } from './chat-item-card';
+import { compactCandidateText, formatCandidateDateTime } from './candidate-card';
 
 type ClipboardWriter = (value: string) => Promise<unknown>;
 
-const priorityLabels = { low: '低', medium: '中', high: '高' } as const;
-const sourceKindLabels: Record<ChatPreviewSourceRef['kind'], string> = {
-  original_record: '原始记录',
-  chat_message: '聊天消息',
-};
-
-function formatDateTime(value: number | string, timeZone?: string): string {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '时间未知';
-  try {
-    return new Intl.DateTimeFormat('zh-CN', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      ...(timeZone ? { timeZone } : {}),
-    }).format(date);
-  } catch {
-    return date.toISOString();
-  }
-}
-
-function sourceText(source: ChatPreviewSourceRef): string {
-  return `${sourceKindLabels[source.kind]}：${source.id}`;
-}
-
 export function buildStructuredPreviewCopyText(
   preview: ChatPreviewV1,
-  createdAt: number,
+  _createdAt: number,
 ): string {
   const { content } = preview;
+  const summary = compactCandidateText(content.description);
+  const plannedTime = formatCandidateDateTime(content.planned_at, content.timezone);
+  const deadlineTime = formatCandidateDateTime(content.deadline_at, content.timezone);
+  const notices = [...new Set([
+    content.uncertainty,
+    content.risk_summary,
+    ...preview.warnings.map((warning) => warning.message),
+  ].filter((value): value is string => Boolean(value)))];
   const lines = [
-    '未确认预览，未创建行动',
+    '待确认，尚未生效',
     `标题：${content.title}`,
-    ...(content.description ? [`说明：${content.description}`] : []),
-    `来源：${preview.source_refs.map(sourceText).join('；')}`,
-    `生成时间：${formatDateTime(createdAt)}`,
-    ...(content.planned_at
-      ? [`计划时间：${formatDateTime(content.planned_at, content.timezone)}`]
-      : []),
-    ...(content.deadline_at
-      ? [`截止时间：${formatDateTime(content.deadline_at, content.timezone)}`]
-      : []),
-    ...(content.timezone ? [`时区：${content.timezone}`] : []),
-    ...(content.priority ? [`优先级：${priorityLabels[content.priority]}`] : []),
-    `可信度：${Math.round(content.confidence * 100)}%`,
-    `不确定性：${content.uncertainty || '未提供额外不确定性说明'}`,
-    ...(content.risk_summary ? [`风险提示：${content.risk_summary}`] : []),
-    ...preview.warnings.map((warning) => `校验提示：${warning.message}`),
+    ...(summary ? [`说明：${summary}`] : []),
+    ...(plannedTime ? [`计划时间：${plannedTime}`] : []),
+    ...(deadlineTime && deadlineTime !== plannedTime ? [`截止时间：${deadlineTime}`] : []),
+    ...(notices.length ? [`需要确认：${notices.join('；')}`] : []),
   ];
   return lines.join('\n');
 }
@@ -77,11 +52,12 @@ export async function copyStructuredPreview(
   }
 }
 
-function PreviewField({ label, value }: { label: string; value: string }) {
+function PreviewNotice({ label, value }: { label: string; value: string }) {
   return (
-    <View style={{ gap: spacing.xxs }}>
-      <Text style={[typography.label, { color: colors.textSecondary }]}>{label}</Text>
-      <Text selectable style={[typography.body, { color: colors.ink }]}>{value}</Text>
+    <View style={{ backgroundColor: colors.warningSoft, borderCurve: 'continuous',
+      borderRadius: radius.medium, gap: spacing.xxs, padding: spacing.sm }}>
+      <Text style={[typography.label, { color: colors.warning }]}>{label}</Text>
+      <Text selectable style={[typography.caption, { color: colors.ink }]}>{value}</Text>
     </View>
   );
 }
@@ -96,6 +72,15 @@ export function StructuredPreviewCard({
   const [copying, setCopying] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<string>();
   const { content } = preview;
+  const summary = compactCandidateText(content.description);
+  const plannedTime = formatCandidateDateTime(content.planned_at, content.timezone);
+  const deadlineTime = formatCandidateDateTime(content.deadline_at, content.timezone);
+  const distinctDeadline = deadlineTime && deadlineTime !== plannedTime ? deadlineTime : undefined;
+  const notices = [...new Set([
+    content.uncertainty,
+    content.risk_summary,
+    ...preview.warnings.map((warning) => warning.message),
+  ].filter((value): value is string => Boolean(value)))];
 
   const handleCopy = async () => {
     setCopying(true);
@@ -108,42 +93,35 @@ export function StructuredPreviewCard({
   return (
     <ChatItemCard
       defaultExpanded
-      notice={(
-        <Text
-          accessibilityRole="alert"
-          style={[typography.label, { color: colors.success, paddingTop: spacing.xs }]}>
-          未确认预览，未创建行动
-        </Text>
-      )}
-      previewOnly
-      subtitle="行动预览"
+      previewOnly={false}
+      subtitle="行动建议"
       title={content.title}
       tone="candidate">
-      {content.description ? <PreviewField label="说明" value={content.description} /> : null}
-      <PreviewField label="来源" value={preview.source_refs.map(sourceText).join('；')} />
-      <PreviewField label="生成时间" value={formatDateTime(createdAt)} />
-      {content.planned_at ? (
-        <PreviewField label="计划时间" value={formatDateTime(content.planned_at, content.timezone)} />
+      {summary ? <Text numberOfLines={3} selectable style={[typography.body,
+        { color: colors.textSecondary }]}>{summary}</Text> : null}
+      {plannedTime || distinctDeadline ? (
+        <View style={{ alignItems: 'flex-start', backgroundColor: colors.surfaceSubtle,
+          borderCurve: 'continuous', borderRadius: radius.medium, flexDirection: 'row',
+          gap: spacing.sm, padding: spacing.sm }}>
+          <AppIcon decorative color={colors.brand500} name="clock" size={17} />
+          <View style={{ flex: 1, gap: spacing.xxs }}>
+            {plannedTime ? <Text selectable style={[typography.bodyStrong,
+              { color: colors.ink }]}>{plannedTime}</Text> : null}
+            {distinctDeadline ? <Text selectable style={[typography.caption,
+              { color: colors.textSecondary }]}>截止 {distinctDeadline}</Text> : null}
+          </View>
+        </View>
       ) : null}
-      {content.deadline_at ? (
-        <PreviewField label="截止时间" value={formatDateTime(content.deadline_at, content.timezone)} />
-      ) : null}
-      {content.timezone ? <PreviewField label="时区" value={content.timezone} /> : null}
-      {content.priority ? <PreviewField label="优先级" value={priorityLabels[content.priority]} /> : null}
-      <PreviewField label="可信度" value={`${Math.round(content.confidence * 100)}%`} />
-      <PreviewField label="不确定性" value={content.uncertainty || '未提供额外不确定性说明'} />
-      {content.risk_summary ? <PreviewField label="风险提示" value={content.risk_summary} /> : null}
-      {preview.warnings.map((warning) => (
-        <PreviewField key={`${warning.code}:${warning.path ?? ''}`} label="校验提示" value={warning.message} />
-      ))}
-      <AppButton
+      <Text style={[typography.caption, { color: colors.brand600 }]}>待确认 · 尚未生效</Text>
+      {notices.length ? <PreviewNotice label="需要确认" value={notices.join('\n')} /> : null}
+      <Pressable
         accessibilityLabel="复制预览"
-        loading={copying}
+        accessibilityRole="button"
+        disabled={copying}
         onPress={() => { void handleCopy(); }}
-        size="sm"
-        title="复制预览"
-        variant="secondary"
-      />
+        style={{ alignItems: 'center', alignSelf: 'flex-end', justifyContent: 'center', opacity: copying ? 0.5 : 1, padding: spacing.xs }}>
+        <AppIcon decorative color={colors.brand600} name={copying ? 'clock' : 'copy'} size={18} />
+      </Pressable>
       {copyFeedback ? (
         <Text
           accessibilityLiveRegion="polite"

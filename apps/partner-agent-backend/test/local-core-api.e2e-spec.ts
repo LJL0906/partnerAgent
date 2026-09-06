@@ -137,12 +137,15 @@ describe('Local Core REST API (e2e)', () => {
       }));
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      session_id: 'owned-session',
-      message_ref: { kind: 'chat_message', id: expect.any(String) },
-      item_id: expect.stringMatching(/^message:/),
-      resolved_model: {
-        model_config_id: 'deepseek:deepseek-v4-flash',
-        reasoning_level: 'low',
+      status: 'completed',
+      data: {
+        session_id: 'owned-session',
+        message_ref: { kind: 'chat_message', id: expect.any(String) },
+        item_id: expect.stringMatching(/^message:/),
+        resolved_model: {
+          model_config_id: 'deepseek:deepseek-v4-flash',
+          reasoning_level: 'low',
+        },
       },
     });
   });

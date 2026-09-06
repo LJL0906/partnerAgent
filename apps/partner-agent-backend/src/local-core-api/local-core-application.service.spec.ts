@@ -251,10 +251,18 @@ describe('LocalCoreApplicationService idempotent session mutations', () => {
 
     expect(replay).toEqual(first);
     expect(first).toMatchObject({
-      session_id: 'session-1', item_id: expect.stringMatching(/^message:/),
-      message_ref: { kind: 'chat_message', id: expect.any(String) },
-      resolved_model: {
-        model_config_id: 'deepseek:deepseek-chat', reasoning_level: 'off',
+      operation_id: request.envelope.operation_id,
+      status: 'completed',
+      resource_refs: [
+        { kind: 'session', id: 'session-1' },
+        { kind: 'chat_message', id: expect.any(String) },
+      ],
+      data: {
+        session_id: 'session-1', item_id: expect.stringMatching(/^message:/),
+        message_ref: { kind: 'chat_message', id: expect.any(String) },
+        resolved_model: {
+          model_config_id: 'deepseek:deepseek-chat', reasoning_level: 'off',
+        },
       },
     });
     expect((await fixture.sessions.find('session-1', 'trusted-owner'))?.messages).toHaveLength(1);

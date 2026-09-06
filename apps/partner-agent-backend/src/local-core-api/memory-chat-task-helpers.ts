@@ -125,6 +125,9 @@ export function memorySessionMessageViews(
       ...(message.operationId ? { operation_id: message.operationId } : {}),
       ...(message.modelConfigId ? { model_config_id: message.modelConfigId } : {}),
       ...(message.reasoningLevel ? { reasoning_level: message.reasoningLevel } : {}),
+      ...(typeof message.metadata?.thinking_summary === 'string'
+        ? { thinking_summary: message.metadata.thinking_summary }
+        : {}),
       ...(!message.modelConfigId && message.metadata?.model_config_id
         ? { model_config_id: String(message.metadata.model_config_id) }
         : {}),

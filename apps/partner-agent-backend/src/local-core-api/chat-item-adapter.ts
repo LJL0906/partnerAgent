@@ -34,23 +34,68 @@ export interface ChatPreviewSnapshotRef {
   createdAt: Date;
 }
 
+export interface FormalCandidateSnapshotRef {
+  candidateId: string;
+  batchId: string;
+  sessionId: string;
+  taskId: string;
+  operationId: string;
+  kind: string;
+  preview: Record<string, unknown>;
+  sourceRefs: Array<{ kind: string; id: string }>;
+  confidence?: number;
+  risk: 'normal' | 'high';
+  revision: number;
+  sequence?: number;
+  createdAt: Date;
+}
+
 export interface ChatItemsSnapshotInput {
   messages: SessionMessageDto[];
   tasks: ChatTaskSnapshotRef[];
   toolViews: SessionToolView[];
   previews: ChatPreviewSnapshotRef[];
+  candidates?: FormalCandidateSnapshotRef[];
 }
 
 export function buildChatItemsSnapshot(input: ChatItemsSnapshotInput): ChatItem[] {
+  const candidates = input.candidates ?? [];
+  const tasksWithFormalCandidates = new Set(candidates.map((item) => item.taskId));
   return [
-    ...input.messages.map(messageItem),
+    ...input.messages.flatMap(messageItems),
     ...input.tasks.flatMap(taskItems),
     ...input.toolViews.map(toolItem),
-    ...input.previews.map(previewItem),
+    ...input.previews.filter((item) => !tasksWithFormalCandidates.has(item.taskId)).map(previewItem),
+    ...candidates.map(candidateItem),
   ].sort(
     (left, right) =>
-      left.created_at - right.created_at || left.id.localeCompare(right.id),
+      (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER)
+      || left.created_at - right.created_at || left.id.localeCompare(right.id),
   );
+}
+
+function messageItems(message: SessionMessageDto): ChatItem[] {
+  const item = messageItem(message);
+  if (message.role !== 'assistant' || !message.task_id || !message.thinking_summary?.trim()) {
+    return [item];
+  }
+  const timestamp = Date.parse(message.created_at);
+  return [{
+    schema_version: 1,
+    id: chatItemIds.taskThinking(message.task_id),
+    type: 'thinking',
+    status: sessionMessageStatusToChatItemStatus(message.status),
+    ...createChatItemDefaults('thinking'),
+    created_at: timestamp,
+    updated_at: timestamp,
+    revision: message.revision,
+    sequence: message.sequence,
+    session_id: message.session_id,
+    task_id: message.task_id,
+    ...(message.operation_id ? { operation_id: message.operation_id } : {}),
+    message_id: message.id,
+    payload: { text: message.thinking_summary, display: 'summary' },
+  }, item];
 }
 
 function messageItem(message: SessionMessageDto): ChatItem {
@@ -198,6 +243,35 @@ function previewItem(source: ChatPreviewSnapshotRef): ChatItem {
     preview_id: source.preview.preview_id,
     session_id: source.sessionId,
     payload: source.preview,
+  };
+}
+
+function candidateItem(source: FormalCandidateSnapshotRef): ChatItem {
+  const timestamp = source.createdAt.getTime();
+  return {
+    schema_version: 1,
+    id: chatItemIds.candidate(source.candidateId),
+    type: 'candidate',
+    status: 'pending',
+    ...createChatItemDefaults('candidate'),
+    created_at: timestamp,
+    updated_at: timestamp,
+    revision: source.revision,
+    sequence: source.sequence,
+    session_id: source.sessionId,
+    task_id: source.taskId,
+    operation_id: source.operationId,
+    candidate_id: source.candidateId,
+    payload: {
+      candidate_id: source.candidateId,
+      batch_ref: { kind: 'confirmation_batch', id: source.batchId },
+      kind: source.kind,
+      preview: source.preview,
+      applied: false,
+      source_refs: source.sourceRefs,
+      ...(source.confidence === undefined ? {} : { confidence: source.confidence }),
+      risk: source.risk,
+    },
   };
 }
 

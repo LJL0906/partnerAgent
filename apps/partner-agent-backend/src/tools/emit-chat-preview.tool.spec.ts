@@ -21,6 +21,12 @@ describe('emit_chat_preview', () => {
     });
 
     expect(tool.name).toBe('emit_chat_preview');
+    expect(tool.description).toContain('planned_at');
+    expect(tool.description).toContain('RFC 3339');
+    expect(tool.description).toContain('不要添加其他字段');
+    expect(tool.description).toContain('明确且唯一');
+    expect(tool.description).toContain('自动写入');
+    expect(tool.description).toContain('多个候选');
     expect(result).toEqual({
       content: [{ type: 'text', text: '结构化预览已暂存。' }],
       details: { status: 'preview_collected', count: 1 },

@@ -69,6 +69,9 @@ function RootLayoutContent() {
         <Stack.Screen name="auth/register" options={{ headerShown: false }} />
         <Stack.Screen name="chat" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="confirmations/index" options={{ title: '确认中心' }} />
+        <Stack.Screen name="confirmations/[batchId]" options={{ title: '确认行动' }} />
+        <Stack.Screen name="actions/[actionId]" options={{ title: '行动详情' }} />
         <Stack.Screen
           name="privacy-decision"
           options={{

@@ -277,6 +277,8 @@ export class TypeOrmWsV1EventStore extends WsV1EventStore {
       ...(input.item_revision !== undefined
         ? { item_revision: input.item_revision }
         : {}),
+      ...(input.message_id ? { message_id: input.message_id } : {}),
+      ...(input.text_offset !== undefined ? { text_offset: input.text_offset } : {}),
     } as ServerPushEventV1;
   }
 

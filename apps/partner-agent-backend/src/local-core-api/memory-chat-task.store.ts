@@ -637,6 +637,11 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     const { previews } = previewValidation;
     const messageId = existing?.id ?? task.resultMessageId ?? randomUUID();
     const revision = (existing?.revision ?? 0) + 1;
+    const metadata: Record<string, unknown> = {};
+    if (previews.length) metadata.chat_previews = previews;
+    if (command.thinkingContent?.trim()) {
+      metadata.thinking_summary = command.thinkingContent.slice(0, 100_000);
+    }
     const written = await this.sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
       id: messageId,
       taskId: task.taskId,
@@ -646,7 +651,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       content: command.content,
       status: 'complete',
       revision,
-      ...(previews.length ? { metadata: { chat_previews: previews } } : {}),
+      ...(Object.keys(metadata).length ? { metadata } : {}),
     });
     await this.sessions.saveContextSnapshot(
       task.sessionId,
@@ -703,6 +708,10 @@ export class MemoryChatTaskStore extends ChatTaskStore {
         }];
       });
     });
+  }
+
+  async listSessionFormalCandidates() {
+    return [];
   }
 
   private hasCurrentLease(

@@ -1,4 +1,6 @@
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { useCallback } from 'react';
+import { Alert, BackHandler, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AmbientBackground } from '@/components/ui/ambient-background';
@@ -14,6 +16,7 @@ import { spacing } from '@/theme/spacing';
 import { typography } from '@/theme/typography';
 
 import { getSessionStatus, settingsSections, type SettingsItem } from '@/features/settings/settings-model';
+import { resolveSettingsReturnTarget, returnFromSettings } from '@/features/navigation/settings-return';
 
 function SettingsRow({ item, onPress }: { item: SettingsItem; onPress: () => void }) {
   return (
@@ -43,6 +46,9 @@ function SettingsRow({ item, onPress }: { item: SettingsItem; onPress: () => voi
 }
 
 export default function ProfileRoute() {
+  const router = useRouter();
+  const { returnTo } = useLocalSearchParams<{ returnTo?: string | string[] }>();
+  const returnTarget = resolveSettingsReturnTarget(returnTo);
   const insets = useSafeAreaInsets();
   const status = useAuthStore((state) => state.status);
   const username = useAuthStore((state) => state.username);
@@ -51,6 +57,18 @@ export default function ProfileRoute() {
   const session = getSessionStatus(status);
   const displayName = username?.trim() || '紫灵用户';
   const accountLabel = username ? '账户登录' : '个人助手账户';
+  const handleBack = useCallback(() => {
+    returnFromSettings(router, returnTarget);
+  }, [returnTarget, router]);
+
+  useFocusEffect(useCallback(() => {
+    if (Platform.OS !== 'android' || !returnTarget) return undefined;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [handleBack, returnTarget]));
 
   const showPlaceholder = (item: SettingsItem) => {
     if (item.title === '安全会话') return;
@@ -61,7 +79,7 @@ export default function ProfileRoute() {
     <View style={{ backgroundColor: colors.canvas, flex: 1 }}>
       <AmbientBackground />
       <View style={{ flex: 1 }}>
-        <AppHeader title="设置" />
+        <AppHeader title="设置" leadingAction={returnTarget ? { icon: 'back', accessibilityLabel: '返回聊天', onPress: handleBack } : undefined} />
         <ScrollView
           contentContainerStyle={{ gap: spacing.xl, paddingBottom: Math.max(insets.bottom, spacing.xl) + 82, paddingHorizontal: spacing.page, paddingTop: spacing.lg }}
           contentInsetAdjustmentBehavior="automatic"

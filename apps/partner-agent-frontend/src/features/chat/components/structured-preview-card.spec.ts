@@ -41,21 +41,32 @@ const preview: ChatPreviewV1 = {
 };
 
 describe('StructuredPreviewCard', () => {
-  it('renders the real action preview with its source, time, and uncertainty boundary', () => {
+  it('renders a concise action preview with formatted time and useful warnings', () => {
     const html = renderToStaticMarkup(React.createElement(StructuredPreviewCard, {
       preview,
       createdAt: Date.parse('2026-09-06T12:00:00+08:00'),
     }));
 
-    expect(html).toContain('未确认预览，未创建行动');
+    expect(html).toContain('待确认 · 尚未生效');
     expect(html).toContain('周一提交周报');
     expect(html).toContain('整理本周结果并发送给团队');
-    expect(html).toContain('聊天消息：message-42');
+    expect(html).toContain('9月7日');
+    expect(html).toContain('周一');
+    expect(html).toContain('09:00');
     expect(html).toContain('尚未确认收件人');
-    expect(html).toContain('可信度');
-    expect(html).toContain('76%');
     expect(html).toContain('收件人需要确认');
-    expect(html).toContain('复制预览');
+    expect(html).toContain('#FFFFFF');
+    expect(html).not.toContain('#EAF9F3');
+    expect(html).not.toContain('聊天消息：message-42');
+    expect(html).not.toContain('生成时间');
+    expect(html).not.toContain('Asia/Shanghai');
+    expect(html).not.toContain('可信度');
+    expect(html).not.toContain('76%');
+    expect(html).toContain('accessibilityLabel="复制预览"');
+    expect(html).toContain('accessibilityState="[object Object]"');
+    expect(html).toContain('name="close"');
+    expect(html).not.toContain('accessibilityLabel="关闭行动预览"');
+    expect(html).not.toContain('>复制预览<');
     expect(html).not.toContain('title="确认"');
     expect(html).not.toContain('title="修改"');
     expect(html).not.toContain('title="拒绝"');
@@ -68,11 +79,14 @@ describe('StructuredPreviewCard', () => {
       Date.parse('2026-09-06T12:00:00+08:00'),
     );
 
-    expect(text).toContain('未确认预览，未创建行动');
+    expect(text).toContain('待确认，尚未生效');
     expect(text).toContain('周一提交周报');
-    expect(text).toContain('聊天消息：message-42');
+    expect(text).toContain('9月7日');
     expect(text).toContain('收件人需要确认');
     expect(text).not.toContain('preview-secret-identity');
+    expect(text).not.toContain('message-42');
+    expect(text).not.toContain('Asia/Shanghai');
+    expect(text).not.toContain('可信度');
     expect(text).not.toContain('confirmation_status');
     expect(text).not.toContain('applied');
   });

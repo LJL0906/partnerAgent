@@ -16,7 +16,14 @@ interface ChatTaskEventBase {
 export type ChatTaskEvent = ChatTaskEventBase &
   (
     | { type: 'state_changed'; revision: number }
-    | { type: 'agent_event'; revision?: never }
+    | {
+        type: 'agent_event';
+        revision?: never;
+        itemId?: string;
+        itemRevision?: number;
+        messageId?: string;
+        textOffset?: number;
+      }
   );
 
 type Listener = (event: ChatTaskEvent) => void | Promise<void>;

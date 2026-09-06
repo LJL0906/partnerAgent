@@ -3,7 +3,12 @@ import type { SessionToolView } from '@partner-agent/contracts';
 import type { StoredSession } from '../database/session-store.js';
 import { SessionStore } from '../database/session-store.js';
 import { ToolOperationStore } from '../tools/tool-operation.store.js';
-import { buildChatItemsSnapshot, type ChatPreviewSnapshotRef, type ChatTaskSnapshotRef } from './chat-item-adapter.js';
+import {
+  buildChatItemsSnapshot,
+  type ChatPreviewSnapshotRef,
+  type ChatTaskSnapshotRef,
+  type FormalCandidateSnapshotRef,
+} from './chat-item-adapter.js';
 import { ChatTaskStore } from './chat-task.store.js';
 import type { LocalCoreRequest } from './local-core-api.types.js';
 
@@ -50,21 +55,47 @@ export async function getChatSessionSnapshot(
     request.userId,
     session.id,
   );
-  const previews: ChatPreviewSnapshotRef[] = storedPreviews.map((stored) => ({
-    preview: stored.preview, sessionId: stored.session_id, taskId: stored.task_id,
-    operationId: stored.operation_id, messageId: stored.message_id,
-    revision: stored.message_revision,
-    createdAt: new Date(
-      messages.find((message) => message.id === stored.message_id)?.created_at ??
-        session.lastActiveAt,
-    ),
+  const previews: ChatPreviewSnapshotRef[] = storedPreviews.map((stored) => {
+    const sourceMessage = messages.find((message) => message.id === stored.message_id);
+    return {
+      preview: stored.preview, sessionId: stored.session_id, taskId: stored.task_id,
+      operationId: stored.operation_id, messageId: stored.message_id,
+      revision: stored.message_revision,
+      createdAt: new Date(sourceMessage?.created_at ?? session.lastActiveAt),
+    };
+  });
+  const storedCandidates = await stores.tasks.listSessionFormalCandidates(
+    request.userId,
+    session.id,
+  );
+  const candidates: FormalCandidateSnapshotRef[] = storedCandidates.map((stored) => ({
+    candidateId: stored.candidate_id,
+    batchId: stored.batch_id,
+    sessionId: stored.session_id,
+    taskId: stored.task_id,
+    operationId: stored.operation_id,
+    kind: stored.kind,
+    preview: stored.payload,
+    sourceRefs: stored.source_refs,
+    ...(stored.confidence === undefined ? {} : { confidence: stored.confidence }),
+    risk: stored.risk,
+    revision: stored.version,
+    sequence: messages.find((message) => message.role === 'assistant'
+      && message.task_id === stored.task_id)?.sequence,
+    createdAt: stored.created_at,
   }));
   return {
     ...(await buildSessionSummary(session, request.userId, stores.tasks)),
     message_count: messages.length,
     messages,
     tool_views: toolViews,
-    items: buildChatItemsSnapshot({ messages, tasks: taskSnapshots, toolViews, previews }),
+    items: buildChatItemsSnapshot({
+      messages,
+      tasks: taskSnapshots,
+      toolViews,
+      previews,
+      candidates,
+    }),
   };
 }
 

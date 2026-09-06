@@ -41,8 +41,15 @@ export class ChatPreviewOutputCollector {
   private rejectedAttempts = 0;
   private pendingInvalidOutput = false;
   private correctionExhausted = false;
+  private modelTurnActive = false;
+  private rejectedInCurrentTurn = false;
 
   constructor(private readonly context: ChatPreviewOutputContext) {}
+
+  beginModelTurn(): void {
+    this.modelTurnActive = true;
+    this.rejectedInCurrentTurn = false;
+  }
 
   collect(value: unknown, toolCallId?: string): ChatPreviewV1 {
     if (toolCallId) this.observedToolCalls.add(toolCallId);
@@ -92,6 +99,10 @@ export class ChatPreviewOutputCollector {
       this.observedToolCalls.add(toolCallId);
       this.rejectedToolCalls.add(toolCallId);
     }
+    if (this.modelTurnActive && this.rejectedInCurrentTurn) {
+      return this.correctionExhausted ? 'exhausted' : 'retry';
+    }
+    this.rejectedInCurrentTurn = true;
     this.rejectedAttempts += 1;
     this.pendingInvalidOutput = true;
     if (this.rejectedAttempts > 1) this.correctionExhausted = true;
@@ -110,11 +121,11 @@ export class ChatPreviewOutputCollector {
     return this.rejectedAttempts === 0 && !this.correctionExhausted;
   }
 
-  complete(): ChatPreviewV1[] {
+  complete(options: { allowEmpty?: boolean } = {}): ChatPreviewV1[] {
     if (this.correctionExhausted || this.pendingInvalidOutput) {
       throw this.invalidError();
     }
-    if (this.previews.length === 0) {
+    if (this.previews.length === 0 && !options.allowEmpty) {
       throw new StructuredPreviewOutputError(
         CHAT_PREVIEW_ERROR_CODES.MISSING,
         '结构化预览任务未产生 emit_chat_preview 输出。',

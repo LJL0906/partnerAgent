@@ -31,6 +31,12 @@ export function applyAgentEvent(
     assistantIdRef.current = findLatestAssistantId();
     return NO_RECOVERY;
   }
+  if (event.event_type === 'todo_update') {
+    state.setTaskTodos(event.task_id, event.data.items);
+    state.setTaskStatus('running');
+    state.setStreaming(true);
+    return NO_RECOVERY;
+  }
   if (event.event_type === 'text_delta') {
     const result = applyTextDeltaToStore({
       itemId: event.item_id, itemRevision: event.item_revision, messageId: event.message_id,
@@ -40,6 +46,14 @@ export function applyAgentEvent(
     if (result === 'recovery_required') return { recoveryRequired: true, terminalObserved: false };
     if (result === 'ignored' && isTerminalTaskStatus(state.taskStatus)) return NO_RECOVERY;
     if (!state.setTaskStatus('running')) return NO_RECOVERY;
+    if (event.task_id) {
+      useChatStore.setState((current) => ({
+        items: current.items.map((item) => item.type === 'thinking'
+          && item.task_id === event.task_id && item.status === 'streaming'
+          ? { ...item, status: 'completed', updated_at: event.timestamp }
+          : item),
+      }));
+    }
     assistantIdRef.current = event.item_id;
     state.setStreaming(true);
     state.setThinking(false);
@@ -146,9 +160,18 @@ function finishStream(
   taskStatus: Extract<ChatTaskStatus, 'completed' | 'cancelled' | 'failed'>,
 ): void {
   const state = useChatStore.getState();
+  const taskId = state.activeTaskId;
+  if (taskId) {
+    useChatStore.setState((current) => ({
+      items: current.items.map((item) => item.task_id === taskId && item.status === 'streaming'
+        ? { ...item, status: taskStatus }
+        : item),
+    }));
+  }
   state.setStreaming(false);
   state.setThinking(false);
   state.setTaskStatus(taskStatus);
+  state.clearTaskTodos();
   state.setActiveTaskId(undefined);
   state.setActiveOperationId(undefined);
   assistantIdRef.current = undefined;
