@@ -1,41 +1,54 @@
+import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { DataSource, type EntityManager } from 'typeorm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DATABASE_ENTITIES } from '../src/database/database-definition.js';
+import { createDatabaseDataSource } from '../src/database/database-definition.js';
 import { LocalCoreOperationEntity } from '../src/database/entities/chat-task.entity.js';
 import { SessionMessageEntity } from '../src/database/entities/session-message.entity.js';
 import { TypeOrmSessionStore } from '../src/database/typeorm-session.store.js';
 import { TypeOrmChatTaskStore } from '../src/local-core-api/typeorm-chat-task.store.js';
+import { assertDedicatedRealPostgresTestDatabase } from './real-postgres-test-database.guard.js';
 
 const databaseUrl = process.env.REAL_POSTGRES_DATABASE_URL;
-const describeReal = databaseUrl ? describe : describe.skip;
+const confirmedDatabaseUrl = databaseUrl
+  ? assertDedicatedRealPostgresTestDatabase(
+      databaseUrl,
+      process.env.REAL_POSTGRES_TEST_CONFIRM,
+    )
+  : undefined;
+const describeReal = confirmedDatabaseUrl ? describe : describe.skip;
 
 describeReal('PostgreSQL idempotent command transaction', () => {
   let source: DataSource;
+  const ownerId = `a10-owner-${randomUUID()}`;
+  const sessionId = randomUUID();
+  const operationId = randomUUID();
 
   beforeAll(async () => {
-    source = new DataSource({
-      type: 'postgres',
-      url: databaseUrl,
-      entities: [...DATABASE_ENTITIES],
-      synchronize: true,
-      dropSchema: true,
-    });
+    source = createDatabaseDataSource(confirmedDatabaseUrl!);
     await source.initialize();
+    await source.runMigrations();
   });
 
   afterAll(async () => {
-    await source?.destroy();
+    if (!source?.isInitialized) return;
+    for (const table of [
+      'local_core_operations',
+      'session_messages',
+      'chat_sessions',
+    ]) {
+      await source.query(`delete from ${table} where owner_id=$1`, [ownerId]);
+    }
+    await source.query('delete from users where id=$1', [ownerId]);
+    await source.destroy();
   });
 
   it('rolls back the session mutation with the missing ledger and retries once', async () => {
     const sessions = new TypeOrmSessionStore(new ConfigService(), source);
     const tasks = new TypeOrmChatTaskStore(source);
-    const sessionId = 'a1000000-0000-4000-8000-000000000001';
-    const operationId = 'a1000000-0000-4000-8000-000000000002';
-    await sessions.createIfAllowed(sessionId, 'a10-owner', 100);
+    await sessions.createIfAllowed(sessionId, ownerId, 100);
     const command = {
-      ownerId: 'a10-owner',
+      ownerId,
       operationId,
       requestFingerprint: 'a10-set-model-fingerprint',
       commandName: 'SetMessageModelSelection',
@@ -45,7 +58,7 @@ describeReal('PostgreSQL idempotent command transaction', () => {
       executions += 1;
       return sessions.appendSystemTip(
         sessionId,
-        'a10-owner',
+        ownerId,
         '模型切换成 test',
         {
           model_config_id: 'test:model',
@@ -63,12 +76,12 @@ describeReal('PostgreSQL idempotent command transaction', () => {
     ).rejects.toThrow('injected after session mutation');
     await expect(
       source.getRepository(SessionMessageEntity).count({
-        where: { ownerId: 'a10-owner', sessionId, role: 'system' },
+        where: { ownerId, sessionId, role: 'system' },
       }),
     ).resolves.toBe(0);
     await expect(
       source.getRepository(LocalCoreOperationEntity).count({
-        where: { ownerId: 'a10-owner', operationId },
+        where: { ownerId, operationId },
       }),
     ).resolves.toBe(0);
 
@@ -84,12 +97,12 @@ describeReal('PostgreSQL idempotent command transaction', () => {
     expect(executions).toBe(2);
     await expect(
       source.getRepository(SessionMessageEntity).count({
-        where: { ownerId: 'a10-owner', sessionId, role: 'system' },
+        where: { ownerId, sessionId, role: 'system' },
       }),
     ).resolves.toBe(1);
     await expect(
       source.getRepository(LocalCoreOperationEntity).count({
-        where: { ownerId: 'a10-owner', operationId },
+        where: { ownerId, operationId },
       }),
     ).resolves.toBe(1);
   });
