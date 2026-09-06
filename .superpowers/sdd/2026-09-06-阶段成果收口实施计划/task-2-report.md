@@ -116,3 +116,28 @@ Fix round 1 使用新提交承载，提交哈希见本轮最终交付回报。
 - `.superpowers/sdd/2026-09-06-阶段成果收口实施计划/task-2-report.md`
 
 新增：无。删除：无。未修改 A10、session store、heartbeat 或 docs 收口文件。
+
+## 最终验收引用隔离修正（2026-09-06）
+
+### 修正
+
+- `recoverChatPreviewsV1` 对每个校验成功的 JSON preview 使用 `structuredClone` 后再执行集合级校验并返回，避免回读结果与 MemorySessionStore 权威 metadata 共用嵌套对象或数组引用。
+- 严格 `parseChatPreviewV1` / `parseChatPreviewsV1` 语义、first-wins、20 项上限与累计 64 KiB 恢复策略均未改变；Memory 与 TypeORM 现在都提供一致的读取值隔离。
+- Memory/TypeORM 回归均执行“首次读取后原地修改 `content.title`、`source_refs[0].id` 和 `warnings` 数组，再次读取仍为原值”。contracts 回归直接锁定 helper 不污染输入对象。
+
+### RED / GREEN 证据
+
+- RED：contracts 全量 1 failed / 139 passed；后端定向 1 failed / 16 passed，失败项为 Memory 二次读取观察到被调用者污染的嵌套值；TypeORM 回归通过，验证了实现差异。
+- GREEN：contracts 全量 4 suites / 140 tests passed；Memory+TypeORM 定向 2 files / 17 tests passed；backend 全量 78 files / 455 tests passed；memory e2e 8 files / 132 tests passed；backend build/lint 通过。
+
+### 本轮文件
+
+修改：
+
+- `packages/contracts/src/chat-preview.ts`
+- `packages/contracts/test/contract-alignment-v1.test.cjs`
+- `apps/partner-agent-backend/src/local-core-api/chat-task-runner-output.spec.ts`
+- `apps/partner-agent-backend/src/local-core-api/typeorm-chat-output.store.spec.ts`
+- `.superpowers/sdd/2026-09-06-阶段成果收口实施计划/task-2-report.md`
+
+新增：无。删除：无。未触碰 A10、session store、heartbeat 或其他 docs 收口文件。

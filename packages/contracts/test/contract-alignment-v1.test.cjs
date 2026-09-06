@@ -147,6 +147,14 @@ describe('shared contract alignment v1', () => {
       'small-after-overflow',
     ]);
     expect(contracts.parseChatPreviewsV1(sizeLimited)).toEqual(sizeLimited);
+
+    const source = preview('isolated', '原始标题', '原始警告');
+    const expected = structuredClone(source);
+    const firstRead = contracts.recoverChatPreviewsV1([source]);
+    firstRead[0].content.title = '污染标题';
+    firstRead[0].source_refs[0].id = 'polluted-source';
+    firstRead[0].warnings.push({ code: 'POLLUTED', message: '污染警告' });
+    expect(contracts.recoverChatPreviewsV1([source])).toEqual([expected]);
   });
 
   it('keeps model output separate from server-owned preview fields', () => {

@@ -173,6 +173,33 @@ describe('ChatTaskRunner assistant output', () => {
     }
   });
 
+  it('does not expose mutable memory preview metadata across reads', async () => {
+    const { sessions, store, task } = await claimedTask('structured_preview');
+    const preview = storedPreview(task, 'isolated-memory', '原始标题', '原始警告');
+    const expected = structuredClone(preview);
+    await sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
+      id: 'memory-isolation-message',
+      taskId: task.taskId,
+      operationId: task.operationId,
+      modelConfigId: task.modelConfigId,
+      reasoningLevel: task.reasoningLevel,
+      content: '',
+      status: 'complete',
+      revision: 1,
+      metadata: { chat_previews: [preview] },
+    });
+
+    const firstRead = await store.listSessionChatPreviews(task.ownerId, task.sessionId);
+    firstRead[0]!.preview.content.title = '污染标题';
+    firstRead[0]!.preview.source_refs[0]!.id = 'polluted-source';
+    firstRead[0]!.preview.warnings.push({ code: 'POLLUTED', message: '污染警告' });
+
+    const secondRead = await store.listSessionChatPreviews(task.ownerId, task.sessionId);
+    expect(secondRead).toEqual([
+      expect.objectContaining({ preview: expected }),
+    ]);
+  });
+
   it.each([
     {
       outputMode: 'chat' as const,

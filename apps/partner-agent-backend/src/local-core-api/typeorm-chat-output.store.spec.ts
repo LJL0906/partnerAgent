@@ -481,4 +481,58 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
     }
     await source.destroy();
   });
+
+  it('does not expose mutable persisted preview metadata across reads', async () => {
+    const source = dataSource();
+    await source.initialize();
+    const store = new TypeOrmChatTaskStore(source);
+    const accepted = await store.submitText({
+      ownerId: 'owner',
+      operationId: '00000000-0000-4000-8000-000000000105',
+      requestFingerprint: 'fingerprint-5',
+      clientSource: 'web',
+      text: '生成行动',
+      inputId: 'input-5',
+      modelConfigId: 'test:model',
+      reasoningLevel: 'low',
+      outputMode: 'structured_preview',
+      previewKind: 'action',
+    });
+    const task = accepted.task!;
+    const preview = storedPreview(
+      task.userMessageId,
+      'isolated-persisted',
+      '原始标题',
+      '原始警告',
+    );
+    const expected = structuredClone(preview);
+    await source.getRepository(SessionMessageEntity).save({
+      id: '00000000-0000-4000-8000-000000000205',
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      sequence: 2,
+      role: 'assistant',
+      content: '',
+      status: 'complete',
+      revision: 1,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      modelConfigId: task.modelConfigId,
+      reasoningLevel: task.reasoningLevel,
+      metadataJson: { chat_previews: [preview] },
+      createdAt: new Date(),
+      completedAt: new Date(),
+    });
+
+    const firstRead = await store.listSessionChatPreviews(task.ownerId, task.sessionId);
+    firstRead[0]!.preview.content.title = '污染标题';
+    firstRead[0]!.preview.source_refs[0]!.id = 'polluted-source';
+    firstRead[0]!.preview.warnings.push({ code: 'POLLUTED', message: '污染警告' });
+
+    const secondRead = await store.listSessionChatPreviews(task.ownerId, task.sessionId);
+    expect(secondRead).toEqual([
+      expect.objectContaining({ preview: expected }),
+    ]);
+    await source.destroy();
+  });
 });

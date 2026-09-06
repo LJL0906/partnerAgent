@@ -344,7 +344,7 @@ export function recoverChatPreviewsV1(value: unknown): ChatPreviewV1[] {
   for (const candidate of value) {
     let preview: ChatPreviewV1;
     try {
-      preview = parseChatPreviewV1(candidate);
+      preview = structuredClone(parseChatPreviewV1(candidate));
       parseChatPreviewsV1([...recovered, preview]);
     } catch {
       continue;
