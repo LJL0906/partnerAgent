@@ -9,13 +9,13 @@ import {
 } from '../database/entities/chat-task.entity.js';
 import { SessionMessageEntity } from '../database/entities/session-message.entity.js';
 import { UserEntity } from '../database/entities/core/user.entity.js';
-import { parseChatPreviewV1 } from '@partner-agent/contracts';
 import {
   ChatTaskConflictError,
   ChatTaskStore,
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
   parseAssistantCompletionPreviews,
+  parseStoredChatPreviews,
   type IdempotentCommand,
   type AssistantCompletionCommand,
   type AssistantProgressCommand,
@@ -491,14 +491,6 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       if (!task || task.sessionId !== command.sessionId || task.operationId !== command.operationId) {
         return { outcome: 'fence_rejected' as const };
       }
-      const previews = parseAssistantCompletionPreviews(
-        {
-          outputMode: task.outputMode,
-          ...(task.previewKind ? { previewKind: task.previewKind } : {}),
-        },
-        command.chatPreviews,
-      );
-      if (!previews) return { outcome: 'conflict' as const };
       const messageRepository = manager.getRepository(SessionMessageEntity);
       let message = await messageRepository.findOne({
         where: { ownerId: task.ownerId, sessionId: task.sessionId, taskId: task.id, role: 'assistant' },
@@ -513,6 +505,21 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       if (command.expectedRevision !== (message?.revision ?? 0)) {
         return { outcome: 'conflict' as const };
       }
+      const previewValidation = parseAssistantCompletionPreviews(
+        {
+          outputMode: task.outputMode,
+          ...(task.previewKind ? { previewKind: task.previewKind } : {}),
+        },
+        command.chatPreviews,
+      );
+      if (!previewValidation.valid) {
+        return {
+          outcome: 'invalid_output' as const,
+          code: previewValidation.code,
+          message: previewValidation.message,
+        };
+      }
+      const { previews } = previewValidation;
       if (!message) {
         const last = await messageRepository.findOne({ where: { sessionId: task.sessionId }, order: { sequence: 'DESC' } });
         message = messageRepository.create({
@@ -577,13 +584,13 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       if (!message.taskId || !message.operationId) return [];
       const previews = message.metadataJson?.chat_previews;
       if (!Array.isArray(previews)) return [];
-      return previews.map((preview) => ({
+      return parseStoredChatPreviews(previews).map((preview) => ({
         session_id: message.sessionId,
         task_id: message.taskId!,
         operation_id: message.operationId!,
         message_id: message.id,
         message_revision: message.revision,
-        preview: structuredClone(parseChatPreviewV1(preview)),
+        preview,
       }));
     });
   }

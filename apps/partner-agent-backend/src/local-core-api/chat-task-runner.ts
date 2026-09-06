@@ -186,6 +186,22 @@ export class ChatTaskRunner {
             chatPreviews: output.chatPreviews,
             contextMessages: output.contextMessages,
           });
+          if (completed.outcome === 'invalid_output') {
+            const failed = await this.store.markFailed(
+              task.taskId,
+              task.ownerId,
+              completed.code,
+              completed.message,
+              leaseOwner,
+            );
+            if (failed?.state === 'failed') {
+              this.publishState(task, 'failed', {
+                code: completed.code,
+                message: completed.message,
+              });
+            }
+            return;
+          }
           if (completed.outcome === 'committed') {
             outputCommitted = true;
             this.publishState(task, 'completed');

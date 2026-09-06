@@ -56,6 +56,33 @@ describe('ChatTaskRunner assistant output', () => {
       content: '',
       chatPreviews: includePreview ? [preview] : [],
       contextMessages: [],
+    })).resolves.toMatchObject({
+      outcome: 'invalid_output',
+      code: outputMode === 'structured_preview'
+        ? 'STRUCTURED_PREVIEW_MISSING'
+        : 'STRUCTURED_PREVIEW_INVALID',
+    });
+    await expect(store.completeAssistantOutput({
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      leaseToken: 'stale-worker',
+      expectedRevision: 0,
+      content: '',
+      chatPreviews: includePreview ? [preview] : [],
+      contextMessages: [],
+    })).resolves.toEqual({ outcome: 'fence_rejected' });
+    await expect(store.completeAssistantOutput({
+      ownerId: task.ownerId,
+      sessionId: task.sessionId,
+      taskId: task.taskId,
+      operationId: task.operationId,
+      leaseToken: 'worker-runner',
+      expectedRevision: 1,
+      content: '',
+      chatPreviews: includePreview ? [preview] : [],
+      contextMessages: [],
     })).resolves.toEqual({ outcome: 'conflict' });
     await expect(store.getTask(task.ownerId, task.taskId)).resolves.toMatchObject({
       state: 'running',
@@ -65,8 +92,16 @@ describe('ChatTaskRunner assistant output', () => {
     );
   });
 
-  it('fails memory recovery when one persisted preview is damaged', async () => {
+  it('isolates one damaged memory preview while restoring valid siblings', async () => {
     const { sessions, store, task } = await claimedTask('structured_preview');
+    const preview = new ChatPreviewOutputCollector({
+      taskId: task.taskId,
+      allowedSourceRefs: [{ kind: 'original_record', id: task.originalRecordId }],
+    }).collect({
+      schema_version: 1,
+      kind: 'action',
+      content: { title: '合法卡片', confidence: 0.9 },
+    });
     await sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
       id: 'damaged-memory-message',
       taskId: task.taskId,
@@ -76,12 +111,79 @@ describe('ChatTaskRunner assistant output', () => {
       content: '',
       status: 'complete',
       revision: 1,
-      metadata: { chat_previews: [{ schema_version: 1, preview_id: 'damaged' }] },
+      metadata: {
+        chat_previews: [
+          preview,
+          { schema_version: 1, preview_id: 'damaged' },
+        ],
+      },
     });
 
     await expect(
       store.listSessionChatPreviews(task.ownerId, task.sessionId),
-    ).rejects.toThrow();
+    ).resolves.toEqual([
+      expect.objectContaining({ preview }),
+    ]);
+  });
+
+  it.each([
+    {
+      outputMode: 'chat' as const,
+      includePreview: true,
+      code: 'STRUCTURED_PREVIEW_INVALID',
+    },
+    {
+      outputMode: 'structured_preview' as const,
+      includePreview: false,
+      code: 'STRUCTURED_PREVIEW_MISSING',
+    },
+  ])('fails a $outputMode task when its completed output violates preview invariants', async ({
+    outputMode,
+    includePreview,
+    code,
+  }) => {
+    const { store, task } = await claimedTask(outputMode);
+    const bus = new ChatTaskEventBus();
+    const published: ChatTaskEvent[] = [];
+    bus.subscribe((event) => published.push(event));
+    const preview = new ChatPreviewOutputCollector({
+      taskId: task.taskId,
+      allowedSourceRefs: [{ kind: 'original_record', id: task.originalRecordId }],
+    }).collect({
+      schema_version: 1,
+      kind: 'action',
+      content: { title: '违反模式约束', confidence: 0.9 },
+    });
+    const runner = new ChatTaskRunner(
+      { cancel: vi.fn() } as unknown as PiAgentService,
+      store,
+      bus,
+      new MemoryEgressDecisionStore(),
+      30_000,
+      () => false,
+      () => false,
+      () => undefined,
+    );
+
+    await runner.run(task, events([{
+      type: 'assistant_output_complete',
+      data: {
+        content: '',
+        chatPreviews: includePreview ? [preview] : [],
+        contextMessages: [],
+      },
+      timestamp: 1,
+    }]), 'worker-runner');
+
+    await expect(store.getTask(task.ownerId, task.taskId)).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: code,
+    });
+    expect(published).toContainEqual(expect.objectContaining({
+      state: 'failed',
+      type: 'state_changed',
+      data: expect.objectContaining({ code }),
+    }));
   });
 
   it('persists text before publishing it and commits preview before completion', async () => {

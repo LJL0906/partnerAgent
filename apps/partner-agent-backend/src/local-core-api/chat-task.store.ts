@@ -1,4 +1,5 @@
 import {
+  parseChatPreviewV1,
   parseChatPreviewsV1,
   type ChatPreviewV1,
   type ChatOutputMode,
@@ -86,24 +87,66 @@ export interface StoredChatTask extends AcceptedChatTask {
   waitingToolConfirmationId?: string;
 }
 
+export type AssistantOutputErrorCode =
+  | 'STRUCTURED_PREVIEW_INVALID'
+  | 'STRUCTURED_PREVIEW_MISSING';
+
 export function parseAssistantCompletionPreviews(
   task: Pick<StoredChatTask, 'outputMode' | 'previewKind'>,
   value: unknown,
-): ChatPreviewV1[] | undefined {
+):
+  | { valid: true; previews: ChatPreviewV1[] }
+  | { valid: false; code: AssistantOutputErrorCode; message: string } {
   if (task.outputMode === 'chat') {
-    return Array.isArray(value) && value.length === 0 ? [] : undefined;
+    return Array.isArray(value) && value.length === 0
+      ? { valid: true, previews: [] }
+      : {
+          valid: false,
+          code: 'STRUCTURED_PREVIEW_INVALID',
+          message: '普通聊天任务不得携带结构化预览附件。',
+        };
   }
   if (task.outputMode !== 'structured_preview' || task.previewKind !== 'action') {
-    return undefined;
+    return {
+      valid: false,
+      code: 'STRUCTURED_PREVIEW_INVALID',
+      message: '结构化预览任务模式无效。',
+    };
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    return {
+      valid: false,
+      code: 'STRUCTURED_PREVIEW_MISSING',
+      message: '结构化预览任务未产生预览附件。',
+    };
   }
   try {
     const previews = parseChatPreviewsV1(value);
     return previews.every((preview) => preview.kind === task.previewKind)
-      ? previews
-      : undefined;
+      ? { valid: true, previews }
+      : {
+          valid: false,
+          code: 'STRUCTURED_PREVIEW_INVALID',
+          message: '结构化预览附件类型与任务不一致。',
+        };
   } catch {
-    return undefined;
+    return {
+      valid: false,
+      code: 'STRUCTURED_PREVIEW_INVALID',
+      message: '结构化预览附件未通过安全契约校验。',
+    };
   }
+}
+
+export function parseStoredChatPreviews(value: unknown): ChatPreviewV1[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((preview) => {
+    try {
+      return [structuredClone(parseChatPreviewV1(preview))];
+    } catch {
+      return [];
+    }
+  });
 }
 
 export type SessionMessageView = SessionMessageDto;
@@ -137,6 +180,7 @@ export type AssistantWriteResult =
 
 export type AssistantCompletionResult =
   | { outcome: 'committed' | 'already_completed'; task: StoredChatTask; message: SessionMessageDto }
+  | { outcome: 'invalid_output'; code: AssistantOutputErrorCode; message: string }
   | { outcome: 'conflict' | 'fence_rejected' };
 
 export interface StoredChatPreviewAttachment {

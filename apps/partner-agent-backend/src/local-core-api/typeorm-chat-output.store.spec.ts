@@ -225,7 +225,20 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
     };
     await expect(
       store.completeAssistantOutput({ ...command, chatPreviews: [preview] }),
-    ).resolves.toEqual({ outcome: 'conflict' });
+    ).resolves.toMatchObject({
+      outcome: 'invalid_output',
+      code: 'STRUCTURED_PREVIEW_INVALID',
+    });
+    await expect(store.completeAssistantOutput({
+      ...command,
+      leaseToken: 'stale-worker',
+      chatPreviews: [preview],
+    })).resolves.toEqual({ outcome: 'fence_rejected' });
+    await expect(store.completeAssistantOutput({
+      ...command,
+      expectedRevision: 1,
+      chatPreviews: [preview],
+    })).resolves.toEqual({ outcome: 'conflict' });
     expect(
       await source
         .getRepository(SessionMessageEntity)
@@ -289,7 +302,10 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
       content: '',
       chatPreviews: [],
       contextMessages: [],
-    })).resolves.toEqual({ outcome: 'conflict' });
+    })).resolves.toMatchObject({
+      outcome: 'invalid_output',
+      code: 'STRUCTURED_PREVIEW_MISSING',
+    });
     await expect(store.completeAssistantOutput({
       ownerId: task.ownerId,
       sessionId: task.sessionId,
@@ -300,7 +316,10 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
       content: '',
       chatPreviews: [{} as never],
       contextMessages: [],
-    })).resolves.toEqual({ outcome: 'conflict' });
+    })).resolves.toMatchObject({
+      outcome: 'invalid_output',
+      code: 'STRUCTURED_PREVIEW_INVALID',
+    });
     await expect(source.getRepository(SessionMessageEntity).count({
       where: { taskId: task.taskId, role: 'assistant' },
     })).resolves.toBe(0);
@@ -310,7 +329,7 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
     await source.destroy();
   });
 
-  it('fails recovery when persisted preview metadata is damaged', async () => {
+  it('isolates damaged persisted preview metadata while restoring valid siblings', async () => {
     const source = dataSource();
     await source.initialize();
     const store = new TypeOrmChatTaskStore(source);
@@ -340,14 +359,33 @@ describe('TypeOrmChatTaskStore assistant output transaction', () => {
       operationId: task.operationId,
       modelConfigId: task.modelConfigId,
       reasoningLevel: task.reasoningLevel,
-      metadataJson: { chat_previews: [{ schema_version: 1, preview_id: 'damaged' }] },
+      metadataJson: {
+        chat_previews: [
+          {
+            schema_version: 1,
+            preview_id: 'valid-sibling',
+            kind: 'action',
+            confirmation_status: 'unconfirmed',
+            applied: false,
+            source_refs: [{ kind: 'chat_message', id: task.userMessageId }],
+            content: { title: '合法卡片', confidence: 0.8 },
+            warnings: [],
+          },
+          { schema_version: 1, preview_id: 'damaged' },
+        ],
+      },
       createdAt: new Date(),
       completedAt: new Date(),
     });
 
-    await expect(
-      store.listSessionChatPreviews(task.ownerId, task.sessionId),
-    ).rejects.toThrow();
+    await expect(store.listSessionChatPreviews(
+      task.ownerId,
+      task.sessionId,
+    )).resolves.toEqual([
+      expect.objectContaining({
+        preview: expect.objectContaining({ preview_id: 'valid-sibling' }),
+      }),
+    ]);
     await source.destroy();
   });
 });

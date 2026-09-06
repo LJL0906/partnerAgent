@@ -123,7 +123,12 @@ run('real PostgreSQL data recovery', () => {
         );
         await expect(
           restoredStore.listSessionChatPreviews(ownerId, task.sessionId),
-        ).rejects.toThrow();
+        ).resolves.toEqual([
+          expect.objectContaining({
+            message_revision: 2,
+            preview,
+          }),
+        ]);
       } finally {
         await restarted.query(
           'delete from chat_task_lifecycle_outbox where owner_id = $1',

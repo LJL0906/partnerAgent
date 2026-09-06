@@ -286,7 +286,12 @@ describe('ChatTaskStore', () => {
 
   it('completes an attachment-only response once and rejects a cancelled worker', async () => {
     const store = new MemoryChatTaskStore(new MemorySessionStore());
-    await store.submitText({ ...base, operationId: '00000000-0000-4000-8000-000000000020' });
+    await store.submitText({
+      ...base,
+      operationId: '00000000-0000-4000-8000-000000000020',
+      outputMode: 'structured_preview',
+      previewKind: 'action',
+    });
     const task = await store.claimNextRunnable('worker-complete', 30_000);
     const preview = {
       schema_version: 1 as const, preview_id: 'preview-1', kind: 'action' as const,

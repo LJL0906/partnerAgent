@@ -7,6 +7,7 @@ import {
   INPUT_ANALYSIS_REJECTION_COMMAND,
   inputAnalysisNotImplementedResult,
   parseAssistantCompletionPreviews,
+  parseStoredChatPreviews,
   type RejectInputAnalysisCommand,
   type AssistantCompletionCommand,
   type AssistantProgressCommand,
@@ -14,7 +15,6 @@ import {
   type StoredChatTask,
   type SubmitTextCommand,
 } from './chat-task.store.js';
-import { parseChatPreviewV1 } from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
 import {
   copyStoredChatTask,
@@ -586,8 +586,6 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (!task || task.ownerId !== command.ownerId || task.sessionId !== command.sessionId || task.operationId !== command.operationId) {
       return { outcome: 'fence_rejected' as const };
     }
-    const previews = parseAssistantCompletionPreviews(task, command.chatPreviews);
-    if (!previews) return { outcome: 'conflict' as const };
     if (task.state === 'completed' && task.resultMessageId) {
       const session = await this.sessions.find(task.sessionId, task.ownerId);
       const existing = session?.messages.find((message) => message.id === task.resultMessageId);
@@ -613,6 +611,18 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (command.expectedRevision !== (existing?.revision ?? 0)) {
       return { outcome: 'conflict' as const };
     }
+    const previewValidation = parseAssistantCompletionPreviews(
+      task,
+      command.chatPreviews,
+    );
+    if (!previewValidation.valid) {
+      return {
+        outcome: 'invalid_output' as const,
+        code: previewValidation.code,
+        message: previewValidation.message,
+      };
+    }
+    const { previews } = previewValidation;
     const messageId = existing?.id ?? task.resultMessageId ?? randomUUID();
     const revision = (existing?.revision ?? 0) + 1;
     const written = await this.sessions.saveTaskAssistantMessage(task.sessionId, task.ownerId, {
@@ -666,13 +676,13 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       const operationId = message.operationId;
       const previews = message.metadata?.chat_previews;
       if (!Array.isArray(previews)) return [];
-      return previews.map((preview) => ({
+      return parseStoredChatPreviews(previews).map((preview) => ({
         session_id: sessionId,
         task_id: taskId,
         operation_id: operationId,
         message_id: messageId,
         message_revision: message.revision ?? 1,
-        preview: structuredClone(parseChatPreviewV1(preview)),
+        preview,
       }));
     });
   }
