@@ -1,14 +1,12 @@
-import type { ReasoningLevel } from '@partner-agent/contracts';
+import type {
+  ChatOutputMode,
+  ChatPreviewKind,
+  ReasoningLevel,
+  TaskState,
+} from '@partner-agent/contracts';
 import { Column, Entity, Index, PrimaryColumn, Unique } from 'typeorm';
 
-export type ChatTaskState =
-  | 'queued'
-  | 'running'
-  | 'waiting_privacy_decision'
-  | 'waiting_tool_approval'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+export type ChatTaskState = TaskState;
 
 @Entity({ name: 'original_records' })
 @Unique('original_records_owner_input_key', ['ownerId', 'inputId'])
@@ -51,6 +49,10 @@ export class ChatTaskEntity {
   @Column({ name: 'input_id', type: 'text' }) inputId: string;
   @Column({ name: 'model_config_id', type: 'text', default: 'deepseek:deepseek-v4-flash' }) modelConfigId: string;
   @Column({ name: 'reasoning_level', type: 'text', default: 'medium' }) reasoningLevel: ReasoningLevel;
+  @Column({ name: 'output_mode', type: 'text', default: 'chat' })
+  outputMode: ChatOutputMode;
+  @Column({ name: 'preview_kind', type: 'text', nullable: true })
+  previewKind: ChatPreviewKind | null;
   @Column({ name: 'original_record_id', type: 'uuid' })
   originalRecordId: string;
   @Column({ name: 'user_message_id', type: 'uuid' }) userMessageId: string;

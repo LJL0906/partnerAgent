@@ -1,6 +1,13 @@
-import type { ChatSessionTaskRef, ReasoningLevel } from '@partner-agent/contracts';
+import type {
+  ChatPreviewV1,
+  ChatOutputMode,
+  ChatPreviewKind,
+  ChatSessionTaskRef,
+  ReasoningLevel,
+  SessionMessageDto,
+  TaskState,
+} from '@partner-agent/contracts';
 import type { CommandEnvelopeBody } from './local-core-api.types.js';
-import type { ChatTaskState } from '../database/entities/chat-task.entity.js';
 import type { TypeOrmChatTaskLifecycleOutbox } from './chat-task-lifecycle-outbox.js';
 
 export interface SubmitTextCommand {
@@ -13,6 +20,8 @@ export interface SubmitTextCommand {
   sessionId?: string;
   modelConfigId?: string;
   reasoningLevel?: ReasoningLevel;
+  outputMode?: ChatOutputMode;
+  previewKind?: ChatPreviewKind;
 }
 
 export interface RejectInputAnalysisCommand {
@@ -20,6 +29,13 @@ export interface RejectInputAnalysisCommand {
   operationId: string;
   requestFingerprint: string;
   requestedTypes: string[];
+}
+
+export interface IdempotentCommand {
+  ownerId: string;
+  operationId: string;
+  requestFingerprint: string;
+  commandName: string;
 }
 
 export const INPUT_ANALYSIS_REJECTION_COMMAND =
@@ -48,12 +64,14 @@ export interface AcceptedChatTask {
   text: string;
   modelConfigId: string;
   reasoningLevel: ReasoningLevel;
+  outputMode: ChatOutputMode;
+  previewKind?: ChatPreviewKind;
+  originalRecordId: string;
+  userMessageId: string;
 }
 
 export interface StoredChatTask extends AcceptedChatTask {
-  state: ChatTaskState;
-  originalRecordId: string;
-  userMessageId: string;
+  state: TaskState;
   resultMessageId?: string;
   errorCode?: string;
   errorMessage?: string;
@@ -67,19 +85,46 @@ export interface StoredChatTask extends AcceptedChatTask {
   waitingToolConfirmationId?: string;
 }
 
-export interface SessionMessageView {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
+export type SessionMessageView = SessionMessageDto;
+
+export interface AssistantProgressCommand {
+  ownerId: string;
+  sessionId: string;
+  taskId: string;
+  operationId: string;
+  leaseToken: string;
+  expectedRevision: number;
+  textOffset: number;
+  delta: string;
+}
+
+export interface AssistantCompletionCommand {
+  ownerId: string;
+  sessionId: string;
+  taskId: string;
+  operationId: string;
+  leaseToken: string;
+  expectedRevision: number;
   content: string;
-  created_at: string;
-  sequence: number;
-  status?: 'pending' | 'streaming' | 'complete' | 'failed' | 'cancelled';
-  session_id?: string;
-  task_id?: string;
-  operation_id?: string;
-  metadata?: Record<string, unknown>;
-  model_config_id?: string;
-  reasoning_level?: ReasoningLevel;
+  chatPreviews: ChatPreviewV1[];
+  contextMessages: unknown[];
+}
+
+export type AssistantWriteResult =
+  | { outcome: 'committed'; message: SessionMessageDto; textOffset: number }
+  | { outcome: 'conflict' | 'fence_rejected' };
+
+export type AssistantCompletionResult =
+  | { outcome: 'committed' | 'already_completed'; task: StoredChatTask; message: SessionMessageDto }
+  | { outcome: 'conflict' | 'fence_rejected' };
+
+export interface StoredChatPreviewAttachment {
+  session_id: string;
+  task_id: string;
+  operation_id: string;
+  message_id: string;
+  message_revision: number;
+  preview: ChatPreviewV1;
 }
 
 export class ChatTaskConflictError extends Error {}
@@ -89,6 +134,10 @@ export abstract class ChatTaskStore {
   abstract rejectInputAnalysis(
     command: RejectInputAnalysisCommand,
   ): Promise<Record<string, unknown>>;
+  abstract executeIdempotentCommand<T extends Record<string, unknown>>(
+    command: IdempotentCommand,
+    execute: () => Promise<T>,
+  ): Promise<T>;
   abstract submitText(command: SubmitTextCommand): Promise<{
     result: Record<string, unknown>;
     task?: AcceptedChatTask;
@@ -176,8 +225,18 @@ export abstract class ChatTaskStore {
     message: string,
     leaseOwner?: string,
   ): Promise<StoredChatTask | undefined>;
+  abstract appendAssistantProgress(
+    command: AssistantProgressCommand,
+  ): Promise<AssistantWriteResult>;
+  abstract completeAssistantOutput(
+    command: AssistantCompletionCommand,
+  ): Promise<AssistantCompletionResult>;
   abstract listSessionMessages(
     ownerId: string,
     sessionId: string,
   ): Promise<SessionMessageView[]>;
+  abstract listSessionChatPreviews(
+    ownerId: string,
+    sessionId: string,
+  ): Promise<StoredChatPreviewAttachment[]>;
 }

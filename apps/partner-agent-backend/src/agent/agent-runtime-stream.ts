@@ -1,8 +1,16 @@
 import type { Model } from '@earendil-works/pi-ai';
-import type { ReasoningLevel } from '@partner-agent/contracts';
+import type {
+  ChatOutputMode,
+  ChatPreviewKind,
+  ReasoningLevel,
+} from '@partner-agent/contracts';
 import type { ModelGatewayService } from '../model-gateway/model-gateway.service.js';
+import { EgressDecisionError } from '../model-gateway/egress.types.js';
 import type { AgentRuntimePolicy } from './agent-runtime-policy.js';
-import type { AgentRuntimeTelemetry, AgentRunTrace } from './agent-runtime-telemetry.js';
+import type {
+  AgentRuntimeTelemetry,
+  AgentRunTrace,
+} from './agent-runtime-telemetry.js';
 
 export interface PiChatContext {
   taskId?: string;
@@ -10,6 +18,10 @@ export interface PiChatContext {
   source?: string;
   modelConfigId?: string;
   reasoningLevel?: ReasoningLevel;
+  outputMode?: ChatOutputMode;
+  previewKind?: ChatPreviewKind;
+  originalRecordId?: string;
+  userMessageId?: string;
 }
 
 export function startAgentRunTrace(
@@ -38,28 +50,39 @@ export function createBudgetedAgentStream(
   sessionId: string,
   context: PiChatContext,
   trace: AgentRunTrace,
+  onEgressDecisionError?: (error: EgressDecisionError) => void,
 ) {
-  const stream = gateway.createStreamFunction({
-    runId: trace.runId,
-    ownerId,
-    sessionId,
-    taskId: context.taskId,
-    operationId: context.operationId,
-    source: context.source ?? 'pi_agent',
-  });
-  return (
+  const stream = gateway.createStreamFunction(
+    {
+      runId: trace.runId,
+      ownerId,
+      sessionId,
+      taskId: context.taskId,
+      operationId: context.operationId,
+      source: context.source ?? 'pi_agent',
+    },
+    { onEgressDecisionError },
+  );
+  return async (
     model: Model<any>,
     agentContext: Parameters<typeof stream>[1],
     options?: Parameters<typeof stream>[2],
   ) => {
     const requestBudget = trace.budget.startModelRequest(model.maxTokens);
-    return stream(model, agentContext, {
-      ...options,
-      ...(context.reasoningLevel && context.reasoningLevel !== 'off' ? { reasoning: context.reasoningLevel } : {}),
-      maxTokens: Math.min(
-        options?.maxTokens ?? Number.POSITIVE_INFINITY,
-        requestBudget.maxTokens,
-      ),
-    });
+    try {
+      return await stream(model, agentContext, {
+        ...options,
+        ...(context.reasoningLevel && context.reasoningLevel !== 'off'
+          ? { reasoning: context.reasoningLevel }
+          : {}),
+        maxTokens: Math.min(
+          options?.maxTokens ?? Number.POSITIVE_INFINITY,
+          requestBudget.maxTokens,
+        ),
+      });
+    } catch (error) {
+      if (error instanceof EgressDecisionError) onEgressDecisionError?.(error);
+      throw error;
+    }
   };
 }

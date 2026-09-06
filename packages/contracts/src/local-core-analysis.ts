@@ -1,5 +1,10 @@
-import type { ResourceRef, TaskRef } from './local-core.js';
-import type { ReasoningLevel } from './local-core-model.js';
+import type { CommandResult, ResourceRef, TaskRef } from './local-core.js';
+import { isOperationId } from './chat-item-identity.js';
+import {
+  REASONING_LEVELS,
+  type ReasoningLevel,
+  type ResolvedModelSelection,
+} from './local-core-model.js';
 
 /** Local Core 支持的结构化分析类型。 */
 export const ANALYSIS_TYPES = [
@@ -13,6 +18,9 @@ export type AnalysisType = (typeof ANALYSIS_TYPES)[number];
 
 /** 至少包含一个分析类型；类型系统无法表达去重，服务端仍须在运行时拒绝重复值。 */
 export type NonEmptyAnalysisTypes = [AnalysisType, ...AnalysisType[]];
+
+export const CHAT_OUTPUT_MODES = ['chat', 'structured_preview'] as const;
+export type ChatOutputMode = (typeof CHAT_OUTPUT_MODES)[number];
 
 export const ANALYSIS_RUN_STATUSES = [
   'queued',
@@ -39,8 +47,7 @@ export interface AnalysisTaskRef extends TaskRef {
   analysis_types: NonEmptyAnalysisTypes;
 }
 
-/** 提交文字输入：创建原始记录、消息引用、聊天响应任务，并按需登记分析任务。 */
-export interface SubmitTextInputPayload {
+interface SubmitTextInputBase {
   /** 原始文本内容。 */
   text: string;
   /** 目标会话 id（为空则创建新会话）。 */
@@ -51,21 +58,199 @@ export interface SubmitTextInputPayload {
   analysis_types?: NonEmptyAnalysisTypes;
   /** 前端输入幂等标识，重复网络重试不重复创建记录。 */
   input_id: string;
-  model_config_id: string;
-  reasoning_level: ReasoningLevel;
+  /** 省略时由服务端解析默认模型。 */
+  model_config_id?: string;
+  /** 省略时由服务端按模型能力解析默认推理等级。 */
+  reasoning_level?: ReasoningLevel;
+}
+
+export type SubmitTextInputPayload = SubmitTextInputBase & (
+  | {
+    output_mode?: Extract<ChatOutputMode, 'chat'>;
+    preview_kind?: never;
+    request_analysis?: false;
+    analysis_types?: never;
+  }
+  | {
+    output_mode?: Extract<ChatOutputMode, 'chat'>;
+    preview_kind?: never;
+    request_analysis: true;
+    analysis_types: NonEmptyAnalysisTypes;
+  }
+  | {
+    output_mode: Extract<ChatOutputMode, 'structured_preview'>;
+    preview_kind: 'action';
+    request_analysis?: false;
+    analysis_types?: never;
+  }
+);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const hasText = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+const SUBMIT_TEXT_INPUT_FIELDS = [
+  'text', 'session_id', 'request_analysis', 'analysis_types', 'input_id',
+  'model_config_id', 'reasoning_level', 'output_mode', 'preview_kind',
+] as const;
+
+export function isSubmitTextInputPayload(value: unknown): value is SubmitTextInputPayload {
+  if (!isRecord(value)
+    || !Object.keys(value).every((key) => (SUBMIT_TEXT_INPUT_FIELDS as readonly string[]).includes(key))
+    || !hasText(value.text)
+    || !hasText(value.input_id)
+    || (value.session_id !== undefined && !hasText(value.session_id))
+    || (value.model_config_id !== undefined && !hasText(value.model_config_id))
+    || (value.reasoning_level !== undefined
+      && !(REASONING_LEVELS as readonly unknown[]).includes(value.reasoning_level))) return false;
+
+  if (value.output_mode === 'structured_preview') {
+    return value.preview_kind === 'action'
+      && (value.request_analysis === undefined || value.request_analysis === false)
+      && value.analysis_types === undefined;
+  }
+
+  if (value.output_mode !== undefined && value.output_mode !== 'chat') return false;
+  if (value.preview_kind !== undefined) return false;
+  if (value.request_analysis === true) {
+    return Array.isArray(value.analysis_types)
+      && value.analysis_types.length > 0
+      && value.analysis_types.every((type) => (ANALYSIS_TYPES as readonly unknown[]).includes(type))
+      && new Set(value.analysis_types).size === value.analysis_types.length;
+  }
+  return (value.request_analysis === undefined || value.request_analysis === false)
+    && value.analysis_types === undefined;
+}
+
+export function parseSubmitTextInputPayload(value: unknown): SubmitTextInputPayload {
+  if (!isSubmitTextInputPayload(value)) throw new TypeError('Invalid SubmitTextInputPayload');
+  return value;
 }
 
 export interface SubmitTextInputResult {
   /** 如果指定了 session_id，回显之；新会话则返回新会话引用。 */
   session_id: string;
   /** 提交的消息引用。 */
-  message_ref: ResourceRef;
+  message_ref: ResourceRef & { kind: 'chat_message' };
   /** 原始记录引用。 */
-  original_record?: ResourceRef;
+  original_record?: ResourceRef & { kind: 'original_record' };
   /** 聊天响应任务引用（流式事件从该频道读）。 */
-  chat_task: TaskRef;
+  chat_task: TaskRef & { kind: 'chat_response' };
   /** 分析任务引用（若 request_analysis 为 true）。 */
   analysis_task?: AnalysisTaskRef;
+  /** 服务端默认解析后的受理模型；必须与任务保存值和实际调用选择一致。 */
+  resolved_model: ResolvedModelSelection;
+}
+
+export type SubmitTextInputCommandResult =
+  | (CommandResult<SubmitTextInputResult> & {
+    status: 'accepted' | 'completed' | 'duplicate';
+    data: SubmitTextInputResult;
+    resource_refs: ResourceRef[];
+    task_refs: TaskRef[];
+  })
+  | (CommandResult<never> & { status: 'rejected'; data?: never });
+
+const isResourceRef = (value: unknown): value is ResourceRef =>
+  isRecord(value)
+  && hasText(value.id)
+  && [
+    'session', 'chat_message', 'original_record', 'attachment', 'analysis_run',
+    'analysis_result', 'candidate', 'confirmation_batch', 'goal', 'action',
+    'fact', 'memory', 'decision', 'situation', 'reminder_plan',
+    'reminder_instance', 'suggestion', 'export_task',
+  ].includes(value.kind as string);
+
+const isTaskRef = (value: unknown): value is TaskRef =>
+  isRecord(value)
+  && hasText(value.task_id)
+  && [
+    'chat_response', 'analysis', 'attachment_parse', 'summary', 'weekly_review',
+    'reminder', 'export', 'index_update',
+  ].includes(value.kind as string);
+
+export function isSubmitTextInputCommandResult(
+  value: unknown,
+  expectedOperationId?: string,
+): value is SubmitTextInputCommandResult {
+  if (!isRecord(value)
+    || !Object.keys(value).every((key) => [
+      'operation_id', 'status', 'resource_refs', 'new_versions', 'task_refs',
+      'warnings', 'validation_errors', 'data',
+    ].includes(key))
+    || !isOperationId(value.operation_id)
+    || (expectedOperationId !== undefined && value.operation_id !== expectedOperationId)
+    || !['accepted', 'completed', 'duplicate', 'rejected'].includes(value.status as string)
+    || (value.resource_refs !== undefined
+      && (!Array.isArray(value.resource_refs) || !value.resource_refs.every(isResourceRef)))
+    || (value.task_refs !== undefined
+      && (!Array.isArray(value.task_refs) || !value.task_refs.every(isTaskRef)))
+    || (value.new_versions !== undefined
+      && (!isRecord(value.new_versions)
+        || !Object.values(value.new_versions).every((version) => hasText(version))))
+    || (value.warnings !== undefined
+      && (!Array.isArray(value.warnings) || !value.warnings.every((warning) => typeof warning === 'string')))
+    || (value.validation_errors !== undefined
+      && (!Array.isArray(value.validation_errors)
+        || !value.validation_errors.every((error) => isRecord(error)
+          && hasText(error.field) && hasText(error.code) && typeof error.message === 'string')))) return false;
+  if (value.status === 'rejected') return value.data === undefined;
+  const data = value.data;
+  const refs = value.resource_refs;
+  const tasks = value.task_refs;
+  if (!isRecord(data)
+    || !Object.keys(data).every((key) => [
+      'session_id', 'message_ref', 'original_record', 'chat_task',
+      'analysis_task', 'resolved_model',
+    ].includes(key))
+    || !hasText(data.session_id)
+    || !isResourceRef(data.message_ref)
+    || data.message_ref.kind !== 'chat_message'
+    || !isTaskRef(data.chat_task)
+    || data.chat_task.kind !== 'chat_response'
+    || !isRecord(data.resolved_model)
+    || !hasText(data.resolved_model.model_config_id)
+    || !(REASONING_LEVELS as readonly unknown[]).includes(data.resolved_model.reasoning_level)
+    || !Array.isArray(refs)
+    || !refs.every(isResourceRef)
+    || !Array.isArray(tasks)
+    || !tasks.every(isTaskRef)) return false;
+
+  const sessionId = data.session_id;
+  const messageRef = data.message_ref;
+  const chatTask = data.chat_task;
+  const originalRecord = data.original_record;
+  const analysisTask = data.analysis_task;
+  const analysisTaskValid = analysisTask === undefined
+    || (isRecord(analysisTask)
+      && analysisTask.kind === 'analysis'
+      && hasText(analysisTask.task_id)
+      && hasText(analysisTask.analysis_run_id)
+      && Array.isArray(analysisTask.analysis_types)
+      && analysisTask.analysis_types.length > 0
+      && analysisTask.analysis_types.every((type) =>
+        (ANALYSIS_TYPES as readonly unknown[]).includes(type))
+      && new Set(analysisTask.analysis_types).size === analysisTask.analysis_types.length
+      && tasks.some((ref) => ref.kind === 'analysis' && ref.task_id === analysisTask.task_id)
+      && refs.some((ref) => ref.kind === 'analysis_run' && ref.id === analysisTask.analysis_run_id));
+  return analysisTaskValid
+    && refs.some((ref) => ref.kind === 'session' && ref.id === sessionId)
+    && refs.some((ref) => ref.kind === 'chat_message' && ref.id === messageRef.id)
+    && tasks.some((ref) => ref.kind === 'chat_response' && ref.task_id === chatTask.task_id)
+    && (originalRecord === undefined
+      || (isResourceRef(originalRecord)
+        && originalRecord.kind === 'original_record'
+        && refs.some((ref) => ref.kind === 'original_record' && ref.id === originalRecord.id)));
+}
+
+export function parseSubmitTextInputCommandResult(
+  value: unknown,
+  expectedOperationId?: string,
+): SubmitTextInputCommandResult {
+  if (!isSubmitTextInputCommandResult(value, expectedOperationId)) {
+    throw new TypeError('Invalid SubmitTextInputCommandResult');
+  }
+  return value;
 }
 
 /** Action 提案对应的权威来源；excerpt 只允许进入受控分析存储，不得进入 WS 摘要。 */
