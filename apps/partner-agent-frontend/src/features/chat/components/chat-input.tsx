@@ -1,4 +1,8 @@
-import type { ModelConfig, ReasoningLevel } from '@partner-agent/contracts';
+import type {
+  ChatOutputMode,
+  ModelConfig,
+  ReasoningLevel,
+} from '@partner-agent/contracts';
 import { useState } from 'react';
 import { Keyboard, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { Brain, Check, Cpu, PaperPlaneTilt, StopCircle } from 'phosphor-react-native';
@@ -21,7 +25,7 @@ interface ChatInputProps {
   reasoningLevel?: ReasoningLevel;
   onModelConfigChange: (id: string) => void;
   onReasoningLevelChange: (level: ReasoningLevel) => void;
-  onSend: (message: string, modelConfigId: string, reasoningLevel: ReasoningLevel, outputMode: 'chat' | 'structured_preview') => Promise<boolean>;
+  onSend: (message: string, modelConfigId: string, reasoningLevel: ReasoningLevel, outputMode: ChatOutputMode) => Promise<boolean>;
   onCancel: () => Promise<void>;
   connectionStatus: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error' | 'auth_required';
 }
@@ -67,7 +71,7 @@ export function resolveModelSelection(
 export function ChatInput({ isStreaming, models, modelsLoading, modelsLoadError, modelSelectionError, onRetryModels, modelConfigId, reasoningLevel, onModelConfigChange, onReasoningLevelChange, onSend, onCancel, connectionStatus }: ChatInputProps) {
   const { width } = useWindowDimensions();
   const [value, setValue] = useState('');
-  const [outputMode, setOutputMode] = useState<'chat' | 'structured_preview'>('chat');
+  const [outputMode, setOutputMode] = useState<ChatOutputMode>('chat');
   const [picker, setPicker] = useState<'model' | 'reasoning'>();
   const [providerPicker, setProviderPicker] = useState<string>();
   const [modelAnchor, setModelAnchor] = useState<{ x: number; width: number }>({ x: spacing.page, width: 0 });

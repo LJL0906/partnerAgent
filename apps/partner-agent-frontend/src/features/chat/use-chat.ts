@@ -1,4 +1,5 @@
 import type {
+  ChatOutputMode,
   ReasoningLevel,
   ServerPushEventV1,
   SubscriptionAckV1,
@@ -440,7 +441,7 @@ export function useChat(options: UseChatOptions = {}) {
     return () => subscription.remove();
   }, [reconcileFromRest]);
 
-  const sendMessage = useCallback(async (rawMessage: string, modelConfigId: string, reasoningLevel: ReasoningLevel, outputMode: 'chat' | 'structured_preview' = 'chat') => {
+  const sendMessage = useCallback(async (rawMessage: string, modelConfigId: string, reasoningLevel: ReasoningLevel, outputMode: ChatOutputMode = 'chat') => {
     if (!useConversationStore.getState().ready) return false;
     return sendChatMessage(rawMessage, {
       assistantMessageIdRef,
