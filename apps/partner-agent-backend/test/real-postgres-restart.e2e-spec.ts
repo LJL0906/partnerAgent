@@ -7,7 +7,6 @@ import { SignJWT } from 'jose';
 import { io, type Socket as ClientSocket } from 'socket.io-client';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AuthService } from '../src/auth/auth.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { TypeOrmSessionStore } from '../src/database/typeorm-session.store.js';
 import { SecureIoAdapter } from '../src/websocket/secure-io.adapter.js';
@@ -35,7 +34,7 @@ describeReal('PostgreSQL restart recovery', () => {
     }).compile();
     app = fixture.createNestApplication();
     app.useWebSocketAdapter(
-      new SecureIoAdapter(app, app.get(AuthService), app.get(ConfigService)),
+      new SecureIoAdapter(app, app.get(ConfigService)),
     );
     await app.listen(0);
     const address = app.getHttpServer().address() as AddressInfo;

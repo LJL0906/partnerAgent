@@ -1,8 +1,7 @@
 import type { INestApplicationContext } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IoAdapter } from '@nestjs/platform-socket.io';
-import type { Server, ServerOptions, Socket } from 'socket.io';
-import { AuthService } from '../auth/auth.service.js';
+import type { Server, ServerOptions } from 'socket.io';
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:3000',
@@ -30,7 +29,6 @@ export class SecureIoAdapter extends IoAdapter {
 
   constructor(
     app: INestApplicationContext,
-    private readonly authService: AuthService,
     configService: ConfigService,
   ) {
     super(app);
@@ -55,26 +53,10 @@ export class SecureIoAdapter extends IoAdapter {
     } as ServerOptions;
     const server = super.createIOServer(port, serverOptions) as Server;
 
-    server.use(async (socket: Socket, next) => {
-      try {
-        const token = this.extractToken(socket);
-        socket.data.userId = await this.authService.verifyToken(token);
-        next();
-      } catch {
-        next(new Error('未认证'));
-      }
+    server.of('/').use((_socket, next) => {
+      next(new Error('不支持的 WebSocket 命名空间'));
     });
 
     return server;
-  }
-
-  private extractToken(socket: Socket): string {
-    const authToken = socket.handshake.auth?.token;
-    if (typeof authToken === 'string') return authToken;
-
-    const authorization = socket.handshake.headers.authorization;
-    return authorization?.startsWith('Bearer ')
-      ? authorization.slice('Bearer '.length)
-      : '';
   }
 }

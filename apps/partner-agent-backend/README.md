@@ -8,7 +8,7 @@
 - Agent 和未来 RAG 能力只能生成回复或候选，不得绕过 Local Core 与确认事务直接写入正式业务对象。
 - 模型请求必须经过隐私扫描、外发决定和审计；审计失败时禁止外发。
 - 外部副作用工具使用独立审批、执行回执和撤销流程。ChatTask 生命周期与工具控制事件分别通过 transactional outbox 可靠投递。
-- 旧 Agent WebSocket 默认禁用；产品客户端应只使用正式 `/api/v1` 与 `/ws/v1` 协议。
+- 旧 Agent WebSocket 已删除；根命名空间会明确拒绝连接，产品客户端只使用正式 `/api/v1` 与 `/ws/v1` 协议。
 
 共享请求、响应和事件契约位于 `packages/contracts`。完整项目状态、技术决策和部署说明以仓库根 README、`docs/` 与 `infra/README.md` 为准。
 

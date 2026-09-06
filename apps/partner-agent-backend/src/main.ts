@@ -3,7 +3,6 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
-import { AuthService } from './auth/auth.service.js';
 import { HealthStateService } from './health/health-state.service.js';
 import { parseServerBinding } from './main-config.js';
 import {
@@ -32,7 +31,7 @@ async function bootstrap() {
     },
   });
   app.useWebSocketAdapter(
-    new SecureIoAdapter(app, app.get(AuthService), configService),
+    new SecureIoAdapter(app, configService),
   );
   const binding = parseServerBinding({
     HOST: configService.get<string>('HOST'),

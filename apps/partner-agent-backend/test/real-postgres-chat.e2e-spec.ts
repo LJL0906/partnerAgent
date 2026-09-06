@@ -9,7 +9,6 @@ import request from 'supertest';
 import type { DataSource } from 'typeorm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PiAgentService } from '../src/agent/pi-agent.service.js';
-import { AuthService } from '../src/auth/auth.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { TypeOrmSessionStore } from '../src/database/typeorm-session.store.js';
 import { ConfirmationTransactionService } from '../src/local-core-api/confirmation-transaction.service.js';
@@ -64,7 +63,7 @@ describeReal('PostgreSQL 16 REST + WS vertical chat loop', () => {
     expect(sessionStore).toBeInstanceOf(TypeOrmSessionStore);
     dataSource = (sessionStore as TypeOrmSessionStore).getDataSource();
     app.useWebSocketAdapter(
-      new SecureIoAdapter(app, app.get(AuthService), app.get(ConfigService)),
+      new SecureIoAdapter(app, app.get(ConfigService)),
     );
     await app.listen(0);
     const address = app.getHttpServer().address() as AddressInfo;

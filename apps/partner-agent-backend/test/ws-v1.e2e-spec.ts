@@ -19,7 +19,6 @@ import {
   it,
   vi,
 } from 'vitest';
-import { AuthService } from '../src/auth/auth.service.js';
 import { SessionStore } from '../src/database/session-store.js';
 import { ChatTaskEventBus } from '../src/local-core-api/chat-task-event.bus.js';
 import {
@@ -37,6 +36,7 @@ const allowedOrigin = 'https://ws-v1.example';
 
 describe('WS v1 subscriptions (e2e)', () => {
   let app: INestApplication;
+  let baseUrl: string;
   let url: string;
   let wsV1: WsV1Service;
   let taskEvents: ChatTaskEventBus;
@@ -85,13 +85,12 @@ describe('WS v1 subscriptions (e2e)', () => {
       .useValue(schedulerStub)
       .compile();
     app = moduleFixture.createNestApplication();
-    app.useWebSocketAdapter(
-      new SecureIoAdapter(app, app.get(AuthService), app.get(ConfigService)),
-    );
+    app.useWebSocketAdapter(new SecureIoAdapter(app, app.get(ConfigService)));
     await app.listen(0);
 
     const address = app.getHttpServer().address() as AddressInfo;
-    url = `http://127.0.0.1:${address.port}/ws/v1`;
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    url = `${baseUrl}/ws/v1`;
     wsV1 = app.get(WsV1Service);
     sessionStore = app.get(SessionStore);
     await sessionStore.createIfAllowed('owned-session', 'owner', 10);
@@ -135,6 +134,21 @@ describe('WS v1 subscriptions (e2e)', () => {
     delete process.env.AUTH_JWT_SECRET;
     delete process.env.CORS_ALLOWED_ORIGINS;
     delete process.env.SESSION_STORE;
+  });
+
+  it('rejects the removed legacy root namespace even with a valid token', async () => {
+    const client = io(baseUrl, {
+      auth: { token: await createToken('owner') },
+      extraHeaders: { Origin: allowedOrigin },
+      forceNew: true,
+      reconnection: false,
+      transports: ['websocket'],
+    });
+    clients.push(client);
+
+    const error = await onceConnectError(client);
+    expect(error.message).toBe('不支持的 WebSocket 命名空间');
+    expect(client.connected).toBe(false);
   });
 
   it('authorizes user, session, task and operation channels from authoritative ownership', async () => {
@@ -662,6 +676,23 @@ function once<T>(client: ClientSocket, eventName: string): Promise<T> {
     client.once('connect_error', (error) => {
       clearTimeout(timer);
       reject(error);
+    });
+  });
+}
+
+function onceConnectError(client: ClientSocket): Promise<Error> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('等待 connect_error 超时')),
+      3000,
+    );
+    client.once('connect_error', (error: Error) => {
+      clearTimeout(timer);
+      resolve(error);
+    });
+    client.once('connect', () => {
+      clearTimeout(timer);
+      reject(new Error('旧根命名空间不应连接成功'));
     });
   });
 }
