@@ -74,6 +74,7 @@ export interface AcceptedChatTask {
 
 export interface StoredChatTask extends AcceptedChatTask {
   state: TaskState;
+  revision: number;
   resultMessageId?: string;
   errorCode?: string;
   errorMessage?: string;

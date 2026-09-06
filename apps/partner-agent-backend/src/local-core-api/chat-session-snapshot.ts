@@ -38,7 +38,7 @@ export async function getChatSessionSnapshot(
   )).filter((task): task is NonNullable<typeof task> => Boolean(task));
   const taskSnapshots: ChatTaskSnapshotRef[] = tasks.map((task) => ({
     taskId: task.taskId, sessionId: task.sessionId, operationId: task.operationId,
-    state: task.state, revision: Math.max(1, task.updatedAt.getTime()),
+    state: task.state, revision: task.revision,
     updatedAt: task.updatedAt,
     ...(task.errorCode ? { errorCode: task.errorCode } : {}),
     ...(task.errorMessage ? { errorMessage: task.errorMessage } : {}),

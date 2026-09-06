@@ -148,6 +148,7 @@ export function failWaitingPrivacyTask(
     return undefined;
   }
   task.state = 'failed';
+  task.revision += 1;
   task.errorCode = code;
   task.errorMessage = message;
   task.completedAt = new Date();

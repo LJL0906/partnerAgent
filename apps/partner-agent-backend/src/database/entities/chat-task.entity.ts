@@ -59,6 +59,7 @@ export class ChatTaskEntity {
   @Column({ name: 'result_message_id', type: 'uuid', nullable: true })
   resultMessageId: string | null;
   @Column({ type: 'text' }) state: ChatTaskState;
+  @Column({ type: 'integer', default: 1 }) revision: number;
   @Column({ name: 'error_code', type: 'text', nullable: true }) errorCode:
     string | null;
   @Column({ name: 'error_message', type: 'text', nullable: true })

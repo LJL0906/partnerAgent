@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemorySessionStore } from '../database/memory-session.store.js';
 import { ChatTaskConflictError } from './chat-task.store.js';
 import { MemoryChatTaskStore } from './memory-chat-task.store.js';
@@ -261,6 +261,40 @@ describe('ChatTaskStore', () => {
     ).toMatchObject({
       state: 'cancelled',
     });
+  });
+
+  it('increments visible task revisions even when lifecycle changes share one millisecond', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-06T00:00:00.000Z'));
+    try {
+      const store = new MemoryChatTaskStore(new MemorySessionStore());
+      const accepted = await store.submitText(base);
+
+      expect(accepted.task?.revision).toBe(1);
+      const running = await store.claimNextRunnable('worker-revision', 30_000);
+      expect(running?.revision).toBe(2);
+
+      await expect(
+        store.renewLease(
+          running!.taskId,
+          running!.ownerId,
+          'worker-revision',
+          30_000,
+        ),
+      ).resolves.toBe(true);
+      await expect(
+        store.getTask(running!.ownerId, running!.taskId),
+      ).resolves.toMatchObject({ revision: 2 });
+
+      await expect(
+        store.markWaiting(running!.taskId, running!.ownerId, 'worker-revision'),
+      ).resolves.toBe(true);
+      await expect(
+        store.getTask(running!.ownerId, running!.taskId),
+      ).resolves.toMatchObject({ revision: 3 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('persists assistant progress with stable identity, revision and UTF-16 offsets', async () => {

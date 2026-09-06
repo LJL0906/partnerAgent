@@ -9,6 +9,7 @@ export class TypeOrmChatTaskRecovery {
       .update(ChatTaskEntity)
       .set({
         state: 'waiting_tool_approval',
+        revision: () => 'revision + 1',
         waitingToolConfirmationId: () =>
           "regexp_replace(lease_owner, '^tool-decision:[^:]+:[^:]+:', '')::uuid",
         leaseOwner: null,
@@ -29,6 +30,7 @@ export class TypeOrmChatTaskRecovery {
       .update(ChatTaskEntity)
       .set({
         state: 'waiting_tool_approval',
+        revision: () => 'revision + 1',
         waitingToolConfirmationId: () => `(
           select confirmation.id from tool_confirmation_requests confirmation
           where confirmation.owner_id = chat_tasks.owner_id
@@ -59,6 +61,7 @@ export class TypeOrmChatTaskRecovery {
       .update(ChatTaskEntity)
       .set({
         state: 'queued',
+        revision: () => 'revision + 1',
         waitingToolConfirmationId: null,
         leaseOwner: null,
         leaseExpiresAt: null,

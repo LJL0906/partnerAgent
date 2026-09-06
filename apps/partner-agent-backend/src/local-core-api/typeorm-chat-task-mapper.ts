@@ -17,6 +17,7 @@ export function toStoredChatTask(
     ...(task.previewKind ? { previewKind: task.previewKind } : {}),
     text,
     state: task.state,
+    revision: task.revision,
     originalRecordId: task.originalRecordId,
     userMessageId: task.userMessageId,
     ...(task.resultMessageId ? { resultMessageId: task.resultMessageId } : {}),

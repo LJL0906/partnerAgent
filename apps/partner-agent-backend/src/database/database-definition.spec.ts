@@ -10,10 +10,17 @@ import { AddChatTaskModelSelection1788515000000 } from './migrations/17885150000
 import { AddOffReasoningLevel1788518000000 } from './migrations/1788518000000-add-off-reasoning-level.js';
 import { AlignChatMessageRuntime1788519000000 } from './migrations/1788519000000-align-chat-message-runtime.js';
 import { AddChatTaskOutputMode1788520000000 } from './migrations/1788520000000-add-chat-task-output-mode.js';
+import { AddChatTaskRevision1788521000000 } from './migrations/1788521000000-add-chat-task-revision.js';
 
 describe('database definition', () => {
   it('registers the latest reversible migration exactly once', () => {
-    expect(DATABASE_MIGRATIONS.at(-1)).toBe(AddChatTaskOutputMode1788520000000);
+    expect(DATABASE_MIGRATIONS.at(-1)).toBe(AddChatTaskRevision1788521000000);
+    expect(
+      DATABASE_MIGRATIONS.filter(
+        (migration) => migration === AddChatTaskRevision1788521000000,
+      ),
+    ).toHaveLength(1);
+    expect(DATABASE_MIGRATIONS).toContain(AddChatTaskOutputMode1788520000000);
     expect(DATABASE_MIGRATIONS).toContain(AlignChatMessageRuntime1788519000000);
     expect(
       DATABASE_MIGRATIONS.filter(

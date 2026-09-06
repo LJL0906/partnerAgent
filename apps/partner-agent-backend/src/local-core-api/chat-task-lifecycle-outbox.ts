@@ -31,13 +31,13 @@ export class ChatTaskLifecycleOutboxWriter {
     const repository = manager.getRepository(ChatTaskLifecycleOutboxEntity);
     const event = repository.create({
       eventId,
-      eventKey: `chat-task:${task.id}:${eventId}`,
+      eventKey: `chat-task:${task.id}:revision:${task.revision}`,
       ownerId: task.ownerId,
       taskId: task.id,
       operationId: task.operationId,
       sessionId: task.sessionId,
       state: task.state,
-      eventData: data,
+      eventData: { ...data, revision: task.revision },
       attemptCount: 0,
       availableAt: now,
       leaseOwner: null,
@@ -48,7 +48,7 @@ export class ChatTaskLifecycleOutboxWriter {
       createdAt: now,
       updatedAt: now,
     });
-    event.eventData = data;
+    event.eventData = { ...data, revision: task.revision };
     await repository.save(event);
   }
 }

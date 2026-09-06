@@ -160,6 +160,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       ...(command.previewKind ? { previewKind: command.previewKind } : {}),
       text: command.text,
       state: 'queued',
+      revision: 1,
       originalRecordId: randomUUID(),
       userMessageId: messageId,
       createdAt: now,
@@ -206,6 +207,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (!task || task.ownerId !== ownerId) throw new Error('AUTH_002');
     if (!['completed', 'failed', 'cancelled'].includes(task.state)) {
       task.state = 'cancelled';
+      task.revision += 1;
       delete task.leaseOwner;
       delete task.leaseExpiresAt;
       delete task.waitingToolConfirmationId;
@@ -266,6 +268,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     )
       return false;
     task.state = 'running';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     task.leaseOwner = 'legacy-direct-claim';
     task.leaseExpiresAt = new Date(Date.now() + 30_000);
@@ -284,6 +287,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
         task.state = task.leaseOwner?.startsWith('tool-decision:')
           ? 'waiting_tool_approval'
           : 'queued';
+        task.revision += 1;
         task.waitingToolConfirmationId = toolConfirmationIdFromLeaseOwner(
           task.leaseOwner,
         );
@@ -309,6 +313,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     if (!task) return undefined;
     const now = new Date();
     task.state = 'running';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     task.leaseOwner = leaseOwner;
     task.leaseExpiresAt = new Date(now.getTime() + leaseDurationMs);
@@ -349,6 +354,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       task.state = leaseOwner.startsWith('tool-decision:')
         ? 'waiting_tool_approval'
         : 'queued';
+      task.revision += 1;
       task.waitingToolConfirmationId =
         toolConfirmationIdFromLeaseOwner(leaseOwner);
       delete task.leaseOwner;
@@ -373,6 +379,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       return undefined;
     }
     task.state = 'queued';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     task.updatedAt = new Date();
     return copyStoredChatTask(task);
@@ -397,6 +404,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     }
     const now = new Date();
     task.state = 'running';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     task.leaseOwner = leaseOwner;
     task.leaseExpiresAt = new Date(now.getTime() + leaseDurationMs);
@@ -447,6 +455,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       return false;
     }
     task.state = state;
+    task.revision += 1;
     task.waitingToolConfirmationId = confirmationId;
     delete task.leaseOwner;
     delete task.leaseExpiresAt;
@@ -471,6 +480,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       return undefined;
     }
     task.state = 'failed';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     task.errorCode = code;
     task.errorMessage = message;
@@ -501,6 +511,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
         last.sequence,
       );
     task.state = 'completed';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     delete task.leaseOwner;
     delete task.leaseExpiresAt;
@@ -528,6 +539,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
         : undefined;
     }
     task.state = 'failed';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     delete task.leaseOwner;
     delete task.leaseExpiresAt;
@@ -644,6 +656,7 @@ export class MemoryChatTaskStore extends ChatTaskStore {
     );
     task.resultMessageId = messageId;
     task.state = 'completed';
+    task.revision += 1;
     delete task.waitingToolConfirmationId;
     delete task.leaseOwner;
     delete task.leaseExpiresAt;

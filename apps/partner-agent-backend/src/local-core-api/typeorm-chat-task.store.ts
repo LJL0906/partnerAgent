@@ -243,6 +243,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
         userMessageId: messageId,
         resultMessageId: null,
         state: 'queued',
+        revision: 1,
         errorCode: null,
         errorMessage: null,
         createdAt: now,
@@ -285,6 +286,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       if (!task) throw new Error('AUTH_002');
       if (!['completed', 'failed', 'cancelled'].includes(task.state)) {
         task.state = 'cancelled';
+        task.revision += 1;
         task.leaseOwner = null;
         task.leaseExpiresAt = null;
         task.waitingToolConfirmationId = null;
@@ -542,6 +544,7 @@ export class TypeOrmChatTaskStore extends ChatTaskStore {
       );
       task.resultMessageId = message.id;
       task.state = 'completed';
+      task.revision += 1;
       task.waitingToolConfirmationId = null;
       task.leaseOwner = null;
       task.leaseExpiresAt = null;

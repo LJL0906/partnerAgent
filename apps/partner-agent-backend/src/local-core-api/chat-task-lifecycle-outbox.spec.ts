@@ -1,8 +1,38 @@
 import type { DataSource, EntityManager } from 'typeorm';
 import { describe, expect, it, vi } from 'vitest';
-import { TypeOrmChatTaskLifecycleOutbox } from './chat-task-lifecycle-outbox.js';
+import {
+  ChatTaskLifecycleOutboxWriter,
+  TypeOrmChatTaskLifecycleOutbox,
+} from './chat-task-lifecycle-outbox.js';
 
 describe('TypeOrmChatTaskLifecycleOutbox', () => {
+  it('persists the authoritative task revision in the lifecycle event', async () => {
+    const save = vi.fn(async () => undefined);
+    const repository = {
+      create: vi.fn((value) => value),
+      save,
+    };
+    const manager = {
+      getRepository: vi.fn(() => repository),
+    } as unknown as EntityManager;
+
+    await ChatTaskLifecycleOutboxWriter.append(
+      manager,
+      {
+        id: 'task-1', ownerId: 'owner', operationId: 'operation-1',
+        sessionId: 'session-1', state: 'running', revision: 4,
+      } as never,
+      { revision: 999, detail: 'visible' },
+    );
+
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKey: 'chat-task:task-1:revision:4',
+        eventData: { revision: 4, detail: 'visible' },
+      }),
+    );
+  });
+
   it('claims with SKIP LOCKED, lease fencing and a maximum-attempt guard', async () => {
     const managerQuery = vi.fn(async (sql: string) =>
       sql.startsWith('select *') ? [] : [],

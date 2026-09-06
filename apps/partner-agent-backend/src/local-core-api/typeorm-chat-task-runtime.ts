@@ -155,6 +155,7 @@ export class TypeOrmChatTaskRuntime {
       });
       for (const task of tasks) {
         task.state = releasedState;
+        task.revision += 1;
         task.waitingToolConfirmationId = waitingToolConfirmationId ?? null;
         task.leaseOwner = null;
         task.leaseExpiresAt = null;
@@ -270,6 +271,7 @@ export class TypeOrmChatTaskRuntime {
         return undefined;
       }
       task.state = 'failed';
+      task.revision += 1;
       task.waitingToolConfirmationId = null;
       task.errorCode = code;
       task.errorMessage = message;
@@ -351,6 +353,7 @@ export class TypeOrmChatTaskRuntime {
         }
       }
       task.state = state;
+      task.revision += 1;
       task.waitingToolConfirmationId = null;
       task.leaseOwner = null;
       task.leaseExpiresAt = null;
@@ -379,6 +382,7 @@ export class TypeOrmChatTaskRuntime {
         .update(ChatTaskEntity)
         .set({
           state: 'queued',
+          revision: () => 'revision + 1',
           waitingToolConfirmationId: null,
           updatedAt: () => 'CURRENT_TIMESTAMP',
         })
@@ -420,6 +424,7 @@ export class TypeOrmChatTaskRuntime {
       if (!task || (leaseOwner !== undefined && task.leaseOwner !== leaseOwner))
         return false;
       task.state = state;
+      task.revision += 1;
       task.waitingToolConfirmationId = confirmationId ?? null;
       task.leaseOwner = null;
       task.leaseExpiresAt = null;
@@ -448,6 +453,7 @@ export class TypeOrmChatTaskRuntime {
   ) {
     const now = new Date();
     task.state = 'running';
+    task.revision += 1;
     task.waitingToolConfirmationId = null;
     task.leaseOwner = leaseOwner;
     task.leaseExpiresAt = new Date(now.getTime() + leaseDurationMs);
