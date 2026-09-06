@@ -343,7 +343,6 @@ export class MemoryChatTaskStore extends ChatTaskStore {
       return false;
     }
     task.leaseExpiresAt = new Date(Date.now() + leaseDurationMs);
-    task.updatedAt = new Date();
     return true;
   }
 

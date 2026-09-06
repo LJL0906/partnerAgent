@@ -136,7 +136,6 @@ export class TypeOrmChatTaskRuntime {
       { id: taskId, ownerId, state: 'running', leaseOwner, leaseExpiresAt: MoreThan(now) },
       {
         leaseExpiresAt: new Date(now.getTime() + leaseDurationMs),
-        updatedAt: now,
       },
     );
     return Boolean(result.affected);
