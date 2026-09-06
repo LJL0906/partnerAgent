@@ -89,7 +89,7 @@ git -C pi pull
 - P1-01 已将 `action` 纳入权威 `ANALYSIS_TYPES`，冻结 Action DTO、`AnalysisTaskRef` 与 WS `candidate` 安全资源引用；`local-core.ts` 已拆分为 463 行，并新增 `local-core-analysis.ts`、`local-core-model.ts`、`local-core-queries.ts`；
 - 已新增 `analysis_runs`、`structured_analyses` 实体与第 8 条 migration，具备 owner、OriginalRecord、ChatTask 复合所有权约束、状态约束和必要索引；
 - `SubmitConfirmationBatch` 已按逐项决策、批次/候选/目标版本接通 PostgreSQL 原子事务；正式事实、目标、行动和长期记忆的其余 handler 仍需逐项接通，且只能经该事务生效；
-- 2026 年 9 月 5 日技术底座批次曾在 PostgreSQL 16 专用空库完成当时 15 条 migration 全量 up → down → up；该数字仅属历史。2026 年 9 月 6 日阶段收口已在独立 PostgreSQL 16 验证当前 23 条 up → down → up、前 22 条到第 23 条的旧数据增量升级，以及 10 个真实库文件 37 项用例。完整历史证据见 [`Agent 底座收口验证记录`](docs/05-任务架构/2026-09-05-Agent底座收口验证记录.md)，当前证据见 [`T01 至 T09 阶段成果收口报告`](docs/01-项目/2026-09-06-T01至T09阶段成果收口报告.md)。
+- 2026 年 9 月 5 日技术底座批次曾在 PostgreSQL 16 专用空库完成当时 15 条 migration 全量 up → down → up；该数字仅属历史。2026 年 9 月 6 日阶段收口已在独立 PostgreSQL 16 验证当前 23 条 up → down → up、前 22 条到第 23 条的旧数据增量升级，以及 11 个真实库文件 38 项用例。完整历史证据见 [`Agent 底座收口验证记录`](docs/05-任务架构/2026-09-05-Agent底座收口验证记录.md)，当前证据见 [`T01 至 T09 阶段成果收口报告`](docs/01-项目/2026-09-06-T01至T09阶段成果收口报告.md)。
 
 ## 后续启动顺序
 
@@ -104,7 +104,7 @@ git -C pi pull
 
 ## 仓库拆分原则
 
-2026 年 9 月 5 日聊天与账户集成批次数字保留为历史快照。2026 年 9 月 6 日阶段收口已完成当前代码的 build、lint、单元与 memory e2e，并以 10 个真实 PostgreSQL 文件 37 项用例验证结构化预览、23 条迁移、旧数据升级、REST 重启恢复和 11 张正式表零变化；真实 DeepSeek 预览另有脱敏人工证据。限定结论是“聊天与结构化预览链已验通”，不是“业务生产闭环完成”；A06/A09、14 个 moderate 依赖项、Android 真机和旧 Agent WS 退役仍未完成。
+2026 年 9 月 5 日聊天与账户集成批次数字保留为历史快照。2026 年 9 月 6 日阶段收口已完成当前代码的 build、lint、单元与 memory e2e，并以 11 个真实 PostgreSQL 文件 38 项用例验证结构化预览、A10 幂等事务、23 条迁移、旧数据升级、REST 重启恢复和 11 张正式表零变化；真实 DeepSeek 预览另有脱敏人工证据。限定结论是“聊天与结构化预览链已验通”，不是“业务生产闭环完成”；A06/A09、14 个 moderate 依赖项、Android 真机和旧 Agent WS 退役仍未完成。
 
 当前不按语言或框架拆分仓库。只要前端、NestJS 和 Python 服务仍然共同服务于同一个产品、需要同步接口和需求，就继续使用本仓库。
 
