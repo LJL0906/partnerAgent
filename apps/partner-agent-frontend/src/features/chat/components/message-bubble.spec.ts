@@ -103,6 +103,19 @@ describe('MessageBubble characterization', () => {
 describe('ChatItem action wiring', () => {
   const base = { schema_version: 1 as const, created_at: 1, updated_at: 1, revision: 1, collapsed: true };
 
+  it('does not render runtime status items in the conversation', () => {
+    const item: import('@partner-agent/contracts').RuntimeChatItem = {
+      ...base,
+      id: 'task:task-1:runtime',
+      type: 'runtime',
+      status: 'completed',
+      task_id: 'task-1',
+      payload: { state: 'completed', detail: '任务已完成' },
+    };
+
+    expect(ChatItemBubble({ item })).toBeNull();
+  });
+
   it('shows the authoritative model and reasoning recorded on an assistant item', () => {
     const item: import('@partner-agent/contracts').MessageChatItem = {
       ...base,

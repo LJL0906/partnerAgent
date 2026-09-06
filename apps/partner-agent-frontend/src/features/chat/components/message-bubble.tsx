@@ -8,7 +8,6 @@ import { ToolMessage } from './messages/tool-message';
 import { ApprovalCard } from './approval-card';
 import { CandidateCard } from './candidate-card';
 import { StructuredPreviewCard } from './structured-preview-card';
-import { RuntimeStatusCard } from './runtime-status-card';
 import { SystemCard } from './system-card';
 import { ThinkingCard } from './thinking-card';
 import { ToolCallCard } from './tool-call-card';
@@ -92,7 +91,7 @@ export function ChatItemBubble({ item, actions = {}, toolView }: { item: ChatIte
         onReject={actionsAllowed.includes('dismiss') && actions.onDismissTool ? () => actions.onDismissTool?.(confirmationId) : undefined} />;
     }
     case 'runtime':
-      return <RuntimeStatusCard state={item.payload.state} summary={item.payload.detail} />;
+      return null;
     case 'error':
       return <SystemCard title="处理失败" content={`${item.payload.code}：${item.payload.message}`} />;
     case 'system':

@@ -7,7 +7,6 @@ import { ApprovalCard } from './approval-card';
 import type { AppButtonProps } from '@/components/ui/app-button';
 import { CandidateCard } from './candidate-card';
 import type { CandidatePreviewDecision } from './chat-item-types';
-import { RuntimeStatusCard } from './runtime-status-card';
 import { SystemCard } from './system-card';
 import { ThinkingCard } from './thinking-card';
 import { ToolCallCard } from './tool-call-card';
@@ -221,18 +220,6 @@ describe('specialized chat item cards', () => {
     expect(onReject).toHaveBeenCalledOnce();
 
     expect(markup(element)).toContain('确认后才会提交正式对象');
-  });
-
-  it.each([
-    ['queued', '排队中'],
-    ['running', '运行中'],
-    ['waiting_privacy_decision', '等待隐私确认'],
-    ['waiting_tool_approval', '等待工具审批'],
-    ['cancelled', '已取消'],
-    ['completed', '已完成'],
-    ['failed', '失败'],
-  ] as const)('renders runtime state label: %s', (state, label) => {
-    expect(markup(React.createElement(RuntimeStatusCard, { state }))).toContain(label);
   });
 
   it('renders system notices as alert cards with an explicit system tone', () => {
